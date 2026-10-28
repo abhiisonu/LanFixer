@@ -31,18 +31,24 @@ When launched, the console displays current connection telemetry (adapter status
 
 | Key | Function | Description |
 | :---: | :--- | :--- |
-| **1** | **Automated Heal** | Runs the full recovery sequence across physical link, DHCP lease, ARP table, DNS resolvers, and route metrics. |
-| **2** | **Background Watchdog** | Installs a lightweight Windows task that automatically runs repairs upon cable connection or system wake. |
-| **3** | **DNS Profile** | Toggles between local network DHCP resolvers (for internal services) and public secure DNS (Cloudflare / Google). |
-| **4** | **Latency Probe** | Tests ping latency and packet loss to the local gateway and internet. |
-| **5** | **Flush Caches** | Purges the Windows DNS resolver cache, ARP table, and NetBIOS cache. |
-| **6** | **Diagnostics** | Displays detailed hardware status, link speed, duplex mode, and lease information. |
-| **7** | **Open Portal** | Adds direct route rules to the login host and opens the captive portal in your default browser. |
-| **G** | **Auto-Login** | Authenticates captive portals silently in the background using locally encrypted credentials. |
-| **M** | **Routing Mode** | Configures interface priority: Automatic (balanced), Ethernet preferred, or Wi-Fi preferred. |
-| **X** | **Network Reset** | Emergency reset of TCP/IP stack, WFP filters, and network services. Requires explicit typing of yes to execute. |
+| **1** | **Smart 7-Layer Heal** | Executes automated recovery across physical link, DHCP lease, ARP table, DNS resolvers, and route metrics. |
+| **2** | **Arm Watchdog Guard** | Installs a lightweight Windows task that automatically runs repairs upon cable connection or system wake. |
+| **3** | **DNS Profile Engine** | Toggles between local network DHCP resolvers (for internal services) and public secure DNS (Cloudflare / Google). |
+| **4** | **Live Latency Probe** | Measures ping latency, jitter, and packet loss to local gateway and internet endpoints. |
+| **5** | **Flush DNS & ARP** | Purges Windows DNS resolver cache, ARP table, and NetBIOS cache to clear stale routes. |
+| **6** | **Diagnostics Audit** | Displays detailed hardware status, link speed, duplex mode, and adapter lease information. |
+| **7** | **Open Portal Page** | Adds direct route rules to the login host and opens captive portal in default browser. |
+| **A** | **Portal Login Vault** | Manages encrypted credentials for headless background authentication. |
+| **G** | **Headless Auto-Login** | Authenticates captive portals silently in background using locally encrypted credentials. |
+| **M** | **Routing Engine** | Configures interface priority: Automatic (balanced), Ethernet preferred, or Wi-Fi preferred. |
+| **T** | **Dry-Run Preview** | Simulates full repair pipeline without making any system or adapter changes. |
+| **R** | **Export Report** | Generates detailed system and network diagnostic report file on Desktop. |
+| **S** | **Run Self-Test** | Runs comprehensive verification suite testing cmdlets, drivers, crypto, and logic assertions. |
+| **X** | **Full Net Reset** | Deep recovery of TCP/IP stack, WFP filters, and network services. Requires typing yes to confirm. |
+| **8** | **Disarm Watchdog** | Unregisters background auto-heal scheduled task cleanly. |
 | **9** | **Factory Reset** | Reverts all system and adapter changes back to default Windows configurations. |
-| **Q** | **Quit** | Closes the application. |
+| **0** | **Decision Guide** | Interactive reference matrix matching network symptoms to 1-touch actions. |
+| **Q** | **Quit** | Closes application. |
 
 ---
 
