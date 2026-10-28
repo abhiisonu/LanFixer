@@ -2,6 +2,12 @@
 
 A lightweight, self-healing network stabilizer and captive portal assistant for Windows (10/11). Single-file script (.cmd wrapping pure PowerShell) designed to keep hostel and campus wired connections stable without manual troubleshooting.
 
+[![Direct Download](https://img.shields.io/badge/Download-LanFixer.cmd-brightgreen?style=for-the-badge&logo=windows)](https://github.com/abhiisonu/LanFixer/releases/download/v4.8.0/LanFixer.cmd)
+[![Latest Release](https://img.shields.io/github/v/release/abhiisonu/LanFixer?style=for-the-badge)](https://github.com/abhiisonu/LanFixer/releases/latest)
+
+> **Quick Download**: Click **[LanFixer.cmd (Direct Download)](https://github.com/abhiisonu/LanFixer/releases/download/v4.8.0/LanFixer.cmd)** to get the ready-to-run script without cloning or downloading zip archives.
+
+
 ---
 
 ## What It Does
