@@ -9,7 +9,7 @@ exit /b %errorlevel%
 
 <#
 .SYNOPSIS
-    Lan Fixer 4.8.0 - Supreme self-healing Ethernet stabilizer for campus/hostel LANs (Windows 10/11, Ethernet only).
+    Lan Fixer 4.9.0 - Supreme self-healing Ethernet stabilizer for campus/hostel LANs (Windows 10/11, Ethernet only).
     Author: A.S.
 .DESCRIPTION
     Single file, ASCII only. Run it normally for the control center, or use -Mode:
@@ -101,7 +101,7 @@ try { Add-Type -AssemblyName System.Security -ErrorAction SilentlyContinue } cat
 # ==============================================================================
 # CONFIG (edit here, nowhere else)
 # ==============================================================================
-$script:Version = '4.8.0'
+$script:Version = '4.9.0'
 $script:Sys32   = Join-Path $env:SystemRoot 'System32'
 $script:SelfPath = if ($env:LANFIXER_SELF) { $env:LANFIXER_SELF } elseif ($PSCommandPath) { $PSCommandPath } else { '' }
 $script:IsDry   = [bool]$DryRun
@@ -2000,9 +2000,11 @@ function Start-Repair([string]$Title = 'repair') {
         $sw.Stop()
         Write-HealSummary $r $sw
         if ($r -and $r.Conn -eq 'Captive') {
-            [void](Invoke-WithLock { Open-Portal })
-            Out-Line @((Seg 'dim' '  Sign in on the page that opened; the fast DNS path is applied for you afterwards.'))
-            if (Wait-ForAuthentication 180) { [void](Invoke-WithLock { Complete-Authentication }); Write-Log 'OK' 'Signed in. Post-login DNS applied.' }
+            [void](Invoke-WithLock { [void](Open-Portal); Save-State })
+            if ((Get-InternetState -NoCache).State -eq 'Captive') {
+                Out-Line @((Seg 'dim' '  Sign in on the page that opened; the fast DNS path is applied for you afterwards.'))
+                if (Wait-ForAuthentication 180) { [void](Invoke-WithLock { Complete-Authentication }); Write-Log 'OK' 'Signed in. Post-login DNS applied.' }
+            }
         }
     }
 }
@@ -2046,8 +2048,10 @@ function Invoke-DashboardKey([string]$Key, $adv) {
                     Write-HealSummary $r $sw
                     if ($r -and $r.Conn -eq 'Captive') {
                         [void](Invoke-WithLock { [void](Open-Portal); Save-State })
-                        Out-Line @((Seg 'dim' '  Sign in on the page that opened; the fast DNS path is applied for you afterwards.'))
-                        if (Wait-ForAuthentication 180) { [void](Invoke-WithLock { Complete-Authentication }); Write-Log 'OK' 'Signed in. Post-login DNS applied.' }
+                        if ((Get-InternetState -NoCache).State -eq 'Captive') {
+                            Out-Line @((Seg 'dim' '  Sign in on the page that opened; the fast DNS path is applied for you afterwards.'))
+                            if (Wait-ForAuthentication 180) { [void](Invoke-WithLock { Complete-Authentication }); Write-Log 'OK' 'Signed in. Post-login DNS applied.' }
+                        }
                     }
                 }
             }
@@ -2158,8 +2162,12 @@ function Invoke-DashboardKey([string]$Key, $adv) {
                         return @{ State = 'Online'; Signed = $true }
                     }
                     if ($inet.State -ne 'Captive') {
-                        Write-Log 'WARN' ("Link state is '{0}' (not behind captive portal). Run [1] Smart 7-Layer Heal first." -f $inet.State)
-                        return @{ State = $inet.State; Signed = $false; SkipBrowser = $true }
+                        if ($inet.State -eq 'Offline' -and (Test-TcpPort $script:Cfg.PortalIp $script:Cfg.PortalPort 900)) {
+                            $inet = @{ State = 'Captive'; Location = $script:Cfg.PortalUrl; Via = 'link' }
+                        } else {
+                            Write-Log 'WARN' ("Link state is '{0}' (not behind captive portal). Run [1] Smart 7-Layer Heal first." -f $inet.State)
+                            return @{ State = $inet.State; Signed = $false; SkipBrowser = $true }
+                        }
                     }
                     $okLogin = [bool](Invoke-HeadlessPortalLogin $inet -Manual)
                     Save-State
@@ -2509,7 +2517,10 @@ function Wait-LinkSettling([int]$MaxMs = 12000) {
             if ($sw.ElapsedMilliseconds -ge $minWait) { break }
         } else {
             $pending = 0
-            foreach ($a in $ups) { if (-not (Get-ValidIPv4 $a)) { $pending++ } }
+            foreach ($a in $ups) {
+                if (-not (Get-ValidIPv4 $a)) { $pending++ }
+                elseif (@(Get-GatewaysV4 $a).Count -eq 0 -and $sw.ElapsedMilliseconds -lt 4000) { $pending++ }
+            }
             if ($pending -eq 0) { break }
         }
         Start-Sleep -Milliseconds 250
@@ -2596,16 +2607,30 @@ $script:PendingRestart = @{}
 function Get-IPv4Interface($Ad) { return (Get-NetIPInterface -InterfaceIndex $Ad.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue) }
 
 function Get-DhcpFailureDiagnosis($Ad) { return (Get-DhcpFailureText (Get-DhcpErrorCode) ([string]$Ad.MacAddress)) }
-function Repair-Dhcp($Ad) {
+function Test-DhcpLeaseUsable($Ad) {
+    $ip = Get-ValidIPv4 $Ad
+    if (-not $ip) { return $false }
+    $gw = @(Get-GatewaysV4 $Ad) | Select-Object -First 1
+    if (-not $gw) { return $false }
+    return (Test-GatewayAlive $Ad $gw).Alive
+}
+function Repair-Dhcp($Ad, [switch]$ForceRelease) {
     $guid = [string]$Ad.InterfaceGuid
     $ipconfig = Get-SysExe 'ipconfig.exe'
-    Write-Log 'WARN' "No valid IPv4 on $($Ad.Name) (APIPA/none). Starting DHCP recovery ladder."
-    # Step 1: plain renew
+    Write-Log 'WARN' ("Starting DHCP recovery ladder on {0} ({1})." -f $Ad.Name, $(if ($ForceRelease) { 'gateway unreachable / stale lease' } else { 'APIPA / no valid IPv4' }))
+    # Step 1: renew (or release+renew if recovering a stale lease with dead gateway)
     if ($script:IsDry) { Write-Log 'DRY' "Would: DHCP renew on $($Ad.Name)"; return $false }
+    if ($ForceRelease) {
+        Write-Log 'INFO' "Releasing stale DHCP lease on $($Ad.Name) before renew..."
+        [void](Invoke-Native $ipconfig @('/release', $Ad.Name) 10000)
+    }
     Write-Log 'INFO' "DHCP renew attempted on $($Ad.Name)..."
     $r = Invoke-Native $ipconfig @('/renew', $Ad.Name) 15000
     if ($r.ExitCode -eq 0) { Write-Log 'OK' "DHCP renew completed on $($Ad.Name)" }
-    for ($i = 0; $i -lt 12; $i++) { if (Get-ValidIPv4 $Ad) { Write-Log 'OK' 'Lease acquired.'; return $true }; Start-Sleep -Milliseconds 500 }
+    for ($i = 0; $i -lt 12; $i++) {
+        if ($(if ($ForceRelease) { Test-DhcpLeaseUsable $Ad } else { [bool](Get-ValidIPv4 $Ad) })) { Write-Log 'OK' 'Lease acquired.'; return $true }
+        Start-Sleep -Milliseconds 500
+    }
     # Step 2: link reset (rate-limited so a dead port cannot cause a loop)
     if (Test-Elapsed ("Restart:" + $guid) 300) {
         Set-StateTime ("Restart:" + $guid)
@@ -2705,6 +2730,15 @@ function Shield-DataLink($Ctx) {
         $Ctx.Repaired = (Repair-Dhcp $ad)
         $script:EnvCache.Remove($guid)
         $Ctx.Env = Get-AdapterEnvironment $ad
+    } elseif ($ipif -and [string]$ipif.Dhcp -eq 'Enabled') {
+        $curGw = @(Get-GatewaysV4 $ad) | Select-Object -First 1
+        $gwOk = if ($curGw) { (Test-GatewayAlive $ad $curGw).Alive } else { $false }
+        if (-not $gwOk) {
+            Write-Log 'WARN' "IPv4 lease is present on $($ad.Name), but default gateway is $(if ($curGw) { "$curGw (unreachable)" } else { 'missing' }). Refreshing DHCP lease..."
+            $Ctx.Repaired = (Repair-Dhcp $ad -ForceRelease)
+            $script:EnvCache.Remove($guid)
+            $Ctx.Env = Get-AdapterEnvironment $ad
+        }
     }
     $validIp = Get-ValidIPv4 $ad
     if ($validIp -and $Ctx.Env.Env -eq 'Campus' -and -not $script:IsDry) {
@@ -3698,7 +3732,7 @@ function Shield-SystemStack([switch]$Aggressive) {
 function Invoke-SupremeOmnifix {
     if (-not (Assert-Admin)) { return }
     $swOmni = [System.Diagnostics.Stopwatch]::StartNew()
-    Write-Banner 'FULL NET RESET (ONLY WHEN NETWORKING MESSED UP / NO INTERNET)'
+    Write-Section 'FULL NET RESET (5-STAGE DEEP RECOVERY)'
     $r = Pick-Hash (Invoke-WithLock {
         Write-Log 'STEP' 'STAGE 1/5  Rescanning PnP hardware bus & neutralizing WFP DNS interceptors / dead proxies'
         if (-not $script:IsDry) { [void](Invoke-Native (Get-SysExe 'pnputil.exe') @('/scan-devices') 5000) }
@@ -3711,6 +3745,7 @@ function Invoke-SupremeOmnifix {
         Remove-CampusNrpt
         Remove-LegacyHostsEntries
         Remove-CampusHostRoutes
+        foreach ($ea in @(Get-EthernetAdapters)) { Release-ArpLocks $ea }
         Write-Log 'STEP' 'STAGE 2/5  Restoring clean routing metrics & MTU across all physical uplinks'
         Restore-InterfaceMetrics 'Full Net Reset metrics restore'
         if (-not $script:IsDry) {
@@ -3718,7 +3753,7 @@ function Invoke-SupremeOmnifix {
                 Set-NetIPInterface -InterfaceIndex $i.ifIndex -AddressFamily $i.AddressFamily -AutomaticMetric Enabled -ErrorAction SilentlyContinue
             }
             foreach ($a in @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' })) {
-                Set-NetIPInterface -InterfaceIndex $a.ifIndex -AddressFamily IPv4 -DadTransmits 3 -NlMtuBytes 1500 -ErrorAction SilentlyContinue
+                Set-NetIPInterface -InterfaceIndex $a.ifIndex -AddressFamily IPv4 -NlMtuBytes 1500 -ErrorAction SilentlyContinue
             }
         }
         Write-Log 'STEP' 'STAGE 3/5  Running 7-Layer Ethernet & Multi-Homed Heal Pipeline'
@@ -3727,19 +3762,27 @@ function Invoke-SupremeOmnifix {
         if (-not $script:IsDry) {
             Clear-DnsClientCache -ErrorAction SilentlyContinue
             [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/flushdns') 5000)
+            Get-NetNeighbor -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.State -ne 'Permanent' } | Remove-NetNeighbor -Confirm:$false -ErrorAction SilentlyContinue
             [void](Invoke-Native (Get-SysExe 'nbtstat.exe') @('-R') 5000)
             Restart-Service -Name NlaSvc -Force -ErrorAction SilentlyContinue
             Start-Service -Name netprofm -ErrorAction SilentlyContinue
         }
         Write-Log 'STEP' 'STAGE 5/5  Verifying live IPv4 A-record & HTTPS reachability (GitHub & Google Auth)'
+        $anyVerifyFail = $false
         foreach ($testHost in @('github.com', 'accounts.google.com')) {
             $ip = Resolve-HostBounded $testHost 3000
             if ($ip) {
                 $tcpOk = Test-TcpPort $ip 443 2500
                 Write-Log ($(if ($tcpOk) { 'OK' } else { 'WARN' })) ("Verified {0} -> {1} (TCP/443: {2})" -f $testHost, $ip, $(if ($tcpOk) { 'OPEN' } else { 'BLOCKED' }))
             } else {
+                $anyVerifyFail = $true
                 Write-Log 'FAIL' ("DNS resolution still failed for {0}" -f $testHost)
             }
+        }
+        if ($anyVerifyFail -and -not $script:IsDry -and ($resHeal.Conn -ne 'Captive')) {
+            [void](Invoke-Change 'Resetting corrupted Winsock catalog (fallback recovery)' {
+                [void](Invoke-Native (Get-SysExe 'netsh.exe') @('winsock', 'reset', 'catalog') 8000)
+            })
         }
         Save-State
         $resHeal
@@ -4069,6 +4112,9 @@ function Invoke-HeadlessPortalLogin {
             if ($e.Env -eq 'Campus' -and (Get-DnsProfileName) -eq 'Adaptive') { Shield-Dns @{ Ad = $a; Env = $e } 'Captive' }
         }
         $Inet = Get-InternetState -NoCache
+    }
+    if ($Manual -and $Inet.State -eq 'Offline' -and (Test-TcpPort $script:Cfg.PortalIp $script:Cfg.PortalPort 900)) {
+        $Inet = @{ State = 'Captive'; Location = $script:Cfg.PortalUrl; Via = 'link' }
     }
     if ($Inet.State -ne 'Captive') { if ($Manual) { Write-Log 'INFO' 'This link is not behind the login page right now; nothing to do.' }; return $false }
     if ($Inet.Location -and -not (Get-SafePortalUrl ([string]$Inet.Location))) {
@@ -5604,6 +5650,14 @@ function Invoke-LogicTests {
     Write-Check 'Logic: Get-OtherUplinkAdapters allows standard RFC 4861 fe80:: IPv6 default gateway next-hops' ($ouDef.IndexOf("NextHop -notlike 'fe80*'") -lt 0 -and $ouDef.IndexOf('$hasIp6') -ge 0)
     $sdDef = [string](Get-Command Get-ScopedDnsAnswers -ErrorAction SilentlyContinue).Definition
     Write-Check 'Logic: Get-ScopedDnsAnswers keeps metric-45 filter for non-Wifi profiles and restricts unbound fallback' ($sdDef.IndexOf("InterfaceMetric -ge 45 -and (Get-RouteProfileName) -ne 'Wifi'") -ge 0 -and $sdDef.IndexOf('else { continue }') -ge 0)
+    $dlDef3 = [string](Get-Command Shield-DataLink -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Shield-DataLink triggers Repair-Dhcp -ForceRelease when DHCP lease has dead or missing gateway' ($dlDef3.IndexOf('Repair-Dhcp $ad -ForceRelease') -ge 0)
+    $srDef2 = [string](Get-Command Start-Repair -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Start-Repair checks if state is still Captive after Open-Portal before waiting 180s' ($srDef2.IndexOf("if ((Get-InternetState -NoCache).State -eq 'Captive')") -ge 0)
+    $omDef2 = [string](Get-Command Invoke-SupremeOmnifix -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Invoke-SupremeOmnifix releases stale ARP locks and does not force DadTransmits 3 on campus' ($omDef2.IndexOf('Release-ArpLocks') -ge 0 -and $omDef2.IndexOf('-DadTransmits 3') -lt 0)
+    $gtDef2 = [string](Get-Command Get-Telemetry -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Get-Telemetry only reports Wi-Fi Protected when unplugged if another uplink is active' ($gtDef2.IndexOf('if (-not $t.LinkUp -and (Test-MetricsManaged) -and (Test-OtherUplinkActive))') -ge 0)
     $script:State = $stSave
 }
 function Invoke-SelfTest {
@@ -5702,7 +5756,7 @@ function Get-Telemetry {
     $t.Paused = ($script:State.Misc['PortalLoginSuspended'] -eq $true)
     $t.ArpPending = (@(Get-PendingGatewayMacs).Count -gt 0)
     $t.RouteProfile = Get-RouteProfileName
-    if (-not $t.LinkUp -and (Test-MetricsManaged)) { $t.Routing = Get-RoutingLabel $true 0 $false }
+    if (-not $t.LinkUp -and (Test-MetricsManaged) -and (Test-OtherUplinkActive)) { $t.Routing = Get-RoutingLabel $true 0 $false }
     $lf = Get-StateTime 'LastFull'
     if ($lf -gt [datetime]'2001-01-01') { $t.LastFull = $lf }
     return $t
@@ -5970,8 +6024,10 @@ try {
             $sw.Stop()
             Write-HealSummary $r $sw
             if ($r -and $r.Conn -eq 'Captive' -and -not $script:IsDry) {
-                [void](Invoke-WithLock { Open-Portal })
-                if (Wait-ForAuthentication 120) { [void](Invoke-WithLock { Complete-Authentication }) }
+                [void](Invoke-WithLock { [void](Open-Portal); Save-State })
+                if ((Get-InternetState -NoCache).State -eq 'Captive') {
+                    if (Wait-ForAuthentication 120) { [void](Invoke-WithLock { Complete-Authentication }) }
+                }
             }
         }
         'Diagnose'   { Show-Diagnostics }
