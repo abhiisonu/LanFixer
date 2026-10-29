@@ -1732,10 +1732,22 @@ function Show-Cursor([bool]$On) { if ($script:Ui.Vt) { [Console]::Write($script:
 
 # Ctrl+C needs no handler: PowerShell stops the pipeline and the try/finally in Start-Interactive restores the screen.
 # (A scriptblock delegate on the console's control thread has no runspace and can fault instead of cleaning up.)
+function Ensure-ConsoleScrollable {
+    if (Test-InputRedirected) { return }
+    try {
+        if ($Host.Name -eq 'ConsoleHost') {
+            $raw = $Host.UI.RawUI
+            if ($raw.BufferSize.Height -lt 3000) {
+                $raw.BufferSize = New-Object System.Management.Automation.Host.Size($raw.BufferSize.Width, 3000)
+            }
+        }
+    } catch {}
+}
 function Enter-Screen {
     Set-ConsoleQuickEdit $true
+    Ensure-ConsoleScrollable
     Clear-InputBuffer
-    if ($script:Ui.Vt -and $env:LANFIXER_NOALT -ne '1') { [Console]::Write($script:Esc + '[?1049h'); $script:Ui.Alt = $true }
+    if ($script:Ui.Vt -and $env:LANFIXER_ALT -eq '1') { [Console]::Write($script:Esc + '[?1049h'); $script:Ui.Alt = $true }
     Clear-Screen
 }
 function Exit-Screen {
