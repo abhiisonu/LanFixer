@@ -175,6 +175,7 @@ $script:StoreDir  = $script:Cfg.StoreDir
 $script:LogFile   = Join-Path $script:StoreDir 'LanFixer.log'
 $script:StateFile = Join-Path $script:StoreDir 'state.clixml'
 $script:SelfCopy  = Join-Path $script:StoreDir $script:Cfg.SelfName
+$script:VaultFile = Join-Path $script:StoreDir 'vault.bin'
 $script:VirtRegex = 'Virtual|Hyper-V|VMware|VirtualBox|\bTAP\b|\bTUN\b|\bWSL\b|Bluetooth|Tailscale|ZeroTier|WireGuard|Wintun|RNDIS|Remote NDIS|Loopback|Npcap|OpenVPN|AnyConnect|Fortinet|PANGP'
 $script:PowerKeywords = @('*EEE','EEE','EEELinkAdvertisement','EnableGreenEthernet','GreenEthernet','PowerSavingMode','AutoPowerSaveModeEnabled','ULPMode','EnableSavePowerNow','ReduceSpeedOnPowerDown','AdvancedEEE','GigaLite','*SelectiveSuspend','BatteryModeLinkSpeed','EnableBatteryModeLinkSpeed','EnableExtraPowerSaving','EnableAdaptiveLinkCap','*IdleRestriction','IdleRestriction')
 $script:StoreReady  = $false
