@@ -4,3 +4,7 @@
 *.clixml
 .system_generated/
 scratch/
+ 
+Archive/
+*updated.cmd
+*.py

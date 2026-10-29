@@ -9,7 +9,7 @@ exit /b %errorlevel%
 
 <#
 .SYNOPSIS
-    Lan Fixer 5.0.0 - Supreme self-healing Ethernet stabilizer for campus/hostel LANs (Windows 10/11, Ethernet only).
+    Lan Fixer 5.3.0 - Supreme self-healing Ethernet stabilizer for campus/hostel LANs (Windows 10/11, Ethernet only).
     Author: A.S.
 .DESCRIPTION
     Single file, ASCII only. Run it normally for the control center, or use -Mode:
@@ -18,6 +18,35 @@ exit /b %errorlevel%
     Add -DryRun to see exactly what would change without changing anything.
     Every change is snapshotted first, so ResetFactory restores YOUR original values.
 .NOTES
+    5.2.0 (verified-defect release; every item below was reproduced in the 5.0.0 source before it was changed):
+      SECURITY
+      - The saved portal password could be sent to any HTTPS host under the DNS suffix that the CURRENT network's DHCP
+        handed out (Misc.DiscoveredDomain was trusted like the configured campus). Credential-bearing steps now use
+        Test-CredentialPortalHost / Get-CredentialPortalUrl: only the configured PortalHost / PortalIp / CampusDomain
+        (or an IP literal, which still needs a Windows-valid or pinned certificate). Browser navigation keeps the
+        broader trust because nothing secret is sent. Another institution opts in explicitly through config.json.
+      CORRECTNESS
+      - Test-GatewayAlive deleted a neighbour (ARP) entry during -DryRun.
+      - Save-State now proves the new temp file parses before it replaces state, and never copies a damaged live file
+        over a good .bak.
+      - Non-campus DNS rescue no longer flaps (Get-OtherDnsAction): a rescue stays until the DHCP resolvers answer.
+      - Watchdog self-heal also covers a task DISABLED in Task Scheduler.
+      - Dashboard autopilot: one automatic vault sign-in attempt when the dashboard opens on an already captive link.
+      - Remove-CampusHostRoutes now also removes the /32 routes Ensure-CampusPortalPath adds for other addresses
+        (discovered portal, redirect target, the adapter's DHCP resolvers).
+      - Invoke-TlsHttp resolved the portal host name without the Ethernet source address (SMHNR could answer from Wi-Fi).
+      - Captive portals that answer 200 with a <meta refresh> or a JavaScript redirect now yield a Location; the probe
+        reads enough of the body to see it.
+      - gzip/deflate bodies are decoded (bounded to 1 MB: a decompression bomb returns the raw bytes).
+      - Path-MTU probes are skipped when they would leave through another uplink (the result would describe the wrong
+        link and could clamp the Ethernet MTU).
+      - -Mode SelfTest now exits 1 when an assertion fails (it always exited 0 before).
+      UNIVERSALITY
+      - Environment detection records Home (does this lease look like the configured campus). The built-in NITJSR portal
+        IP / resolver / domain are used as fallbacks only on that campus (NRPT, /32 routes, resolver candidates,
+        portal check, gateway-liveness proxy). Other networks get discovered values only.
+      - Optional <store>\config.json (admin/SYSTEM-owned, not writable by others) sets PortalHost, PortalIp, PortalPort,
+        PortalUrl, CampusDns, CampusDomain, GwRegex, ProfileRegex; every value is validated and nothing can be blanked.
     4.6.0 (Comprehensive edge-case hardening, non-destructive static IP fallback, WFP precision, LF chunking):
       - CNAME wire parser: Get-DnsAAnswers correctly handles hybrid label+pointer compression (RFC 1035 Section 4.1.4).
       - Split-Words: deterministically slices unbreakable tokens > Width to guarantee zero console frame overflow.
@@ -101,7 +130,7 @@ try { Add-Type -AssemblyName System.Security -ErrorAction SilentlyContinue } cat
 # ==============================================================================
 # CONFIG (edit here, nowhere else)
 # ==============================================================================
-$script:Version = '5.0.0'
+$script:Version = '5.3.0'
 $script:Sys32   = Join-Path $env:SystemRoot 'System32'
 $script:SelfPath = if ($env:LANFIXER_SELF) { $env:LANFIXER_SELF } elseif ($PSCommandPath) { $PSCommandPath } else { '' }
 $script:IsDry   = [bool]$DryRun
@@ -284,6 +313,14 @@ function Get-State {
     foreach ($k in 'Snapshot','Env','Dns','Arp','Times','Misc') { if ($s[$k] -isnot [hashtable]) { $s[$k] = @{} } }
     return $s
 }
+# True only for a file that exists AND deserialises to the hashtable the engine expects.
+function Test-StateFile([string]$Path) {
+    try {
+        if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return $false }
+        $s = Import-Clixml -LiteralPath $Path -ErrorAction Stop
+        return ($s -is [hashtable])
+    } catch { return $false }
+}
 function Save-State {
     if (-not $script:StoreReady -or $script:IsDry) { return }
     # Never write without the lock: a long-idle menu window would otherwise overwrite newer watchdog state
@@ -293,7 +330,14 @@ function Save-State {
         $tmp = "$($script:StateFile).tmp"
         $bak = "$($script:StateFile).bak"
         $script:State | Export-Clixml -LiteralPath $tmp -Depth 8 -Force -ErrorAction Stop
-        if (Test-Path -LiteralPath $script:StateFile) {
+        # A truncated temp file (disk full, power loss mid-write) must never replace the live state.
+        if (-not (Test-StateFile $tmp)) {
+            try { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue } catch {}
+            Write-Log 'WARN' 'State save skipped: the new state file failed verification; the previous good copy was kept.'
+            return
+        }
+        # Only a live file that still parses may become the backup, so damage can never overwrite a good .bak.
+        if ((Test-Path -LiteralPath $script:StateFile) -and (Test-StateFile $script:StateFile)) {
             try { Copy-Item -LiteralPath $script:StateFile -Destination $bak -Force -ErrorAction SilentlyContinue } catch {}
         }
         Move-Item -LiteralPath $tmp -Destination $script:StateFile -Force -ErrorAction Stop
@@ -363,6 +407,16 @@ function Repair-StoreChildren([string]$Dir) {
             [void](Invoke-Native $icacls @($f.FullName, '/reset', '/T', '/C', '/Q'))
         }
     }
+    $cfgJson = Join-Path $Dir 'config.json'
+    if (Test-Path -LiteralPath $cfgJson) {
+        try {
+            $co = (Get-Acl -LiteralPath $cfgJson).GetOwner([System.Security.Principal.SecurityIdentifier]).Value
+            if (@('S-1-5-18', 'S-1-5-32-544') -notcontains $co -and ($trustedOwners -contains $co)) {
+                [void](Invoke-Native $icacls @($cfgJson, '/setowner', '*S-1-5-32-544', '/C', '/Q'))
+                [void](Invoke-Native $icacls @($cfgJson, '/reset', '/C', '/Q'))
+            }
+        } catch {}
+    }
     if ((Test-Path -LiteralPath $script:VaultFile) -and -not (Test-VaultAcl $script:VaultFile)) {
         if (Protect-VaultFile $script:VaultFile) { Write-Log 'WARN' 'The vault file had loose permissions; they were tightened to Administrators/SYSTEM only.' }
     }
@@ -377,6 +431,112 @@ function Get-FileSha256([string]$Path) {
     } catch {
         try { return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToUpperInvariant() } catch { return $null }
     }
+}
+# ---- optional per-institution override: <store>\config.json -------------------------------------
+# Pure validator (unit-tested): yields ONLY well-formed values, so a typo can never blank a setting (an empty
+# CampusDomain would make the environment scorer treat every network as campus).
+function ConvertTo-CfgOverride($Raw) {
+    $out = @{}
+    if ($null -eq $Raw) { return $out }
+    $hostRx = '^(?=.{1,253}$)([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$'
+    foreach ($p in @($Raw.PSObject.Properties)) {
+        $k = [string]$p.Name
+        $v = $p.Value
+        if ($k -eq 'PortalIp' -or $k -eq 'CampusDns') {
+            $a = $null
+            if ($v -is [string] -and $v -match '^\d{1,3}(\.\d{1,3}){3}$' -and [System.Net.IPAddress]::TryParse($v, [ref]$a) -and $a.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork) {
+                if ($v -notmatch '^(0\.|127\.|169\.254\.|22\d\.|23\d\.|24\d\.|25\d\.)') { $out[$k] = $v }
+            }
+        }
+        elseif ($k -eq 'PortalPort') {
+            $n = 0
+            if ($null -ne $v -and [int]::TryParse(([string]$v), [ref]$n) -and $n -ge 1 -and $n -le 65535) { $out[$k] = $n }
+        }
+        elseif ($k -eq 'PortalHost' -or $k -eq 'CampusDomain') {
+            if ($v -is [string] -and $v.Trim().TrimEnd('.') -match $hostRx) { $out[$k] = $v.Trim().TrimEnd('.').ToLowerInvariant() }
+        }
+        elseif ($k -eq 'PortalUrl') {
+            try {
+                $u = [uri][string]$v
+                if ($u.IsAbsoluteUri -and $u.Scheme -eq 'https' -and $u.Host -and -not $u.UserInfo) { $out[$k] = [string]$v }
+            } catch {}
+        }
+        elseif ($k -eq 'GwRegex' -or $k -eq 'ProfileRegex') {
+            if ($v -is [string] -and $v.Length -gt 0 -and $v.Length -le 200) {
+                try { [void][regex]::new($v); $out[$k] = $v } catch {}
+            }
+        }
+    }
+    return $out
+}
+# The file may only steer the tool when nobody but SYSTEM / Administrators owns or can write it.
+function Test-ConfigFileTrusted([string]$Path) {
+    try {
+        $acl = Get-Acl -LiteralPath $Path
+        $owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
+        if (@('S-1-5-18', 'S-1-5-32-544') -notcontains $owner) { return $false }
+        $writeMask = 0x116 -bor 0x10000 -bor 0x40000 -bor 0x80000
+        foreach ($r in @($acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))) {
+            if ([string]$r.AccessControlType -ne 'Allow') { continue }
+            if (@('S-1-5-18', 'S-1-5-32-544') -contains [string]$r.IdentityReference.Value) { continue }
+            if (([int]$r.FileSystemRights -band $writeMask) -ne 0) { return $false }
+        }
+        return $true
+    } catch { return $false }
+}
+function Import-UserConfig {
+    try {
+        $path = Join-Path $script:StoreDir 'config.json'
+        if (-not (Test-Path -LiteralPath $path)) { return }
+        $fi = Get-Item -LiteralPath $path -Force
+        if ($fi.Length -gt 65536 -or ($fi.Attributes -band [IO.FileAttributes]::ReparsePoint)) { Write-Log 'WARN' 'config.json ignored (too large or a link).'; return }
+        if (-not (Test-ConfigFileTrusted $path)) { Write-Log 'WARN' 'config.json ignored: it must be owned by Administrators or SYSTEM and not writable by other accounts.'; return }
+        $raw = [System.IO.File]::ReadAllText($path)
+        $ov = ConvertTo-CfgOverride ($raw | ConvertFrom-Json -ErrorAction Stop)
+        $names = New-Object System.Collections.ArrayList
+        foreach ($k in @($ov.Keys)) { $script:Cfg[$k] = $ov[$k]; [void]$names.Add($k) }
+        if ($names.Count -gt 0) { Write-Log 'INFO' ('config.json applied: ' + (($names | Sort-Object) -join ', ')) }
+    } catch { Write-Log 'WARN' ('config.json ignored: ' + $_.Exception.Message) }
+}
+function Get-ActivePortalUrl {
+    $discUrl = ([string]$script:State.Misc['DiscoveredPortalUrl']).Trim()
+    if ($discUrl) {
+        $safe = Get-SafePortalUrl $discUrl
+        if ($safe) {
+            try {
+                $u = [uri]$safe
+                if ($u.Host -and $u.Host.ToLowerInvariant() -ne ([string]$script:Cfg.PortalHost).ToLowerInvariant()) {
+                    return $safe
+                }
+            } catch {}
+        }
+    }
+    return [string]$script:Cfg.PortalUrl
+}
+function Get-ActivePortalEndpoint {
+    $discIp = ([string]$script:State.Misc['DiscoveredPortalIp']).Trim()
+    $discUrl = Get-ActivePortalUrl
+    try {
+        $u = [uri]$discUrl
+        if ($u.Host) {
+            $port = if ($u.Port -gt 0) { [int]$u.Port } else { [int]$script:Cfg.PortalPort }
+            $ip = if ($discIp -and (Test-AllowedPortalIp $discIp)) { $discIp } else { [string]$script:Cfg.PortalIp }
+            return @{ Host = [string]$u.Host; Ip = $ip; Port = $port; Url = $discUrl }
+        }
+    } catch {}
+    return @{ Host = [string]$script:Cfg.PortalHost; Ip = [string]$script:Cfg.PortalIp; Port = [int]$script:Cfg.PortalPort; Url = [string]$script:Cfg.PortalUrl }
+}
+function Get-ActiveCampusDns($Ad = $null) {
+    if ($Ad) {
+        $d = @(Get-DhcpDnsServers ([string]$Ad.InterfaceGuid))
+        if ($d.Count -gt 0) { return [string]$d[0] }
+    } else {
+        foreach ($a in @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })) {
+            $d = @(Get-DhcpDnsServers ([string]$a.InterfaceGuid))
+            if ($d.Count -gt 0) { return [string]$d[0] }
+        }
+    }
+    return [string]$script:Cfg.CampusDns
 }
 function Initialize-Store {
     $dir = $script:StoreDir
@@ -464,10 +624,24 @@ function Enter-Lock([int]$TimeoutMs = 1000) {
         if ($got) {
             $script:LockDepth = 1
             $script:HasMutex = $true
-            $memLearned = if ($script:State -is [hashtable] -and $script:State.Misc -is [hashtable]) { $script:State.Misc['LearnedDhcp'] } else { $null }
+            $memMisc = @{}
+            if ($script:State -is [hashtable] -and $script:State.Misc -is [hashtable]) {
+                foreach ($mk in @('LearnedDhcp','DiscoveredDomain','DiscoveredPortalUrl','DiscoveredPortalIp','DiscoveryTime','InjectedHostRoutes')) {
+                    if ($script:State.Misc.ContainsKey($mk)) { $memMisc[$mk] = $script:State.Misc[$mk] }
+                }
+            }
             $memEnv = if ($script:State -is [hashtable] -and $script:State.Env -is [hashtable]) { $script:State.Env.Clone() } else { @{} }
             $script:State = Get-State
-            if ($memLearned -and -not $script:State.Misc['LearnedDhcp']) { $script:State.Misc['LearnedDhcp'] = $memLearned }
+            if ($memMisc['LearnedDhcp'] -and -not $script:State.Misc['LearnedDhcp']) { $script:State.Misc['LearnedDhcp'] = $memMisc['LearnedDhcp'] }
+            if ($memMisc['DiscoveryTime'] -and ([string]$memMisc['DiscoveryTime'] -ge [string]$script:State.Misc['DiscoveryTime'])) {
+                foreach ($mk in @('DiscoveredDomain','DiscoveredPortalUrl','DiscoveredPortalIp','DiscoveryTime')) {
+                    if ($memMisc.ContainsKey($mk)) { $script:State.Misc[$mk] = $memMisc[$mk] }
+                }
+            }
+            if ($memMisc['InjectedHostRoutes']) {
+                $curR = @($script:State.Misc['InjectedHostRoutes'] | Where-Object { $_ })
+                $script:State.Misc['InjectedHostRoutes'] = @($curR + @($memMisc['InjectedHostRoutes']) | Where-Object { $_ } | Select-Object -Unique)
+            }
             foreach ($ek in $memEnv.Keys) {
                 if (-not $script:State.Env.ContainsKey($ek)) { $script:State.Env[$ek] = $memEnv[$ek] }
                 elseif ($memEnv[$ek] -is [hashtable] -and $script:State.Env[$ek] -is [hashtable] -and $memEnv[$ek].Time -and ([string]$memEnv[$ek].Time -gt [string]$script:State.Env[$ek].Time)) {
@@ -660,6 +834,24 @@ function Resolve-HostBounded([string]$Name, [int]$TimeoutMs = 2500, [string]$Sou
     } catch {}
     return $null
 }
+# Pure (unit-tested): the absolute http(s) URL a captive page redirects to with <meta refresh> or JavaScript, else ''.
+function Get-RedirectFromBody([string]$Html) {
+    if (-not $Html) { return '' }
+    $h = $Html
+    if ($h.Length -gt 4096) { $h = $h.Substring(0, 4096) }
+    $patterns = @(
+        '(?is)<meta\b[^>]*http-equiv\s*=\s*["'']?refresh["'']?[^>]*content\s*=\s*["''][^"'']*?url\s*=\s*["'']?([^"''>\s]+)',
+        '(?is)(?:window\.|self\.|top\.|document\.)?location(?:\.href|\.replace)?\s*(?:=|\()\s*["''](https?://[^"''\s<>]+)["'']'
+    )
+    foreach ($rx in $patterns) {
+        $m = [regex]::Match($h, $rx)
+        if ($m.Success) {
+            $u = [System.Net.WebUtility]::HtmlDecode($m.Groups[1].Value)
+            if ($u -match '^https?://\S+$') { return $u }
+        }
+    }
+    return ''
+}
 function ConvertFrom-HttpResponse([string]$Raw) {
     $r = @{ Code = 0; Body = ''; Location = '' }
     if (-not $Raw) { return $r }
@@ -669,14 +861,17 @@ function ConvertFrom-HttpResponse([string]$Raw) {
     $head = $Raw
     $cut = $Raw.IndexOf("`r`n`r`n"); $skip = 4
     if ($cut -lt 0) { $cut = $Raw.IndexOf("`n`n"); $skip = 2 }
+    $full = ''
     if ($cut -ge 0) {
         $head = $Raw.Substring(0, $cut)
         $body = $Raw.Substring($cut + $skip)
+        $full = $body
         if ($body.Length -gt 128) { $body = $body.Substring(0, 128) }
         $r.Body = $body
     }
     $lm = [regex]::Match($head, '(?im)^Location:[ \t]*(\S+)')
     if ($lm.Success) { $r.Location = $lm.Groups[1].Value }
+    elseif ($r.Code -eq 200 -and $full) { $r.Location = Get-RedirectFromBody $full }
     return $r
 }
 # Plain HTTP/1.0 over a raw socket: hard timeouts everywhere, no proxy, no redirects followed, and the
@@ -712,7 +907,8 @@ function Invoke-HttpProbe([string]$HostName, [string]$Path, [int]$TimeoutMs = 25
             $he = $txt.IndexOf("`r`n`r`n")
             if ($he -ge 0) {
                 # Headers are complete. Anything but a 200 is already decisive; a 200 needs a little body to compare.
-                if (($txt -notmatch '^HTTP/\d\.\d\s+200') -or (($total - $he - 4) -ge 40)) { break }
+                $bodyLen = $total - $he - 4
+                if (($txt -notmatch '^HTTP/\d\.\d\s+200') -or (($bodyLen -ge 40) -and (($txt -match 'Microsoft Connect Test') -or ($bodyLen -ge 700)))) { break }
             }
         }
         if ($total -eq 0) { $r.Error = 'NoResponse'; return $r }
@@ -782,6 +978,14 @@ function Set-InterfaceMetric($If, [int]$Metric, [string]$Why) {
     return (Invoke-Change $Why { Set-NetIPInterface -InterfaceIndex $If.ifIndex -AddressFamily $af -InterfaceMetric $Metric -AutomaticMetric Disabled -ErrorAction Stop })
 }
 
+# Remember every host route we create, so cleanup can remove addresses the configuration does not name.
+function Add-TrackedHostRoute([string]$Ip) {
+    try {
+        if (-not $Ip -or $script:State -isnot [hashtable] -or $script:State.Misc -isnot [hashtable]) { return }
+        $cur = @($script:State.Misc['InjectedHostRoutes'] | Where-Object { $_ })
+        if ($cur -notcontains $Ip) { $script:State.Misc['InjectedHostRoutes'] = @($cur + $Ip) }
+    } catch {}
+}
 function Remove-CampusHostRoutes([int]$InterfaceIndex = 0) {
     if ($script:IsDry) { return }
     foreach ($hip in @($script:Cfg.PortalIp, $script:Cfg.CampusDns) | Where-Object { $_ }) {
@@ -793,6 +997,22 @@ function Remove-CampusHostRoutes([int]$InterfaceIndex = 0) {
             Remove-NetRoute -DestinationPrefix "$hip/32" -PolicyStore PersistentStore -Confirm:$false -ErrorAction SilentlyContinue
         }
     }
+    # Ensure-CampusPortalPath also routes the discovered portal, the redirect target and each adapter's DHCP resolvers.
+    # Those are removed here too, but only routes that carry OUR metric (5), so a route someone else owns is never touched.
+    $extra = @()
+    try {
+        if ($script:State -is [hashtable] -and $script:State.Misc -is [hashtable]) {
+            $extra += [string]$script:State.Misc['DiscoveredPortalIp']
+            $extra += @($script:State.Misc['InjectedHostRoutes'] | ForEach-Object { [string]$_ })
+        }
+        foreach ($ea in @(Get-EthernetAdapters)) { $extra += @(Get-DhcpDnsServers ([string]$ea.InterfaceGuid) | Where-Object { Test-PrivateIPv4 $_ }) }
+    } catch {}
+    foreach ($hip in @($extra | Where-Object { $_ } | Select-Object -Unique)) {
+        foreach ($rt in @(Get-NetRoute -DestinationPrefix "$hip/32" -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Where-Object { [int]$_.RouteMetric -eq 5 -and ($InterfaceIndex -le 0 -or [int]$_.InterfaceIndex -eq $InterfaceIndex) })) {
+            Remove-NetRoute -InterfaceIndex ([int]$rt.InterfaceIndex) -DestinationPrefix "$hip/32" -NextHop ([string]$rt.NextHop) -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue
+        }
+    }
+    try { if ($InterfaceIndex -le 0 -and $script:State -is [hashtable] -and $script:State.Misc -is [hashtable] -and $script:State.Misc.ContainsKey('InjectedHostRoutes')) { $script:State.Misc.Remove('InjectedHostRoutes') } } catch {}
 }
 function Restore-InterfaceMetrics([string]$Why) {
     Remove-CampusHostRoutes
@@ -972,6 +1192,34 @@ function ConvertFrom-ChunkedBytes([byte[]]$Data) {
     return , ($out.ToArray())
 }
 
+# Bounded gzip / deflate (zlib or raw) decoder. A decompression bomb (> MaxBytes) or undecodable data returns the raw bytes.
+function Expand-HttpBody([byte[]]$Bytes, [string]$Encoding, [int]$MaxBytes = 1048576) {
+    $enc = ([string]$Encoding).Trim().ToLowerInvariant()
+    if ($null -eq $Bytes -or $Bytes.Length -lt 2) { return , $Bytes }
+    $isGz = ($Bytes[0] -eq 0x1F -and $Bytes[1] -eq 0x8B)
+    if ($enc -notmatch 'gzip|deflate' -and -not $isGz) { return , $Bytes }
+    $in = $null; $zs = $null; $out = $null
+    try {
+        $start = 0
+        if (-not $isGz -and (($Bytes[0] -band 0x0F) -eq 8) -and ((([int]$Bytes[0] * 256) + [int]$Bytes[1]) % 31) -eq 0) { $start = 2 }
+        $in = New-Object System.IO.MemoryStream(, $Bytes)
+        $in.Position = $start
+        if ($isGz) { $zs = New-Object System.IO.Compression.GZipStream($in, [System.IO.Compression.CompressionMode]::Decompress) }
+        else { $zs = New-Object System.IO.Compression.DeflateStream($in, [System.IO.Compression.CompressionMode]::Decompress) }
+        $out = New-Object System.IO.MemoryStream
+        $buf = New-Object byte[] 8192
+        $total = 0
+        while ($true) {
+            $n = $zs.Read($buf, 0, $buf.Length)
+            if ($n -le 0) { break }
+            $total += $n
+            if ($total -gt $MaxBytes) { return , $Bytes }
+            $out.Write($buf, 0, $n)
+        }
+        return , ($out.ToArray())
+    } catch { return , $Bytes }
+    finally { foreach ($o in @($zs, $out, $in)) { if ($o) { try { $o.Dispose() } catch {} } } }
+}
 function ConvertFrom-HttpBytes([byte[]]$Raw) {
     $r = @{ Code = 0; Headers = @{}; Cookies = @(); Body = ''; Location = '' }
     if ($null -eq $Raw -or $Raw.Length -lt 12) { return $r }
@@ -1006,6 +1254,7 @@ function ConvertFrom-HttpBytes([byte[]]$Raw) {
     $bodyBytes = New-Object byte[] $len
     if ($len -gt 0) { [Array]::Copy($Raw, $bs, $bodyBytes, 0, $len) }
     if (([string]$r.Headers['transfer-encoding']) -match 'chunked') { $bodyBytes = ConvertFrom-ChunkedBytes $bodyBytes }
+    $bodyBytes = Expand-HttpBody $bodyBytes ([string]$r.Headers['content-encoding'])
     $r.Body = [System.Text.Encoding]::UTF8.GetString($bodyBytes)
     return $r
 }
@@ -1019,7 +1268,7 @@ function Invoke-TlsHttp {
         $hostName = [string]$Uri.Host
         $ip = ''
         $tmp = $null
-        if ([System.Net.IPAddress]::TryParse($hostName, [ref]$tmp)) { $ip = $hostName } else { $ip = Resolve-HostBounded $hostName 2500 }
+        if ([System.Net.IPAddress]::TryParse($hostName, [ref]$tmp)) { $ip = $hostName } else { $ip = Resolve-HostBounded $hostName 2500 $SourceIp }
         if (-not $ip) { $r.Error = 'DnsFail'; return $r }
         # Verify IP is allowed campus IP (private RFC1918, CGNAT, configured portal IP, or local gateway)
         if (-not (Test-AllowedPortalIp $ip)) { $r.Error = 'NotPrivate'; return $r }
@@ -1073,13 +1322,22 @@ function Invoke-TlsHttp {
                 $curBytes = $ms.ToArray()
                 for ($ci = 0; $ci -lt ($curBytes.Length - 3); $ci++) {
                     if ($curBytes[$ci] -eq 13 -and $curBytes[$ci+1] -eq 10 -and $curBytes[$ci+2] -eq 13 -and $curBytes[$ci+3] -eq 10) {
-                        $headerEndIdx = $ci + 4
-                        $hStr = [System.Text.Encoding]::ASCII.GetString($curBytes, 0, $ci)
-                        $mCl = [regex]::Match($hStr, '(?i)Content-Length:\s*(\d+)')
-                        if ($mCl.Success) { $contentLength = [int]$mCl.Groups[1].Value }
-                        if ($hStr -match '(?i)Transfer-Encoding:\s*chunked') { $isChunked = $true }
-                        break
+                        $headerEndIdx = $ci + 4; break
                     }
+                }
+                if ($headerEndIdx -lt 0) {
+                    for ($ci = 0; $ci -lt ($curBytes.Length - 1); $ci++) {
+                        if ($curBytes[$ci] -eq 10 -and $curBytes[$ci+1] -eq 10) {
+                            $headerEndIdx = $ci + 2; break
+                        }
+                    }
+                }
+                if ($headerEndIdx -gt 0) {
+                    $hStr = [System.Text.Encoding]::ASCII.GetString($curBytes, 0, $headerEndIdx)
+                    $mCl = [regex]::Match($hStr, '(?i)Content-Length:\s*(\d+)')
+                    if ($mCl.Success) { $contentLength = [int]$mCl.Groups[1].Value }
+                    elseif ($hStr -match '^HTTP/\d\.\d\s+(30[12378]|204)\b') { $contentLength = 0 }
+                    if ($hStr -match '(?i)Transfer-Encoding:\s*chunked') { $isChunked = $true }
                 }
             }
             if ($contentLength -ge 0 -and $headerEndIdx -ge 0) {
@@ -1138,7 +1396,7 @@ function ConvertFrom-LoginForm([string]$Html, [uri]$PageUri) {
         if (-not $pass) { continue }
         foreach ($c in $candidates) {
             $comb = ($c.Name + ' ' + $c.Id)
-            if ($comb -match '(?i)user|login|email|auth|account|id') { $user = $c.Name; break }
+            if ($comb -match '(?i)user|login|email|auth|account|id|roll|reg|uid|uname|member|netid|student') { $user = $c.Name; break }
         }
         if (-not $user -and $candidates.Count -gt 0) { $user = $candidates[0].Name }
         foreach ($bt in [regex]::Matches($fm.Groups[2].Value, '(?is)<button\b[^>]*>')) {
@@ -1168,7 +1426,7 @@ function ConvertFrom-LoginForm([string]$Html, [uri]$PageUri) {
             elseif ($type -eq '' -or $type -eq 'text' -or $type -eq 'email' -or $type -eq 'tel') { $candidates += @{ Name = $name; Id = $id } }
         }
         if ($pass) {
-            foreach ($c in $candidates) { if (($c.Name + ' ' + $c.Id) -match '(?i)user|login|email|auth|account|id') { $user = $c.Name; break } }
+            foreach ($c in $candidates) { if (($c.Name + ' ' + $c.Id) -match '(?i)user|login|email|auth|account|id|roll|reg|uid|uname|member|netid|student') { $user = $c.Name; break } }
             if (-not $user -and $candidates.Count -gt 0) { $user = $candidates[0].Name }
             if (-not $user) { $user = 'auth_user' }
             $target = $PageUri
@@ -1222,7 +1480,8 @@ function ConvertFrom-VaultPlain([string]$Plain) {
 function Ensure-CampusPortalPath([uri]$RedirectUri = $null) {
     if (-not $script:IsAdmin -or $script:IsDry) { return }
     $discIp = [string]$script:State.Misc['DiscoveredPortalIp']
-    $baseTargets = @($script:Cfg.PortalIp, $script:Cfg.CampusDns)
+    $cfgTargets = @($script:Cfg.PortalIp, $script:Cfg.CampusDns)   # configured campus only (Get-HomeCampusVerdict)
+    $baseTargets = @()
     if ($discIp -and (Test-AllowedPortalIp $discIp)) { $baseTargets += $discIp }
     if ($RedirectUri -and $RedirectUri.Host) {
         $hostIp = $null
@@ -1237,13 +1496,15 @@ function Ensure-CampusPortalPath([uri]$RedirectUri = $null) {
         $gw4 = @(Get-GatewaysV4 $a) | Select-Object -First 1
         if (-not $gw4) { continue }
         $dhcpDns = @(Get-DhcpDnsServers ([string]$a.InterfaceGuid) | Where-Object { Test-PrivateIPv4 $_ })
-        $targets = @($baseTargets + $dhcpDns | Where-Object { $_ } | Select-Object -Unique)
+        $cfgPart = if (($null -eq $e.Home) -or [bool]$e.Home) { @($cfgTargets) } else { @() }
+        $targets = @($cfgPart + $baseTargets + $dhcpDns | Where-Object { $_ } | Select-Object -Unique)
         foreach ($hip in $targets) {
             $have = @(Get-NetRoute -InterfaceIndex $a.ifIndex -DestinationPrefix "$hip/32" -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Select-Object -First 1)
             if ($have -and ([string]$have[0].NextHop -eq [string]$gw4)) { continue }
             # A route left pointing at a previous gateway (VRRP/HSRP failover) is worse than no route at all.
             if ($have) { Remove-NetRoute -InterfaceIndex $a.ifIndex -DestinationPrefix "$hip/32" -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue }
             New-NetRoute -InterfaceIndex $a.ifIndex -DestinationPrefix "$hip/32" -NextHop $gw4 -RouteMetric 5 -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Out-Null
+            Add-TrackedHostRoute ([string]$hip)
         }
     }
 }
@@ -1252,7 +1513,7 @@ function Ensure-CampusPortalPath([uri]$RedirectUri = $null) {
 function Get-PortalCertInfo([uri]$TargetUri = $null) {
     $u = $TargetUri
     if (-not $u) {
-        try { $u = [uri][string]$script:Cfg.PortalUrl } catch { return @{ Ok = $false; Error = 'BadPortalUrl' } }
+        try { $u = [uri](Get-ActivePortalUrl) } catch { return @{ Ok = $false; Error = 'BadPortalUrl' } }
     }
     Ensure-CampusPortalPath $u
     $cap = @{ AcceptAny = $true; Sha256 = ''; Errors = ''; Subject = ''; Issuer = ''; NotAfter = '' }
@@ -2375,7 +2636,22 @@ function Get-InternetState {
         }
     }
     $loc = ''
-    if ($state -eq 'Captive') { if ($p1.Location) { $loc = [string]$p1.Location } elseif ($p2.Location) { $loc = [string]$p2.Location } }
+    if ($state -eq 'Captive') {
+        if ($p1.Location) { $loc = [string]$p1.Location } elseif ($p2.Location) { $loc = [string]$p2.Location }
+        if ($loc -and -not $script:IsDry -and $script:State -is [hashtable] -and $script:State.Misc -is [hashtable]) {
+            try {
+                $lu = [uri]$loc
+                if ($lu.IsAbsoluteUri -and ($lu.Scheme -eq 'http' -or $lu.Scheme -eq 'https')) {
+                    $script:State.Misc['DiscoveredPortalUrl'] = [string]$lu.AbsoluteUri
+                    $script:State.Misc['DiscoveryTime'] = (Get-Date).ToString('o')
+                    $tmpIp = $null
+                    if ([System.Net.IPAddress]::TryParse($lu.Host, [ref]$tmpIp) -and (Test-AllowedPortalIp $lu.Host)) {
+                        $script:State.Misc['DiscoveredPortalIp'] = $lu.Host
+                    }
+                }
+            } catch {}
+        }
+    }
     $res = @{ State = $state; Location = $loc; Via = $via }
     $script:ConnCache = @{ Time = (Get-Date); Result = $res; Key = $ckey }
     return $res
@@ -2389,12 +2665,16 @@ function Test-GatewayAlive($Ad, [string]$Gw) {
     if ($null -ne $rtt) { return @{ Alive = $true; Rtt = $rtt; Via = 'icmp' } }
     $ex = Get-NetNeighbor -InterfaceIndex $Ad.ifIndex -IPAddress $Gw -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($ex -and [string]$ex.State -eq 'Permanent' -and $ex.LinkLayerAddress -and $ex.LinkLayerAddress -notmatch '^(00-)+00$') {
-        if ((Test-TcpPort $Gw 80 400) -or (Test-TcpPort $Gw 443 400) -or (Test-TcpPort $script:Cfg.PortalIp $script:Cfg.PortalPort 500) -or ($null -ne (Test-Ping $script:Cfg.CampusDns 500))) {
+        $homeAd = $true
+        try { $eh = Get-AdapterEnvironment $Ad -UseCache; if ($null -ne $eh.Home) { $homeAd = [bool]$eh.Home } } catch {}
+        $cfgProxy = $false
+        if ($homeAd) { $cfgProxy = [bool]((Test-TcpPort $script:Cfg.PortalIp $script:Cfg.PortalPort 500) -or ($null -ne (Test-Ping $script:Cfg.CampusDns 500))) }
+        if ((Test-TcpPort $Gw 80 400) -or (Test-TcpPort $Gw 443 400) -or (Test-TcpPort $Gw 53 400) -or $cfgProxy) {
             return @{ Alive = $true; Rtt = $null; Via = 'arp' }
         }
         return @{ Alive = $false; Rtt = $null; Via = '' }
     }
-    if ($script:IsAdmin -and $ex -and [string]$ex.State -ne 'Permanent') {
+    if ($script:IsAdmin -and -not $script:IsDry -and $ex -and [string]$ex.State -ne 'Permanent') {
         Remove-NetNeighbor -InterfaceIndex $Ad.ifIndex -IPAddress $Gw -Confirm:$false -ErrorAction SilentlyContinue
     }
     [void](Test-Ping $Gw 700)
@@ -2472,9 +2752,16 @@ function Get-AdapterEnvironment {
     $cleanSfx = if ($sfx) { $sfx.Trim().Trim('.').ToLower() } else { '' }
     if ($cleanSfx -and $cleanSfx -match [regex]::Escape($cfg.CampusDomain)) {
         $score += 2; [void]$ev.Add("DNS suffix '$cleanSfx'")
+        if (-not $script:IsDry) {
+            $script:State.Misc.Remove('DiscoveredDomain')
+            $script:State.Misc['DiscoveryTime'] = (Get-Date).ToString('o')
+        }
     } elseif ($cleanSfx -and $cleanSfx -match '\.' -and $cleanSfx -notmatch '^(local|lan|home|arpa|localdomain|mshome\.net)$') {
         $score += 1; [void]$ev.Add("enterprise DNS suffix '$cleanSfx'")
-        if (-not $script:IsDry) { $script:State.Misc['DiscoveredDomain'] = $cleanSfx }
+        if (-not $script:IsDry) {
+            $script:State.Misc['DiscoveredDomain'] = $cleanSfx
+            $script:State.Misc['DiscoveryTime'] = (Get-Date).ToString('o')
+        }
     }
     try {
         $np = Get-NetConnectionProfile -InterfaceIndex $Ad.ifIndex -ErrorAction SilentlyContinue
@@ -2485,14 +2772,17 @@ function Get-AdapterEnvironment {
     if ($reg -and $reg.DhcpServer) { $dhcpSrv = [string]$reg.DhcpServer }
     $learnedSrv = [string]$script:State.Misc['LearnedDhcp']
     $learnedBonus = 0
+    $portalHit = $false
     if ($dhcpSrv -and $learnedSrv -and ($dhcpSrv -eq $learnedSrv)) { $learnedBonus = 1; $score += 1; [void]$ev.Add("DHCP server $dhcpSrv matches the campus server learned earlier") }
     elseif ($dhcpSrv -and $gws.Count -gt 0 -and ($gws -notcontains $dhcpSrv) -and (Test-LearnableDhcpServer $dhcpSrv)) {
         $score += 1; [void]$ev.Add("dedicated DHCP server $dhcpSrv")
     }
     if ($score -lt $cfg.CampusThreshold -and $ip) {
-        if (Test-TcpPort $cfg.PortalIp $cfg.PortalPort 700) { $score += 2; [void]$ev.Add("portal $($cfg.PortalIp):$($cfg.PortalPort) open") }
-        if ($null -ne (Test-Ping $cfg.PortalIp 700)) { $score += 1; [void]$ev.Add("portal firewall answers ping") }
-        if ($null -ne (Test-Ping $cfg.CampusDns 700)) { $score += 1; [void]$ev.Add("campus DNS answers ping") }
+        if ($ip -notlike '192.168.*' -or ($cfg.PortalIp -and $cfg.PortalIp -like '192.168.*')) {
+            if (Test-TcpPort $cfg.PortalIp $cfg.PortalPort 700) { $score += 2; $portalHit = $true; [void]$ev.Add("portal $($cfg.PortalIp):$($cfg.PortalPort) open") }
+            if ($null -ne (Test-Ping $cfg.PortalIp 700)) { $score += 1; $portalHit = $true; [void]$ev.Add("portal firewall answers ping") }
+            if ($null -ne (Test-Ping $cfg.CampusDns 700)) { $score += 1; [void]$ev.Add("campus DNS answers ping") }
+        }
         if ($score -lt $cfg.CampusThreshold) {
             $probeEnv = Get-InternetState -SourceIp $ip
             if ($probeEnv.State -eq 'Captive') {
@@ -2502,16 +2792,15 @@ function Get-AdapterEnvironment {
                         $lu = [uri][string]$probeEnv.Location
                         if ($lu.Host) {
                             $script:State.Misc['DiscoveredPortalUrl'] = [string]$probeEnv.Location
+                            $script:State.Misc['DiscoveryTime'] = (Get-Date).ToString('o')
                             $tmpIp = $null
                             if ([System.Net.IPAddress]::TryParse($lu.Host, [ref]$tmpIp)) {
-                                $script:State.Misc['DiscoveredPortalIp'] = $lu.Host
+                                if (Test-AllowedPortalIp $lu.Host) { $script:State.Misc['DiscoveredPortalIp'] = $lu.Host }
                             } else {
-                                try {
-                                    $resolved = [System.Net.Dns]::GetHostAddresses($lu.Host) | Where-Object { $_.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork } | Select-Object -First 1
-                                    if ($resolved -and (Test-AllowedPortalIp $resolved.IPAddressToString)) {
-                                        $script:State.Misc['DiscoveredPortalIp'] = $resolved.IPAddressToString
-                                    }
-                                } catch {}
+                                $resIp = Resolve-HostBounded $lu.Host 1500 $ip
+                                if ($resIp -and (Test-AllowedPortalIp $resIp)) {
+                                    $script:State.Misc['DiscoveredPortalIp'] = $resIp
+                                }
                             }
                         }
                     } catch {}
@@ -2522,6 +2811,7 @@ function Get-AdapterEnvironment {
 
     $envName = 'Unknown'
     $sticky = $false
+    $homeVerdict = Get-HomeCampusVerdict $dhcpDns $cleanSfx $portalHit $script:State.Env[$guid]
     if ($score -ge $cfg.CampusThreshold) { $envName = 'Campus' }
     elseif ($ip -and $gws.Count -gt 0) { $envName = 'Other' }
     else {
@@ -2534,9 +2824,15 @@ function Get-AdapterEnvironment {
     if (-not $sticky -and ($envName -eq 'Campus' -or $envName -eq 'Other')) {
         $h = Get-SubTable 'Env' $guid
         $h.Env = $envName
+        $h.Home = $homeVerdict
         $h.Time = (Get-Date).ToString('o')
+        if (-not $script:IsDry -and ($envName -eq 'Other' -or $homeVerdict)) {
+            $script:State.Misc.Remove('DiscoveredPortalIp')
+            $script:State.Misc.Remove('DiscoveredPortalUrl')
+            if ($envName -eq 'Other') { $script:State.Misc.Remove('DiscoveredDomain') }
+        }
     }
-    $info = @{ Env = $envName; Score = $score; Evidence = @($ev); Sticky = $sticky; Ip = $ip; Gateways = $gws }
+    $info = @{ Env = $envName; Score = $score; Evidence = @($ev); Sticky = $sticky; Ip = $ip; Gateways = $gws; Home = $homeVerdict }
     $script:EnvCache[$guid] = @{ Time = (Get-Date); Info = $info }
     return $info
 }
@@ -2888,6 +3184,27 @@ function Shield-GatewayArp($Ctx, [string]$ConnState) {
     }
 }
 # Layer 3 Path MTU Clamping: Eliminates campus router blackhole drops on large TCP frames
+# Ping.Send cannot bind to an adapter: with a second uplink the echo may leave through Wi-Fi/hotspot and the measured
+# MTU would then be clamped onto the Ethernet adapter. Only measure when the route to the target really uses $Ad.
+function Test-RouteViaAdapter($Ad, [string]$Target) {
+    try {
+        $r = @(Find-NetRoute -RemoteIPAddress $Target -ErrorAction Stop | Select-Object -First 1)
+        if ($r.Count -eq 0 -or $null -eq $r[0].InterfaceIndex) { return $true }
+        return ([int]$r[0].InterfaceIndex -eq [int]$Ad.ifIndex)
+    } catch { return $true }
+}
+function Get-PathMtuForAdapter($Ad, [string]$Target = '9.9.9.9') {
+    foreach ($t in @($Target, '1.1.1.1') | Where-Object { $_ } | Select-Object -Unique) {
+        if ((Test-OtherUplinkActive) -and -not (Test-RouteViaAdapter $Ad $t)) {
+            Write-Log 'INFO' ("Path-MTU probe to {0} skipped on {1}: route uses another uplink." -f $t, $Ad.Name)
+            continue
+        }
+        if ($null -eq (Test-Ping $t 600)) { continue }
+        $res = Get-PathMtu $t
+        if ($null -ne $res) { return $res }
+    }
+    return $null
+}
 function Shield-PathMtu($Ctx, [string]$ConnState) {
     if (-not $script:Cfg.AutoClampMtu) { return }
     $ad = $Ctx.Ad
@@ -2896,7 +3213,7 @@ function Shield-PathMtu($Ctx, [string]$ConnState) {
         if ($snap.ContainsKey('Mtu')) {
             $orig = [int]$snap['Mtu']
             $ipif = Get-IPv4Interface $ad
-            if ($ipif -and [int]$ipif.NlMtu -ne $orig -and ($ConnState -ne 'Online' -or (Get-PathMtu '9.9.9.9') -ge $orig)) {
+            if ($ipif -and [int]$ipif.NlMtu -ne $orig -and ($ConnState -ne 'Online' -or (Get-PathMtuForAdapter $ad) -ge $orig)) {
                 [void](Invoke-Change "Non-campus network supports full frame size: restoring MTU to $orig on $($ad.Name)" {
                     Set-NetIPInterface -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -NlMtuBytes $orig -ErrorAction Stop
                 })
@@ -2908,7 +3225,7 @@ function Shield-PathMtu($Ctx, [string]$ConnState) {
     if ($script:IsDry) { Write-Log 'DRY' 'Would measure the path MTU and lower the adapter MTU only if a blackhole is confirmed twice.'; return }
     $ipif = Get-IPv4Interface $ad
     if (-not $ipif -or [int]$ipif.NlMtu -lt 1500) { return }
-    $pmtu = Get-PathMtu '9.9.9.9'
+    $pmtu = Get-PathMtuForAdapter $ad
     $d = Get-MtuDecision $pmtu ([int]$ipif.NlMtu) $script:State.Misc['MtuCandidate']
     if ($d.Action -eq 'candidate') { $script:State.Misc['MtuCandidate'] = $d.Value; Write-Log 'INFO' ("A path MTU of {0} was measured; it is applied only if the next measurement agrees." -f $d.Value) }
     elseif ($d.Action -eq 'clamp') {
@@ -3209,8 +3526,26 @@ function Get-OurNrptRules { return @(Get-DnsClientNrptRule -ErrorAction Silently
 function Remove-CampusNrpt {
     foreach ($r in (Get-OurNrptRules)) { [void](Invoke-Change "Removed campus-domain DNS rule" { Remove-DnsClientNrptRule -Name $r.Name -Force -ErrorAction Stop }) }
 }
-function Set-CampusNrpt([string[]]$Servers) {
-    $domains = @($script:Cfg.CampusDomain)
+# Pure (unit-tested): does this lease look like the campus the built-in Cfg values describe?
+# Positive evidence: the configured campus resolver in the lease, a DNS suffix under the configured domain, or the
+# configured portal answering. With no lease data at all the last known verdict (or "yes", the legacy behaviour) holds.
+# Anything else is a DIFFERENT network and must never be sent the configured portal IP / campus domain.
+function Get-HomeCampusVerdict([string[]]$DhcpDns, [string]$Suffix, [bool]$PortalHit, $Hist) {
+    $dns = @($DhcpDns | Where-Object { $_ })
+    $dom = ([string]$script:Cfg.CampusDomain).Trim().Trim('.').ToLowerInvariant()
+    $sfx = ([string]$Suffix).Trim().Trim('.').ToLowerInvariant()
+    if ($script:Cfg.CampusDns -and ($dns -contains [string]$script:Cfg.CampusDns)) { return $true }
+    if ($dom -and $sfx -and ($sfx -eq $dom -or $sfx.EndsWith('.' + $dom))) { return $true }
+    if ($PortalHit) { return $true }
+    if ($dns.Count -eq 0 -and -not $sfx) {
+        if ($Hist -is [hashtable] -and $Hist.ContainsKey('Home')) { return [bool]$Hist['Home'] }
+        return $true
+    }
+    return $false
+}
+function Set-CampusNrpt([string[]]$Servers, [bool]$HomeNet = $true) {
+    $domains = @()
+    if ($HomeNet) { $domains = @($script:Cfg.CampusDomain) }
     $discDom = [string]$script:State.Misc['DiscoveredDomain']
     if ($discDom -and $domains -notcontains $discDom) { $domains += $discDom }
     $wantNs = @()
@@ -3218,6 +3553,7 @@ function Set-CampusNrpt([string[]]$Servers) {
         $wantNs += ('.' + $dm)
         $wantNs += $dm
     }
+    if ($wantNs.Count -eq 0) { Remove-CampusNrpt; return }   # nothing to map (not the home campus, nothing discovered)
     $rules = @(Get-OurNrptRules)
     $allPresent = ($rules.Count -gt 0)
     $serversMatch = $true
@@ -3233,6 +3569,26 @@ function Set-CampusNrpt([string[]]$Servers) {
         Add-DnsClientNrptRule -Namespace $wantNs -NameServers $Servers -DisplayName 'LanFixer-Campus' -Comment 'Managed by Lan Fixer' -ErrorAction Stop
     })
 }
+# Pure decision (unit-tested) for a NON-campus adapter whose profile is Adaptive/DHCP.
+#   NoDns                                         -> Rescue     (network resolvers dead: substitute public ones)
+#   we already rescued and DHCP still not usable  -> KeepRescue (reverting now would just break DNS again)
+#   anything else                                 -> Restore    (leave DNS to the network)
+function Get-OtherDnsAction([string]$ConnState, [bool]$Managed, [string]$Phase, [bool]$DhcpUsable) {
+    if ($ConnState -eq 'NoDns') { return 'Rescue' }
+    if ($Managed -and $Phase -eq 'Public' -and -not $DhcpUsable) { return 'KeepRescue' }
+    return 'Restore'
+}
+# Do the network's own (DHCP-leased) resolvers answer right now? Probed from the adapter's own address so a second
+# uplink cannot answer for it. Empty list = no.
+function Test-DhcpDnsUsable([string]$Guid, [string]$SourceIp = '') {
+    $dhcp = @(Get-DhcpDnsServers $Guid)
+    if ($dhcp.Count -eq 0) { return $false }
+    try {
+        $m = Measure-ResolversFast $dhcp 600 53 $SourceIp
+        foreach ($s in $dhcp) { if ($null -ne $m[$s]) { return $true } }
+    } catch {}
+    return $false
+}
 function Shield-Dns($Ctx, [string]$ConnState) {
     $ad = $Ctx.Ad
     $guid = [string]$ad.InterfaceGuid
@@ -3241,6 +3597,12 @@ function Shield-Dns($Ctx, [string]$ConnState) {
     if ($Ctx.Env.Env -eq 'Other') {
         Remove-CampusNrpt
         if (($prof -eq 'Adaptive' -or $prof -eq 'DHCP') -and $ConnState -ne 'NoDns') {
+            if ($d.Managed -eq $true -and [string]$d.Phase -eq 'Public') {
+                if ((Get-OtherDnsAction $ConnState $true ([string]$d.Phase) (Test-DhcpDnsUsable $guid ([string](Get-ValidIPv4 $ad)))) -eq 'KeepRescue') {
+                    Write-Log 'INFO' 'Non-campus network: the network resolvers still do not answer, so the DNS rescue stays in place (released automatically once they work).'
+                    return
+                }
+            }
             Restore-AdapterDns $ad
             Write-Log 'INFO' 'Non-campus network: DNS is left to the network (any change made earlier is reverted).'
             return
@@ -3263,6 +3625,7 @@ function Shield-Dns($Ctx, [string]$ConnState) {
     }
     if ($Ctx.Env.Env -ne 'Campus') { Write-Log 'INFO' 'Environment unknown: DNS untouched.'; return }
     $campus = @(Get-DhcpDnsServers $guid)
+    $homeNet = ($null -eq $Ctx.Env.Home) -or [bool]$Ctx.Env.Home
     if ($campus.Count -eq 0) { $campus = @($script:Cfg.CampusDns) }
     $phase = 'Auto'
     $order = @()
@@ -3278,7 +3641,7 @@ function Shield-Dns($Ctx, [string]$ConnState) {
             } else {
                 $cands = @($campus)
                 foreach ($gwIp in @(Get-GatewaysV4 $ad)) { if ($gwIp -and $cands -notcontains $gwIp) { $cands += $gwIp } }
-                if ($cands -notcontains $script:Cfg.PortalIp) { $cands += $script:Cfg.PortalIp }
+                if ($homeNet -and $cands -notcontains $script:Cfg.PortalIp) { $cands += $script:Cfg.PortalIp }
                 $scores = Measure-ResolversFast $cands 400
                 $live = @($cands | Where-Object { $null -ne $scores[$_] } | Sort-Object { $scores[$_] })
                 $dead = @($cands | Where-Object { $null -eq $scores[$_] })
@@ -3296,8 +3659,9 @@ function Shield-Dns($Ctx, [string]$ConnState) {
             if (-not $script:IsDry -and $ConnState -ne 'Online') { Clear-DnsClientCache -ErrorAction SilentlyContinue }
             Write-Log 'INFO' "DNS already correct on $($ad.Name) (profile $prof, phase $phase)."
         }
-        $nrptServers = @($campus + $script:Cfg.PortalIp | Select-Object -Unique)
-        Set-CampusNrpt $nrptServers
+        $nrptExtra = if ($homeNet) { @($script:Cfg.PortalIp) } else { @() }
+        $nrptServers = @($campus + $nrptExtra | Where-Object { $_ } | Select-Object -Unique)
+        Set-CampusNrpt $nrptServers $homeNet
     }
     if (-not $script:IsDry) {
         $d.Phase = $phase
@@ -3311,6 +3675,9 @@ function Shield-Dns($Ctx, [string]$ConnState) {
 function Shield-Portal($Ctxs) {
     $camp = @($Ctxs | Where-Object { $_.Env.Env -eq 'Campus' })
     if ($camp.Count -eq 0) { Write-Log 'INFO' 'Not on campus: portal checks skipped.'; return }
+    $homeAny = $false
+    foreach ($cx in $camp) { if (($null -eq $cx.Env.Home) -or [bool]$cx.Env.Home) { $homeAny = $true } }
+    if (-not $homeAny) { Write-Log 'INFO' 'This campus is not the one the built-in portal values describe: configured-portal checks skipped.'; return }
     $tcp = Test-TcpPort $script:Cfg.PortalIp $script:Cfg.PortalPort 900
     if ($tcp) { Write-Log 'OK' ("Portal {0}:{1} reachable" -f $script:Cfg.PortalIp, $script:Cfg.PortalPort) }
     else { Write-Log 'WARN' ("Portal {0}:{1} not reachable (normal if the session is already authenticated and the firewall hides it)" -f $script:Cfg.PortalIp, $script:Cfg.PortalPort) }
@@ -3362,7 +3729,7 @@ function Invoke-RoamingCleanup {
     if (-not $any) { return }
     if (Test-MetricsManaged) { Restore-InterfaceMetrics 'No active Ethernet link' }
     Remove-CampusHostRoutes
-    $cd = [string]$script:Cfg.CampusDns
+    $cd = Get-ActiveCampusDns
     $m = Measure-ResolversFast @($cd) 600 53 ''
     if ($null -ne $m[$cd]) { Write-Log 'INFO' 'No Ethernet link, but the campus resolver answers over another link (campus Wi-Fi?): campus-only settings kept.'; return }
     Write-Log 'INFO' 'No Ethernet link and the campus resolver is unreachable: undoing the hostel-only settings.'
@@ -3827,9 +4194,15 @@ function Invoke-SupremeOmnifix {
     $r = Pick-Hash (Invoke-WithLock {
         Write-Log 'STEP' 'STAGE 1/5  Rescanning PnP hardware bus & neutralizing WFP DNS interceptors / dead proxies'
         if (-not $script:IsDry) { [void](Invoke-Native (Get-SysExe 'pnputil.exe') @('/scan-devices') 5000) }
+        $script:ConnCache = $null
+        $script:EnvCache = @{}
         if (-not $script:IsDry) {
             $script:State.Misc['RouteProfile'] = 'Adaptive'
             $script:State.Misc['DnsProfile'] = 'Adaptive'
+            $script:State.Misc.Remove('MtuCandidate')
+            $script:State.Misc.Remove('DiscoveredDomain')
+            $script:State.Misc.Remove('DiscoveredPortalIp')
+            $script:State.Misc.Remove('DiscoveredPortalUrl')
         }
         Shield-SystemStack -Aggressive
         if (-not $script:IsDry) { [void](Invoke-Native (Get-SysExe 'netsh.exe') @('winhttp', 'reset', 'proxy') 5000) }
@@ -3854,6 +4227,7 @@ function Invoke-SupremeOmnifix {
             Clear-DnsClientCache -ErrorAction SilentlyContinue
             [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/flushdns') 5000)
             Get-NetNeighbor -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.State -ne 'Permanent' } | Remove-NetNeighbor -Confirm:$false -ErrorAction SilentlyContinue
+            Get-NetNeighbor -AddressFamily IPv6 -ErrorAction SilentlyContinue | Where-Object { $_.State -ne 'Permanent' } | Remove-NetNeighbor -Confirm:$false -ErrorAction SilentlyContinue
             [void](Invoke-Native (Get-SysExe 'nbtstat.exe') @('-R') 5000)
             Restart-Service -Name NlaSvc -Force -ErrorAction SilentlyContinue
             Start-Service -Name netprofm -ErrorAction SilentlyContinue
@@ -4119,7 +4493,7 @@ function Get-SafePortalUrl([string]$Location) {
 }
 # Dynamic first (survives a changed port / zone / path), configured anchor otherwise (already logged in, probe dropped, untrusted host).
 function Resolve-PortalUrl($Inet) {
-    $anchor = [string]$script:Cfg.PortalUrl
+    $anchor = Get-ActivePortalUrl
     if ($Inet.State -ne 'Captive' -or -not $Inet.Location) { return $anchor }
     $live = Get-SafePortalUrl ([string]$Inet.Location)
     if ($live) {
@@ -4136,6 +4510,30 @@ function Resolve-PortalUrl($Inet) {
 # ==============================================================================
 $script:VaultFile = Join-Path $script:StoreDir 'vault.bin'
 
+# CREDENTIAL trust: stricter than Test-TrustedPortalHost on purpose. The DNS suffix a network's own DHCP hands out is
+# attacker-controlled on a rogue LAN, so it must never decide where the saved password goes. Only the configured
+# PortalHost / PortalIp / CampusDomain qualify (set them in config.json for another institution), or an IP literal,
+# which Invoke-TlsHttp still only talks to with a Windows-valid or user-pinned certificate.
+function Test-CredentialPortalHost([string]$HostName) {
+    $h = ([string]$HostName).ToLowerInvariant().TrimEnd('.')
+    if (-not $h) { return $false }
+    if ($script:Cfg.PortalHost -and $h -eq ([string]$script:Cfg.PortalHost).ToLowerInvariant().TrimEnd('.')) { return $true }
+    if ($script:Cfg.PortalIp -and $h -eq [string]$script:Cfg.PortalIp) { return $true }
+    $tmpIp = $null
+    if ([System.Net.IPAddress]::TryParse($h, [ref]$tmpIp)) { return [bool](Test-AllowedPortalIp $h) }
+    $dom = ([string]$script:Cfg.CampusDomain).ToLowerInvariant().Trim('.')
+    return [bool]($dom -and ($h -eq $dom -or $h.EndsWith('.' + $dom)))
+}
+function Get-CredentialPortalUrl([string]$Location) {
+    if (-not $Location) { return '' }
+    $u = $null
+    try { $u = [uri]$Location } catch { return '' }
+    if (-not $u.IsAbsoluteUri) { return '' }
+    if ($u.Scheme -ne 'http' -and $u.Scheme -ne 'https') { return '' }
+    if ($u.UserInfo) { return '' }
+    if (-not (Test-CredentialPortalHost $u.Host)) { return '' }
+    return [string]$u.AbsoluteUri
+}
 function Get-VaultEntropy {
     $guid = ''
     try { $guid = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Cryptography' -Name MachineGuid -ErrorAction SilentlyContinue).MachineGuid } catch {}
@@ -4216,15 +4614,16 @@ function Invoke-HeadlessPortalLogin {
         $Inet = @{ State = 'Captive'; Location = $script:Cfg.PortalUrl; Via = 'link' }
     }
     if ($Inet.State -ne 'Captive') { if ($Manual) { Write-Log 'INFO' 'This link is not behind the login page right now; nothing to do.' }; return $false }
-    if ($Inet.Location -and -not (Get-SafePortalUrl ([string]$Inet.Location))) {
-        Write-Log 'ALERT' 'The login redirect does not point to the campus portal: password NOT sent. Treat this network with suspicion.'
+    if ($Inet.Location -and -not (Get-CredentialPortalUrl ([string]$Inet.Location))) {
+        if (Get-SafePortalUrl ([string]$Inet.Location)) { Write-Log 'INFO' 'This network login page is not the configured campus portal, so the saved password was NOT sent. Sign in in the browser (or set the portal up in config.json to allow auto sign-in here).' }
+        else { Write-Log 'ALERT' 'The login redirect does not point to the campus portal: password NOT sent. Treat this network with suspicion.' }
         return $false
     }
     $url = Resolve-PortalUrl $Inet
     $uri = $null
     try { $uri = [uri]$url } catch { return $false }
     if ($uri.Scheme -ne 'https') { Write-Log 'WARN' 'The portal is not served over HTTPS, so the password is not sent automatically. Use the browser login.'; return $false }
-    if (-not (Test-TrustedPortalHost $uri.Host)) { Write-Log 'ALERT' ("Portal host '{0}' is not on the campus domain: password NOT sent." -f $uri.Host); return $false }
+    if (-not (Test-CredentialPortalHost $uri.Host)) { Write-Log 'ALERT' ("Portal host '{0}' is not on the campus domain: password NOT sent." -f $uri.Host); return $false }
     # The URI is validated now: route exactly THIS destination over the campus cable, even if Wi-Fi holds metric 15.
     Ensure-CampusPortalPath $uri
     [void](Invoke-WithLock { Set-StateTime 'LastPortalLogin'; Save-State })   # the throttle must survive a crash mid-sign-in
@@ -4239,7 +4638,7 @@ function Invoke-HeadlessPortalLogin {
         if ($page.Code -ge 300 -and $page.Code -le 399 -and $page.Location) {
             $next = $null
             try { $next = New-Object System.Uri($cur, $page.Location) } catch { $page = @{ Error = 'BadRedirect' }; break }
-            if ($next.Scheme -ne 'https' -or -not (Test-TrustedPortalHost $next.Host)) { $page = @{ Error = 'UntrustedRedirect' }; break }
+            if ($next.Scheme -ne 'https' -or -not (Test-CredentialPortalHost $next.Host)) { $page = @{ Error = 'UntrustedRedirect' }; break }
             $cur = $next
             continue
         }
@@ -4278,7 +4677,7 @@ function Invoke-HeadlessPortalLogin {
     $form = ConvertFrom-LoginForm ([string]$page.Body) $cur
     if (-not $form) { Write-Log 'WARN' 'No login form was found on the portal page (the page layout may have changed).'; return $false }
     $act = $form.Action
-    if ($act.Scheme -ne 'https' -or -not (Test-TrustedPortalHost $act.Host)) {
+    if ($act.Scheme -ne 'https' -or -not (Test-CredentialPortalHost $act.Host)) {
         Write-Log 'ALERT' ("The login form posts to '{0}', which is not the campus portal: password NOT sent." -f $act.Host)
         return $false
     }
@@ -4729,6 +5128,11 @@ function Install-Watchdog {
     Write-Log 'FAIL' 'Watchdog task could not be verified after registration.'
     return $false
 }
+# Pure (unit-tested): schtasks /xml reports <Settings><Enabled>false</Enabled> for a task disabled in Task Scheduler.
+function Test-WatchdogDisabled([string]$Enabled) {
+    if ([string]::IsNullOrEmpty($Enabled)) { return $false }
+    return ($Enabled.Trim().ToLowerInvariant() -eq 'false')
+}
 function Get-WatchdogArguments {
     $task = Get-WatchdogTask
     if ($null -eq $task) { return $null }
@@ -4752,9 +5156,11 @@ function Update-WatchdogIfStale {
     if (-not (Test-Elapsed 'Repoint' 3600)) { return }   # never loop if the comparison cannot settle
     $task = Get-WatchdogTask
     if ($null -eq $task) { return }
-    if (-not (Test-WatchdogStale ([string]$task.Actions.Exec.Arguments) (Get-WatchdogExpectedArguments) ([string]$task.Settings.MultipleInstancesPolicy))) { return }
+    $taskOff = [bool]($script:State.Misc['WatchdogSince'] -and (Test-WatchdogDisabled ([string]$task.Settings.Enabled)))
+    if (-not $taskOff -and -not (Test-WatchdogStale ([string]$task.Actions.Exec.Arguments) (Get-WatchdogExpectedArguments) ([string]$task.Settings.MultipleInstancesPolicy))) { return }
     Set-StateTime 'Repoint'
-    Write-Log 'INFO' 'The watchdog task is out of date (older copy or unsafe restart policy). Re-registering it.'
+    if ($taskOff) { Write-Log 'WARN' 'Self-healing watchdog: the background guard task was disabled in Task Scheduler while armed; re-registering it enabled.' }
+    else { Write-Log 'INFO' 'The watchdog task is out of date (older copy or unsafe restart policy). Re-registering it.' }
     [void](Install-Watchdog)
 }
 function Uninstall-Watchdog {
@@ -5184,8 +5590,9 @@ function Show-Diagnostics {
         if ($prof) { Write-KV 'Network / firewall profile' ("{0} / {1}" -f $prof.Name, $prof.NetworkCategory) }
 
         Write-Section 'CONNECTIVITY & INTERNET REACHABILITY'
-        $tcp = Test-TcpPort $script:Cfg.PortalIp $script:Cfg.PortalPort 900
-        Write-KV ("Portal {0}:{1}" -f $script:Cfg.PortalIp, $script:Cfg.PortalPort) $(if ($tcp) { 'open' } else { 'closed/hidden' })
+        $epDiag = Get-ActivePortalEndpoint
+        $tcp = Test-TcpPort $epDiag.Ip $epDiag.Port 900
+        Write-KV ("Portal {0}:{1}" -f $epDiag.Ip, $epDiag.Port) $(if ($tcp) { 'open' } else { 'closed/hidden' })
         $conn = [string]$h.Conn
         $cc = $(switch ($conn) { 'Online' { 'Green' } 'Captive' { 'Yellow' } default { 'Red' } })
         Write-KV 'Internet' $conn $cc
@@ -5317,10 +5724,11 @@ function Run-QuickProbe {
             Write-KV "[1] Gateway $gw" ("{0:N1} ms avg ({1}), jitter {2} ms, loss {3}%" -f $avg, $lab[0], $jit, ($lost * 10)) $(if ($lost -gt 1) { 'Yellow' } else { $lab[1] })
         } else { Write-KV "[1] Gateway $gw" 'No ping response (ICMP traffic may be filtered by router)' 'Yellow' }
     } else { Write-KV '[1] Gateway' 'No route found / cable disconnected' 'Red' }
-    $tcp = Test-TcpPort $script:Cfg.PortalIp $script:Cfg.PortalPort 900
-    $pp = Test-Ping $script:Cfg.PortalIp 800
-    Write-KV ("[2] Portal {0}" -f $script:Cfg.PortalIp) ("tcp/{0} {1}, ping {2}" -f $script:Cfg.PortalPort, $(if ($tcp) { 'open' } else { 'closed' }), $(if ($null -ne $pp) { "$pp ms" } else { 'no reply' })) $(if ($tcp) { 'Green' } else { 'Yellow' })
-    $servers = @(@($script:Cfg.CampusDns) + @($script:Cfg.PublicDns) | Select-Object -Unique)
+    $epProbe = Get-ActivePortalEndpoint
+    $tcp = Test-TcpPort $epProbe.Ip $epProbe.Port 900
+    $pp = Test-Ping $epProbe.Ip 800
+    Write-KV ("[2] Portal {0}" -f $epProbe.Ip) ("tcp/{0} {1}, ping {2}" -f $epProbe.Port, $(if ($tcp) { 'open' } else { 'closed' }), $(if ($null -ne $pp) { "$pp ms" } else { 'no reply' })) $(if ($tcp) { 'Green' } else { 'Yellow' })
+    $servers = @(@(Get-ActiveCampusDns) + @($script:Cfg.PublicDns) | Select-Object -Unique)
     $meas = Measure-ResolversFast $servers
     foreach ($s in $servers) {
         $ms = $meas[$s]
@@ -5836,6 +6244,13 @@ function Invoke-LogicTests {
     Write-Check 'Logic: Invoke-LogIntelligence inspects DNS Event 1014 and NIC hardware reset events' ($liDef.IndexOf('1014') -ge 0 -and $liDef.IndexOf('10400') -ge 0)
     $sdUniv = [string](Get-Command Shield-Dns -ErrorAction SilentlyContinue).Definition
     Write-Check 'Logic: Shield-Dns honors Cloudflare/Hybrid and rescues NoDns on non-campus networks' ($sdUniv.IndexOf('$orderOther') -ge 0)
+    $gaeDef = [string](Get-Command Get-AdapterEnvironment -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Get-AdapterEnvironment uses bounded Resolve-HostBounded (never raw GetHostAddresses)' ($gaeDef.IndexOf('GetHostAddresses') -lt 0 -and $gaeDef.IndexOf('Resolve-HostBounded') -ge 0)
+    $elDef = [string](Get-Command Enter-Lock -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Enter-Lock preserves in-memory DiscoveredDomain, DiscoveredPortalIp, and InjectedHostRoutes' ($elDef.IndexOf('DiscoveredDomain') -ge 0 -and $elDef.IndexOf('InjectedHostRoutes') -ge 0)
+    $rscDef = [string](Get-Command Repair-StoreChildren -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Repair-StoreChildren normalizes config.json owner to Administrators' ($rscDef.IndexOf('config.json') -ge 0)
+    Write-Check 'Logic: dynamic endpoint helpers (Get-ActivePortalUrl, Get-ActivePortalEndpoint, Get-ActiveCampusDns) exist' ($null -ne (Get-Command Get-ActivePortalUrl -ErrorAction SilentlyContinue) -and $null -ne (Get-Command Get-ActivePortalEndpoint -ErrorAction SilentlyContinue) -and $null -ne (Get-Command Get-ActiveCampusDns -ErrorAction SilentlyContinue))
     $wxXml = [string](New-WatchdogXml '/c test' '2026-01-01T00:00:00')
     Write-Check 'Logic: Watchdog XML subscribes to both connect (10000) and disconnect (10001) events' ($wxXml.IndexOf('EventID=10000 or EventID=10001') -ge 0)
     $ahDebounce = [string](Get-Command Invoke-AutoHeal -ErrorAction SilentlyContinue).Definition
@@ -5844,6 +6259,100 @@ function Invoke-LogicTests {
     Write-Check 'Logic: Shield-GatewayArp actively verifies Test-GatewayAlive on Permanent lock when not Online' ($arpDef.IndexOf('$lockAlive') -ge 0)
     $script:State.Misc['DiscoveredDomain'] = 'univ.edu'
     Write-Check 'Logic: Test-TrustedPortalHost trusts dynamically discovered domain and private gateway IPs' ((Test-TrustedPortalHost 'portal.univ.edu') -and (Test-TrustedPortalHost '10.20.30.1') -and (-not (Test-TrustedPortalHost 'eviluniv.edu')))
+    # ---- 5.2.0 additions (pure functions are executed; the rest are source-level) ----
+    $gaDef = [string](Get-Command Test-GatewayAlive -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Test-GatewayAlive never deletes a neighbour entry during -DryRun' ($gaDef -match 'IsAdmin -and -not \$script:IsDry -and \$ex')
+    Write-Check 'Logic: gateway liveness proxy probes the configured campus only on the home campus' (($gaDef.IndexOf('$homeAd') -ge 0) -and ($gaDef.IndexOf('Test-TcpPort $Gw 53') -ge 0))
+    $ssDef = [string](Get-Command Save-State -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Save-State verifies the temp file before replacing state and guards the .bak copy' (($ssDef.IndexOf('Test-StateFile $tmp') -ge 0) -and ($ssDef.IndexOf('Test-StateFile $script:StateFile') -ge 0))
+    $tsGood = Join-Path ([System.IO.Path]::GetTempPath()) ('lf_state_ok_' + [guid]::NewGuid().ToString('N') + '.clixml')
+    $tsBad = Join-Path ([System.IO.Path]::GetTempPath()) ('lf_state_bad_' + [guid]::NewGuid().ToString('N') + '.clixml')
+    $tsOk = $false; $tsRej = $false; $tsMiss = $false
+    try {
+        @{ Snapshot = @{}; Misc = @{ A = 1 } } | Export-Clixml -LiteralPath $tsGood -Depth 4
+        [System.IO.File]::WriteAllText($tsBad, '<Objs Version="1.1.0.1"><Obj RefId="0"><TN')
+        $tsOk = (Test-StateFile $tsGood)
+        $tsRej = (-not (Test-StateFile $tsBad))
+        $tsMiss = (-not (Test-StateFile ($tsGood + '.missing')))
+    } catch {}
+    foreach ($tf in @($tsGood, $tsBad)) { try { Remove-Item -LiteralPath $tf -Force -ErrorAction SilentlyContinue } catch {} }
+    Write-Check 'Logic: Test-StateFile accepts a good state file and rejects truncated or missing ones' ($tsOk -and $tsRej -and $tsMiss)
+    Write-Check 'Logic: non-campus DNS action matrix (Rescue / KeepRescue / Restore)' (((Get-OtherDnsAction 'NoDns' $false 'Auto' $false) -eq 'Rescue') -and ((Get-OtherDnsAction 'Online' $true 'Public' $false) -eq 'KeepRescue') -and ((Get-OtherDnsAction 'Online' $true 'Public' $true) -eq 'Restore') -and ((Get-OtherDnsAction 'Online' $false 'Auto' $false) -eq 'Restore') -and ((Get-OtherDnsAction 'Online' $true 'Campus' $false) -eq 'Restore'))
+    $sdDef2 = [string](Get-Command Shield-Dns -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Shield-Dns keeps a still-needed rescue (source-bound probe) and gates configured portal values on Home' (($sdDef2.IndexOf('Get-OtherDnsAction') -ge 0) -and ($sdDef2.IndexOf('Test-DhcpDnsUsable $guid') -ge 0) -and ($sdDef2.IndexOf('$homeNet') -ge 0))
+    Write-Check 'Logic: watchdog disabled-state detection' ((Test-WatchdogDisabled 'false') -and (Test-WatchdogDisabled ' False ') -and -not (Test-WatchdogDisabled 'true') -and -not (Test-WatchdogDisabled '') -and -not (Test-WatchdogDisabled $null))
+    $uwDef = [string](Get-Command Update-WatchdogIfStale -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Update-WatchdogIfStale re-registers a task that was disabled while armed' ($uwDef.IndexOf('Test-WatchdogDisabled') -ge 0)
+    $siDef = [string](Get-Command Start-Interactive -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: dashboard autopilot makes one sign-in attempt when it opens on an already captive link' (($siDef.IndexOf('$autoLoginTried') -ge 0) -and ($siDef.IndexOf('Invoke-HeadlessPortalLogin') -ge 0))
+    $cfgKeepHome = $script:Cfg
+    $script:Cfg = @{ CampusDns = '172.16.1.2'; PortalIp = '10.114.0.5'; CampusDomain = 'nitjsr.ac.in'; PortalHost = 'gateway.nitjsr.ac.in' }
+    $hvA = (Get-HomeCampusVerdict @('172.16.1.2', '8.8.8.8') '' $false $null)
+    $hvB = (Get-HomeCampusVerdict @() 'hostel.nitjsr.ac.in' $false $null)
+    $hvC = (-not (Get-HomeCampusVerdict @('10.9.8.7') 'univ.edu' $false $null))
+    $hvD = (Get-HomeCampusVerdict @('10.9.8.7') 'univ.edu' $true $null)
+    $hvE = (Get-HomeCampusVerdict @() '' $false $null)
+    $hvF = (-not (Get-HomeCampusVerdict @() '' $false @{ Home = $false }))
+    $hvG = (-not (Get-HomeCampusVerdict @('10.9.8.7') 'nitjsr.ac.in.evil.com' $false $null))
+    Write-Check 'Logic: Get-HomeCampusVerdict recognises the configured campus and refuses foreign leases' ($hvA -and $hvB -and $hvC -and $hvD -and $hvE -and $hvF -and $hvG)
+    $script:State.Misc['DiscoveredDomain'] = 'evil.example'
+    $ctA = ((Test-CredentialPortalHost 'gateway.nitjsr.ac.in') -and (Test-CredentialPortalHost 'login.nitjsr.ac.in') -and (Test-CredentialPortalHost '10.114.0.5') -and (Test-CredentialPortalHost '10.55.1.1'))
+    $ctB = ((-not (Test-CredentialPortalHost 'login.evil.example')) -and (-not (Test-CredentialPortalHost 'nitjsr.ac.in.evil.com')) -and (-not (Test-CredentialPortalHost '')))
+    $ctC = (Test-TrustedPortalHost 'login.evil.example')
+    $ctD = (((Get-CredentialPortalUrl 'https://login.evil.example/') -eq '') -and ((Get-CredentialPortalUrl 'https://gateway.nitjsr.ac.in:8003/index.php') -ne '') -and ((Get-CredentialPortalUrl 'https://u:p@gateway.nitjsr.ac.in/') -eq '') -and ((Get-CredentialPortalUrl 'ftp://gateway.nitjsr.ac.in/') -eq ''))
+    $script:Cfg = $cfgKeepHome
+    Write-Check 'Logic: the saved password is never sent to a host that only the network itself vouches for (DHCP suffix)' ($ctA -and $ctB -and $ctD)
+    Write-Check 'Logic: browser navigation trust is unchanged (discovered domain still opens the login page)' $ctC
+    $hlDef = [string](Get-Command Invoke-HeadlessPortalLogin -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: every credential-bearing step of headless login uses the strict trust check' (($hlDef.IndexOf('Get-CredentialPortalUrl') -ge 0) -and ($hlDef.IndexOf('Test-CredentialPortalHost') -ge 0) -and ($hlDef.IndexOf('Test-TrustedPortalHost') -lt 0))
+    $tlDef = [string](Get-Command Invoke-TlsHttp -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Invoke-TlsHttp resolves host names from the Ethernet source address' ($tlDef.IndexOf('Resolve-HostBounded $hostName 2500 $SourceIp') -ge 0)
+    $hr302 = ConvertFrom-HttpResponse ("HTTP/1.1 302 Found`r`nLocation: http://portal.univ.edu/login`r`n`r`n<html>x</html>")
+    $hrMeta = ConvertFrom-HttpResponse ("HTTP/1.1 200 OK`r`nContent-Type: text/html`r`n`r`n<html><head><meta http-equiv=""refresh"" content=""0; url=http://portal.univ.edu/a?x=1&amp;y=2""></head></html>")
+    $hrJs = ConvertFrom-HttpResponse ("HTTP/1.1 200 OK`r`n`r`n<script>window.location.href = 'http://portal.univ.edu/js';</script>")
+    $hrRel = ConvertFrom-HttpResponse ("HTTP/1.1 200 OK`r`n`r`n<script>location.href='/login'</script>")
+    $hrMs = ConvertFrom-HttpResponse ("HTTP/1.1 200 OK`r`n`r`nMicrosoft Connect Test")
+    $hr204 = ConvertFrom-HttpResponse ("HTTP/1.1 204 No Content`r`n`r`n")
+    Write-Check 'Logic: ConvertFrom-HttpResponse reads Location headers and meta/JS redirects of 200 portal pages' (($hr302.Location -ceq 'http://portal.univ.edu/login') -and ($hrMeta.Location -ceq 'http://portal.univ.edu/a?x=1&y=2') -and ($hrJs.Location -ceq 'http://portal.univ.edu/js'))
+    Write-Check 'Logic: ordinary probe answers (Microsoft test page, 204, relative JS) yield no redirect' (($hrRel.Location -eq '') -and ($hrMs.Location -eq '') -and ($hr204.Location -eq '') -and ($hrMs.Body -like 'Microsoft Connect Test*'))
+    $edPlain = [System.Text.Encoding]::UTF8.GetBytes('<form>portal-ok</form>')
+    $edMs = New-Object System.IO.MemoryStream
+    $edGz = New-Object System.IO.Compression.GZipStream($edMs, [System.IO.Compression.CompressionMode]::Compress)
+    $edGz.Write($edPlain, 0, $edPlain.Length); $edGz.Close()
+    $edGzBytes = $edMs.ToArray()
+    $edMs2 = New-Object System.IO.MemoryStream
+    $edDf = New-Object System.IO.Compression.DeflateStream($edMs2, [System.IO.Compression.CompressionMode]::Compress)
+    $edDf.Write($edPlain, 0, $edPlain.Length); $edDf.Close()
+    $edRaw = $edMs2.ToArray()
+    $edZlib = [byte[]](@(0x78, 0x9C) + $edRaw)
+    $edBig = New-Object byte[] 3000000
+    $edMs3 = New-Object System.IO.MemoryStream
+    $edBg = New-Object System.IO.Compression.GZipStream($edMs3, [System.IO.Compression.CompressionMode]::Compress)
+    $edBg.Write($edBig, 0, $edBig.Length); $edBg.Close()
+    $edBomb = $edMs3.ToArray()
+    $edText = { param($b) [System.Text.Encoding]::UTF8.GetString([byte[]]$b) }
+    $edOk = ((& $edText (Expand-HttpBody $edGzBytes 'gzip')) -ceq '<form>portal-ok</form>') -and ((& $edText (Expand-HttpBody $edGzBytes '')) -ceq '<form>portal-ok</form>') -and ((& $edText (Expand-HttpBody $edRaw 'deflate')) -ceq '<form>portal-ok</form>') -and ((& $edText (Expand-HttpBody $edZlib 'deflate')) -ceq '<form>portal-ok</form>')
+    $edI = Expand-HttpBody $edPlain 'identity'
+    $edG = Expand-HttpBody ([byte[]](1, 2, 3, 4, 5)) 'gzip'
+    $edB = Expand-HttpBody $edBomb 'gzip'
+    $edSafe = ($edI.Length -eq $edPlain.Length) -and ($edG.Length -eq 5) -and ($edB.Length -eq $edBomb.Length)
+    Write-Check 'Logic: Expand-HttpBody decodes gzip, deflate and zlib bodies' $edOk
+    Write-Check 'Logic: Expand-HttpBody leaves identity or undecodable data alone and refuses a decompression bomb' $edSafe
+    $rcDef = [string](Get-Command Remove-CampusHostRoutes -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Remove-CampusHostRoutes also removes the host routes added for discovered / DHCP addresses (metric 5 only)' (($rcDef.IndexOf('InjectedHostRoutes') -ge 0) -and ($rcDef.IndexOf('RouteMetric -eq 5') -ge 0))
+    $ecDef = [string](Get-Command Ensure-CampusPortalPath -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: host routes to the configured portal/resolver are added only on the home campus and are tracked' (($ecDef.IndexOf('$cfgTargets') -ge 0) -and ($ecDef.IndexOf('$e.Home') -ge 0) -and ($ecDef.IndexOf('Add-TrackedHostRoute') -ge 0))
+    $aeDef = [string](Get-Command Get-AdapterEnvironment -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Get-AdapterEnvironment records whether the lease is the configured campus' (($aeDef.IndexOf('Get-HomeCampusVerdict') -ge 0) -and ($aeDef.IndexOf('$portalHit') -ge 0) -and ($aeDef.IndexOf('Home = $homeVerdict') -ge 0))
+    $ncDef = [string](Get-Command Set-CampusNrpt -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Set-CampusNrpt maps the configured campus domain only for the home campus' (($ncDef.IndexOf('$HomeNet') -ge 0) -and ($ncDef.IndexOf('$wantNs.Count -eq 0') -ge 0))
+    $pmDef = [string](Get-Command Shield-PathMtu -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Shield-PathMtu only measures a path that really leaves through this adapter' (($pmDef.IndexOf('Get-PathMtuForAdapter') -ge 0) -and ($pmDef.IndexOf("Get-PathMtu '9.9.9.9'") -lt 0))
+    $ovGood = ConvertTo-CfgOverride ('{"PortalIp":"10.20.30.40","CampusDns":"10.20.0.2","PortalPort":8443,"PortalHost":"Portal.Univ.EDU.","CampusDomain":"univ.edu","PortalUrl":"https://portal.univ.edu:8443/login","GwRegex":"^10\\.20\\.\\d+\\.1$","ProfileRegex":"univ|hostel"}' | ConvertFrom-Json)
+    Write-Check 'Logic: config override accepts well-formed values (and normalises host names)' (($ovGood.Count -eq 8) -and ($ovGood['PortalHost'] -ceq 'portal.univ.edu') -and ($ovGood['PortalPort'] -eq 8443) -and ($ovGood['CampusDns'] -ceq '10.20.0.2'))
+    $ovBad = ConvertTo-CfgOverride ('{"PortalIp":"999.1.1.1","CampusDns":"127.0.0.1","PortalPort":70000,"PortalHost":"not a host","CampusDomain":"","PortalUrl":"http://portal.univ.edu/","GwRegex":"([unclosed","ProfileRegex":"","Unknown":"x"}' | ConvertFrom-Json)
+    Write-Check 'Logic: config override rejects malformed, blank, non-https and unknown values' ($ovBad.Count -eq 0)
+    Write-Check 'Logic: config override can never blank a setting (empty input yields nothing)' ((ConvertTo-CfgOverride $null).Count -eq 0 -and (ConvertTo-CfgOverride ('{}' | ConvertFrom-Json)).Count -eq 0)
     $script:State = $stSave
 }
 function Invoke-SelfTest {
@@ -6133,6 +6642,7 @@ function Start-Interactive {
         $draw = $true
         $lastTel = Get-Date
         $lastW = Get-UiWidth
+        $autoLoginTried = $false
         while ($true) {
             if ($draw) { Show-Dashboard $t $adv; $draw = $false; $lastW = Get-UiWidth }
             $key = $null
@@ -6152,7 +6662,8 @@ function Start-Interactive {
                         if (($t2.Problem -eq 'Healthy' -or $t2.Problem -eq 'Online') -and ($t.Problem -eq 'Captive' -or ($t2.Routing -eq 'Wi-Fi Protected' -and $t2.RouteProfile -eq 'Adaptive'))) {
                             [void](Invoke-WithLock -WaitMs 2000 -Block { Complete-Authentication })
                             $t2 = Get-Telemetry
-                        } elseif ($t2.Problem -eq 'Captive' -and $t.Problem -ne 'Captive' -and $t2.Vault -and -not $t2.Paused -and $script:Cfg.AutoPortalLogin) {
+                        } elseif ($t2.Problem -eq 'Captive' -and ($t.Problem -ne 'Captive' -or -not $autoLoginTried) -and $t2.Vault -and -not $t2.Paused -and $script:Cfg.AutoPortalLogin) {
+                            $autoLoginTried = $true
                             [void](Invoke-WithLock -WaitMs 2000 -Block {
                                 if (Invoke-HeadlessPortalLogin (Get-InternetState -NoCache)) { Save-State }
                             })
@@ -6206,6 +6717,7 @@ if (-not $script:IsAdmin -and -not $script:IsDry -and ($adminModes -contains $Mo
 }
 if ($script:UiOn) { Initialize-Ui }
 if ($script:IsAdmin) { Initialize-Store }
+Import-UserConfig
 $script:State = Get-State
 $exitCode = 0
 try {
@@ -6238,7 +6750,7 @@ try {
         'ResetFactory'      { [void](Invoke-WithLock { Restore-Everything }) }
         'LaunchPortal'      { [void](Invoke-WithLock { Open-Portal -Force }) }
         'SetDnsProfile'     { Set-DnsProfileMode $DnsProfile }
-        'SelfTest'          { Invoke-SelfTest }
+        'SelfTest'          { Invoke-SelfTest; if ($script:TestFail -gt 0) { $exitCode = 1 } }
         'Interactive'       { Start-Interactive }
     }
 } catch {
