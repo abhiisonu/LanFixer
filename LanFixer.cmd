@@ -132,7 +132,7 @@ try { Add-Type -AssemblyName System.Security -ErrorAction SilentlyContinue } cat
 # ==============================================================================
 $script:Version = '6.0.0'
 $script:Sys32   = Join-Path $env:SystemRoot 'System32'
-$script:SelfPath = if ($env:LANFIXER_SELF) { $env:LANFIXER_SELF } elseif ($PSCommandPath) { $PSCommandPath } else { '' }
+$script:SelfPath = if ($env:LANFIXER_SELF -and (Test-Path -LiteralPath $env:LANFIXER_SELF)) { $env:LANFIXER_SELF } elseif ($PSCommandPath -and (Test-Path -LiteralPath $PSCommandPath)) { $PSCommandPath } elseif ($MyInvocation.MyCommand.Path -and (Test-Path -LiteralPath $MyInvocation.MyCommand.Path)) { $MyInvocation.MyCommand.Path } else { (Join-Path 'C:\Users\ABHISHEK SONU\Desktop\Lan Fixer' 'LanFixer.cmd') }
 $script:IsDry   = [bool]$DryRun
 $script:UiOn    = ($Mode -ne 'AutoHeal')
 $script:Cfg = @{
@@ -2419,7 +2419,7 @@ function Invoke-DashboardKey([string]$Key, $adv) {
             if ($script:IsAdmin) { return $false }
             if ($script:SelfPath) {
                 try {
-                    Start-Process -FilePath (Join-Path $script:Sys32 'cmd.exe') -ArgumentList ('/c ""' + $script:SelfPath + '" -LfElevated"') -Verb RunAs -ErrorAction Stop
+                    Start-Process -FilePath $script:SelfPath -ArgumentList '-LfElevated' -Verb RunAs -ErrorAction Stop
                     Exit-Screen
                     exit 0
                 } catch {}
@@ -6732,7 +6732,15 @@ function Write-HealSummary($r, $sw) {
     Out-Line @((Seg $info.Role ('  ' + $script:G.dot + '  ')), (Seg ($info.Role + '!') $info.Word), (Seg 'dim' ('   {0} {1} changed {0} {2} failed {0} {3:N1} s' -f $script:G.mid, $script:ChangeCount, $script:FailCount, $sw.Elapsed.TotalSeconds)))
 }
 function Start-Interactive {
-    if (Test-InputRedirected) { Write-Host 'The control center needs a real console. Use -Mode Heal, Diagnose, QuickProbe, SelfTest ... for scripted runs.' -ForegroundColor Yellow; return }
+    if (Test-InputRedirected) {
+        Write-Host 'The control center needs an interactive console. Use -Mode Heal, Diagnose, QuickProbe, SelfTest ... for scripted runs.' -ForegroundColor Yellow
+        if (-not $NoPause -and $Host.Name -eq 'ConsoleHost') {
+            Write-Host ''
+            Write-Host 'Press any key to close...' -ForegroundColor Gray
+            try { [void][Console]::ReadKey($true) } catch { Start-Sleep -Seconds 4 }
+        }
+        return
+    }
     if ($script:IsAdmin) { [void](Invoke-WithLock -WaitMs 3000 -Block { $script:WatchdogOn = Test-WatchdogInstalled; Update-WatchdogIfStale }) }
     Enter-Screen
     try {
@@ -6808,8 +6816,7 @@ if (-not $script:IsAdmin -and -not $script:IsDry -and ($adminModes -contains $Mo
                 if ($kv.Value -is [System.Management.Automation.SwitchParameter]) { if ($kv.Value.IsPresent) { $parts += ('-' + $kv.Key) } }
                 else { $parts += ('-' + $kv.Key); $parts += [string]$kv.Value }
             }
-            $argLine = '/c ""' + $script:SelfPath + '" ' + ($parts -join ' ') + '"'
-            Start-Process -FilePath (Join-Path $script:Sys32 'cmd.exe') -ArgumentList $argLine -Verb RunAs -ErrorAction Stop
+            Start-Process -FilePath $script:SelfPath -ArgumentList ($parts -join ' ') -Verb RunAs -ErrorAction Stop
             $elevated = $true
         } catch { Write-Host 'Administrator approval was not granted.' -ForegroundColor Yellow }
     }
@@ -6864,7 +6871,11 @@ try {
     if ($script:UiOn) { Exit-Screen }
 }
 if ($exitCode -eq 0 -and $script:FailCount -gt 0 -and (@('AutoHeal', 'Heal', 'Omnifix', 'FullNetReset') -contains $Mode)) { $exitCode = 2 }
-if ($script:UiOn -and $Mode -ne 'Interactive' -and -not $NoPause -and $Host.Name -eq 'ConsoleHost') {
+if ($exitCode -ne 0 -and -not $NoPause -and $Host.Name -eq 'ConsoleHost') {
+    Write-Host ''
+    Write-Host 'LanFixer closed with an exit code. Press any key to close...' -ForegroundColor Gray
+    Wait-AnyKey
+} elseif ($script:UiOn -and $Mode -ne 'Interactive' -and -not $NoPause -and $Host.Name -eq 'ConsoleHost') {
     Write-Host ''
     Write-Host 'Press any key to close...' -ForegroundColor Gray
     Wait-AnyKey
