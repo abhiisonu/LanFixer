@@ -9,7 +9,7 @@ exit /b %errorlevel%
 
 <#
 .SYNOPSIS
-    Lan Fixer 5.3.0 - Supreme self-healing Ethernet stabilizer for campus/hostel LANs (Windows 10/11, Ethernet only).
+    Lan Fixer 6.0.0 - Sovereign self-healing Ethernet stabilizer for campus/hostel LANs (Windows 10/11, Ethernet only).
     Author: A.S.
 .DESCRIPTION
     Single file, ASCII only. Run it normally for the control center, or use -Mode:
@@ -130,7 +130,7 @@ try { Add-Type -AssemblyName System.Security -ErrorAction SilentlyContinue } cat
 # ==============================================================================
 # CONFIG (edit here, nowhere else)
 # ==============================================================================
-$script:Version = '5.3.0'
+$script:Version = '6.0.0'
 $script:Sys32   = Join-Path $env:SystemRoot 'System32'
 $script:SelfPath = if ($env:LANFIXER_SELF) { $env:LANFIXER_SELF } elseif ($PSCommandPath) { $PSCommandPath } else { '' }
 $script:IsDry   = [bool]$DryRun
@@ -2711,6 +2711,33 @@ function Get-DhcpDnsServers([string]$Guid) {
     }
     return @()
 }
+function Get-DhcpCaptiveUrl([string]$Guid) {
+    $reg = Get-IfaceReg $Guid
+    if (-not $reg) { return $null }
+    foreach ($prop in 'DhcpCaptivePortalUrl', 'CaptivePortalUrl', 'DhcpOption114') {
+        if ($reg.$prop) {
+            $u = [string]$reg.$prop
+            if ($u -match '^https?://[^\s]+$') { return $u }
+        }
+    }
+    if ($reg.DhcpInterfaceOptions -is [byte[]]) {
+        [byte[]]$bytes = $reg.DhcpInterfaceOptions
+        $i = 0
+        while ($i -lt ($bytes.Length - 2)) {
+            $opt = [int]$bytes[$i]
+            $len = [int]$bytes[$i + 1]
+            if ($len -le 0 -or ($i + 2 + $len) -gt $bytes.Length) { break }
+            if ($opt -eq 114 -or $opt -eq 160) {
+                try {
+                    $str = [System.Text.Encoding]::ASCII.GetString($bytes, $i + 2, $len)
+                    if ($str -match '^https?://[^\s]+$') { return $str }
+                } catch {}
+            }
+            $i += (2 + $len)
+        }
+    }
+    return $null
+}
 function Get-GatewaysV4($Ad) {
     return @(Get-NetRoute -InterfaceIndex $Ad.ifIndex -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue |
         Where-Object { $_.NextHop -and $_.NextHop -ne '0.0.0.0' } | ForEach-Object { [string]$_.NextHop } | Select-Object -Unique)
@@ -2752,6 +2779,14 @@ function Get-AdapterEnvironment {
     $ip = Get-ValidIPv4 $Ad
 
     if ($dhcpDns -contains $cfg.CampusDns) { $score += 2; [void]$ev.Add("DHCP supplies campus DNS $($cfg.CampusDns)") }
+    $dhcpPortal = Get-DhcpCaptiveUrl $guid
+    if ($dhcpPortal) {
+        $score += 2; [void]$ev.Add("DHCP option 114 captive URL '$dhcpPortal'")
+        if (-not $script:IsDry) {
+            $script:State.Misc['DiscoveredPortalUrl'] = $dhcpPortal
+            $script:State.Misc['DiscoveryTime'] = (Get-Date).ToString('o')
+        }
+    }
     foreach ($g in $gws) { if ($g -match $cfg.GwRegex) { $score += 1; [void]$ev.Add("gateway $g matches hostel pattern"); break } }
     $sfx = ''
     try { $sfx = [string](Get-DnsClient -InterfaceIndex $Ad.ifIndex -ErrorAction SilentlyContinue).ConnectionSpecificSuffix } catch {}
@@ -6360,6 +6395,23 @@ function Invoke-LogicTests {
     $ovBad = ConvertTo-CfgOverride ('{"PortalIp":"999.1.1.1","CampusDns":"127.0.0.1","PortalPort":70000,"PortalHost":"not a host","CampusDomain":"","PortalUrl":"http://portal.univ.edu/","GwRegex":"([unclosed","ProfileRegex":"","Unknown":"x"}' | ConvertFrom-Json)
     Write-Check 'Logic: config override rejects malformed, blank, non-https and unknown values' ($ovBad.Count -eq 0)
     Write-Check 'Logic: config override can never blank a setting (empty input yields nothing)' ((ConvertTo-CfgOverride $null).Count -eq 0 -and (ConvertTo-CfgOverride ('{}' | ConvertFrom-Json)).Count -eq 0)
+    # v6.0.0 Sovereign Peak: RFC 8910 DHCP Option 114 captive URL decoder check
+    $opt114Url = 'https://login.campus.edu/portal'
+    [byte[]]$opt114Bytes = @(252, 4, 1, 2, 3, 4, 114, $opt114Url.Length) + [System.Text.Encoding]::ASCII.GetBytes($opt114Url)
+    $fakeReg = [pscustomobject]@{ DhcpInterfaceOptions = $opt114Bytes }
+    $decodedOpt114 = $null
+    if ($fakeReg.DhcpInterfaceOptions -is [byte[]]) {
+        [byte[]]$fb = $fakeReg.DhcpInterfaceOptions; $fi = 0
+        while ($fi -lt ($fb.Length - 2)) {
+            $fopt = [int]$fb[$fi]; $flen = [int]$fb[$fi + 1]
+            if ($flen -le 0 -or ($fi + 2 + $flen) -gt $fb.Length) { break }
+            if ($fopt -eq 114 -or $fopt -eq 160) {
+                try { $fstr = [System.Text.Encoding]::ASCII.GetString($fb, $fi + 2, $flen); if ($fstr -match '^https?://[^\s]+$') { $decodedOpt114 = $fstr; break } } catch {}
+            }
+            $fi += (2 + $flen)
+        }
+    }
+    Write-Check 'Logic: RFC 8910 DHCP option 114 binary decoder extracts captive portal URL' ($decodedOpt114 -ceq $opt114Url)
     $script:State = $stSave
 }
 function Invoke-SelfTest {

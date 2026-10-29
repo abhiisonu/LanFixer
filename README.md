@@ -2,7 +2,7 @@
 
 A portable, self-contained network repair and stabilization utility for Windows (Windows 10/11, Ethernet & Dual-Homed). Single script (`.cmd`) built entirely on native PowerShell—requires no installation, runtime dependencies, or third-party tools.
 
-[**Download LanFixer.cmd (v5.3.0)**](https://github.com/abhiisonu/LanFixer/releases/download/v5.3.0/LanFixer.cmd)
+[**Download LanFixer.cmd (v6.0.0)**](https://github.com/abhiisonu/LanFixer/releases/download/v6.0.0/LanFixer.cmd)
 
 ---
 
@@ -21,7 +21,7 @@ Resolves persistent network drops, DHCP assignment failures, and routing conflic
 
 ## Usage
 
-1. Download [LanFixer.cmd](https://github.com/abhiisonu/LanFixer/releases/download/v5.3.0/LanFixer.cmd).
+1. Download [LanFixer.cmd](https://github.com/abhiisonu/LanFixer/releases/download/v6.0.0/LanFixer.cmd).
 2. Right-click the file and select **Run as administrator**.
 3. Press **1** to run the automated diagnostic and repair pipeline.
 
