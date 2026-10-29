@@ -1838,9 +1838,9 @@ function Update-Pulse([string]$Gw) {
         if ($rtt -ge 0) { $script:LiveGwRtt = $rtt } else { $script:LiveGwRtt = $null }
         $p.Task = $null; $changed = $true
     }
-    if (-not $p.Task -and (((Get-Date) - $p.Last).TotalMilliseconds -ge 1200)) {
+    if (-not $p.Task -and (((Get-Date) - $p.Last).TotalMilliseconds -ge 350)) {
         if (-not $p.Ping) { $p.Ping = New-Object System.Net.NetworkInformation.Ping }
-        try { $p.Task = $p.Ping.SendPingAsync($Gw, 900); $p.Last = Get-Date } catch { try { $p.Ping.Dispose() } catch {}; $p.Ping = $null; $p.Task = $null }
+        try { $p.Task = $p.Ping.SendPingAsync($Gw, 300); $p.Last = Get-Date } catch { try { $p.Ping.Dispose() } catch {}; $p.Ping = $null; $p.Task = $null }
     }
     return $changed
 }
@@ -2621,7 +2621,7 @@ function Get-InternetState {
     elseif (-not $explicit) { $SourceIp = Get-PrimarySourceIp }
     if ($null -eq $SourceIp) { $SourceIp = '' }
     $ckey = ('{0}|{1}' -f $SourceIp, $explicit)
-    if (-not $NoCache -and $script:ConnCache -and $script:ConnCache.Key -eq $ckey -and (((Get-Date) - $script:ConnCache.Time).TotalSeconds -lt 6)) { return $script:ConnCache.Result }
+    if (-not $NoCache -and $script:ConnCache -and $script:ConnCache.Key -eq $ckey -and (((Get-Date) - $script:ConnCache.Time).TotalSeconds -lt 1.8)) { return $script:ConnCache.Result }
     $none = @{ Code = 0; Body = ''; Location = ''; Error = '' }
     $p1 = Invoke-HttpProbe 'connectivitycheck.gstatic.com' '/generate_204' 2500 $SourceIp
     $p2 = $none
@@ -6731,12 +6731,19 @@ function Start-Interactive {
         return
     }
     if ($script:IsAdmin) { [void](Invoke-WithLock -WaitMs 3000 -Block { $script:WatchdogOn = Test-WatchdogInstalled; Update-WatchdogIfStale }) }
+    try { [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = [System.Diagnostics.ProcessPriorityClass]::AboveNormal } catch {}
     Enter-Screen
     try {
         $t = New-Telemetry
         $adv = Get-Advice $t
         Show-Dashboard $t $adv          # instant skeleton, then the real reading
         $t = Get-Telemetry; $adv = Get-Advice $t
+        if ($script:IsAdmin -and -not $script:IsDry -and ($t.Problem -eq 'Healthy' -or $t.Problem -eq 'Online')) {
+            if (($t.RouteProfile -eq 'Adaptive' -or $t.RouteProfile -eq 'Ethernet') -and $t.Routing -ne 'Ethernet Primary') {
+                [void](Invoke-WithLock -WaitMs 2000 -Block { Complete-Authentication })
+                $t = Get-Telemetry; $adv = Get-Advice $t
+            }
+        }
         $draw = $true
         $lastTel = Get-Date
         $lastW = Get-UiWidth
@@ -6753,11 +6760,16 @@ function Start-Interactive {
                     }
                 }   # ping a silent gateway too: the lost replies ARE the picture
                 if ((Get-UiWidth) -ne $lastW) { $draw = $true; break }
-                $ivl = 12; if ($t.Problem -ne 'Healthy' -and $t.Problem -ne 'Online') { $ivl = 25 }   # probes can take seconds while the network is down: ask less often then
+                $ivl = 2; if ($t.Problem -ne 'Healthy' -and $t.Problem -ne 'Online') { $ivl = 4 }   # quickest refresh: 2s healthy, 4s offline/degraded
                 if (((Get-Date) - $lastTel).TotalSeconds -ge $ivl) {
                     $t2 = Get-Telemetry; $lastTel = Get-Date
                     if ($script:IsAdmin -and -not $script:IsDry) {
-                        if (($t2.Problem -eq 'Healthy' -or $t2.Problem -eq 'Online') -and ($t.Problem -eq 'Captive' -or ($t2.Routing -eq 'Wi-Fi Protected' -and $t2.RouteProfile -eq 'Adaptive'))) {
+                        $needsPrioritySync = (($t2.Problem -eq 'Healthy' -or $t2.Problem -eq 'Online') -and (
+                            ($t.Problem -eq 'Captive') -or
+                            ($t2.RouteProfile -eq 'Adaptive' -and $t2.Routing -ne 'Ethernet Primary') -or
+                            ($t2.RouteProfile -eq 'Ethernet' -and $t2.Routing -ne 'Ethernet Primary')
+                        ))
+                        if ($needsPrioritySync) {
                             [void](Invoke-WithLock -WaitMs 2000 -Block { Complete-Authentication })
                             $t2 = Get-Telemetry
                         } elseif ($t2.Problem -eq 'Captive' -and ($t.Problem -ne 'Captive' -or -not $autoLoginTried) -and $t2.Vault -and -not $t2.Paused -and $script:Cfg.AutoPortalLogin) {
@@ -6772,17 +6784,25 @@ function Start-Interactive {
                     if ((Get-Sig $t2) -ne (Get-Sig $t)) { $t = $t2; $adv = Get-Advice $t; $draw = $true; break }
                     $t = $t2
                 }
-                Start-Sleep -Milliseconds 60
+                Start-Sleep -Milliseconds 15
             }
             if ($draw -and $null -eq $key) { continue }
             if ($null -eq $key) { continue }
             $ch = ([string]$key.KeyChar).ToLower()
             if ($key.Key -eq 'Enter') { $ch = [string]$adv.Key }
-            if ($key.Key -eq 'Spacebar' -or $key.KeyChar -eq ' ') { $ch = '' }
+            if ($key.Key -eq 'Spacebar' -or $key.KeyChar -eq ' ' -or $ch -eq 'r') { $ch = '' }
             if ($key.Key -eq 'Escape') { $ch = '' }
             if ($ch -eq 'q') { break }
             Clear-InputBuffer
-            if (-not $ch) { $t = Get-Telemetry; if ($null -ne $script:LiveGwRtt) { $t.GwRtt = $script:LiveGwRtt }; $adv = Get-Advice $t; $lastTel = Get-Date; $draw = $true; continue }
+            if (-not $ch) {
+                $script:ConnCache = $null
+                $t = Get-Telemetry
+                if ($null -ne $script:LiveGwRtt) { $t.GwRtt = $script:LiveGwRtt }
+                $adv = Get-Advice $t
+                $lastTel = Get-Date
+                $draw = $true
+                continue
+            }
             $handled = Invoke-DashboardKey $ch $adv
             Clear-InputBuffer
             if ($handled) {
@@ -6791,7 +6811,10 @@ function Start-Interactive {
                 $t = Get-Telemetry; $adv = Get-Advice $t; $lastTel = Get-Date; $draw = $true
             }
         }
-    } finally { Exit-Screen }
+    } finally {
+        try { [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = [System.Diagnostics.ProcessPriorityClass]::Normal } catch {}
+        Exit-Screen
+    }
 }
 $script:IsAdmin = Test-IsAdmin
 $adminModes = @('Interactive', 'Heal', 'AutoHeal', 'Omnifix', 'FullNetReset', 'FlushCache', 'InstallWatchdog', 'UninstallWatchdog', 'InstallShield', 'UninstallShield', 'ResetFactory', 'SetDnsProfile', 'SetRouteProfile')
