@@ -1929,6 +1929,7 @@ function Get-HopRows($t, $adv) {
 
 function Get-StepperLines($Rows, [int]$Width) {
     $n = $Rows.Count
+    if ($n -le 1) { return @() }
     $inner = $Width - 2
     $gap = [int][Math]::Floor(($inner - 11) / ($n - 1))   # the last node keeps >= 11 columns for 'internet'
     $last = $inner - (($n - 1) * $gap)
@@ -2085,6 +2086,7 @@ function Update-PulseRow($t) {
     $hgt = Get-UiHeight
     if ($hgt -le 0 -or ($f.Rows + 1) -gt $hgt) { return $false }   # unknown or too small: skip the partial repaint
     $up = $f.Rows - $f.Model.PulseIdx
+    if ($up -le 0) { return $false }
     $sparkWidth = [Math]::Max(4, [Math]::Min(36, $f.Model.Width - 54))
     $segs = Get-PulseSegs $t $sparkWidth
     $e = $script:Esc
@@ -6358,6 +6360,8 @@ function Invoke-LogicTests {
     Write-Check 'Logic: Update-WatchdogIfStale re-registers a task that was disabled while armed' ($uwDef.IndexOf('Test-WatchdogDisabled') -ge 0)
     $siDef = [string](Get-Command Start-Interactive -ErrorAction SilentlyContinue).Definition
     Write-Check 'Logic: dashboard autopilot makes one sign-in attempt when it opens on an already captive link' (($siDef.IndexOf('$autoLoginTried') -ge 0) -and ($siDef.IndexOf('Invoke-HeadlessPortalLogin') -ge 0))
+    Write-Check 'Logic: dashboard allows key [R] to export support report and preserves F5/Space refresh' ($siDef.IndexOf("Key -eq 'F5'") -ge 0 -and $siDef.IndexOf("ch -eq 'r'") -lt 0)
+    Write-Check 'Logic: Get-StepperLines handles 0 or 1 rows safely without division by zero' ((@(Get-StepperLines @() 80)).Count -eq 0 -and (@(Get-StepperLines @(@{ State = 'ok' }) 80)).Count -eq 0)
     $cfgKeepHome = $script:Cfg
     $script:Cfg = @{ CampusDns = '172.16.1.2'; PortalIp = '10.114.0.5'; CampusDomain = 'nitjsr.ac.in'; PortalHost = 'gateway.nitjsr.ac.in' }
     $hvA = (Get-HomeCampusVerdict @('172.16.1.2', '8.8.8.8') '' $false $null)
@@ -6790,7 +6794,7 @@ function Start-Interactive {
             if ($null -eq $key) { continue }
             $ch = ([string]$key.KeyChar).ToLower()
             if ($key.Key -eq 'Enter') { $ch = [string]$adv.Key }
-            if ($key.Key -eq 'Spacebar' -or $key.KeyChar -eq ' ' -or $ch -eq 'r') { $ch = '' }
+            if ($key.Key -eq 'Spacebar' -or $key.KeyChar -eq ' ' -or $key.Key -eq 'F5') { $ch = '' }
             if ($key.Key -eq 'Escape') { $ch = '' }
             if ($ch -eq 'q') { break }
             Clear-InputBuffer
@@ -6812,6 +6816,7 @@ function Start-Interactive {
             }
         }
     } finally {
+        try { if ($script:Pulse.Ping) { $script:Pulse.Ping.Dispose(); $script:Pulse.Ping = $null; $script:Pulse.Task = $null } } catch {}
         try { [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = [System.Diagnostics.ProcessPriorityClass]::Normal } catch {}
         Exit-Screen
     }
