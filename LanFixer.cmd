@@ -2080,7 +2080,7 @@ function Get-DashboardModel($t, $adv, [int]$Width = 0) {
         [void]$L.Add(@((Seg $(if ($adv.Key -eq 'x') { 'ok!' } else { 'accent!' }) ('  [X] Full Net Reset'.PadRight($col1W + 2))), (Seg 'dim' '[Q] Quit')))
         if ($t.ArpPending) { [void]$L.Add(@((Seg 'warn!' ('  [K] Approve Gateway MAC Change'.PadRight($col1W + 2))), (Seg 'warn' 'Router MAC changed; review to lock ARP'))) }
     } else {
-        $legend = @(@('1', 'Heal'), @('X', 'NetReset'), @('2', 'Guard'), @('A', 'Vault'), @('7', 'Portal'), @('G', 'Login'), @('3', 'DNS'), @('M', 'Route'), @('4', 'Probe'), @('5', 'Flush'), @('6', 'Audit'), @('T', 'Test'), @('R', 'Report'), @('S', 'Verify'), @('8', 'Disarm'), @('9', 'Reset'), @('0', 'Guide'), @('Q', 'Quit'))
+        $legend = @(@('1', 'QuickHeal'), @('X', 'NetReset'), @('2', 'Guard'), @('A', 'Vault'), @('7', 'Portal'), @('G', 'Login'), @('3', 'DNS'), @('M', 'Route'), @('4', 'Probe'), @('5', 'Flush'), @('6', 'Audit'), @('T', 'Test'), @('R', 'Report'), @('S', 'Verify'), @('8', 'Disarm'), @('9', 'Reset'), @('0', 'Guide'), @('Q', 'Quit'))
         # A gateway-MAC review is transient, so [K] is advertised only while a candidate is really waiting. The leading
         # comma appends the pair as ONE legend cell; a bare "+=" would append two loose strings and corrupt the legend.
         if ($t.ArpPending) { $legend += , @('K', 'MAC') }
@@ -2280,7 +2280,7 @@ function Show-VaultMenu {
     }
 }
 
-function Start-Repair([string]$Title = 'repair') {
+function Start-Repair([string]$Title = 'quick heal') {
     Show-View $Title {
         if (-not (Assert-Admin)) { return }
         $script:ChangeCount = 0; $script:FailCount = 0
@@ -2289,10 +2289,22 @@ function Start-Repair([string]$Title = 'repair') {
         $sw.Stop()
         Write-HealSummary $r $sw
         if ($r -and $r.Conn -eq 'Captive') {
-            [void](Invoke-WithLock { [void](Open-Portal); Save-State })
-            if ((Get-InternetState -NoCache).State -eq 'Captive') {
-                Out-Line @((Seg 'dim' '  Sign in on the page that opened; the fast DNS path is applied for you afterwards.'))
-                if (Wait-ForAuthentication 180) { [void](Invoke-WithLock { Complete-Authentication }); Write-Log 'OK' 'Signed in. Post-login DNS applied.' }
+            $signedHeadless = $false
+            if ($script:Cfg.AutoPortalLogin -and (Get-PortalCredentials)) {
+                Out-Line @((Seg 'dim' '  Attempting automated sign-in using saved vault credentials...'))
+                $signedHeadless = [bool](Invoke-WithLock {
+                    $hRes = Invoke-HeadlessPortalLogin (Get-InternetState -NoCache) -Manual
+                    Save-State
+                    $hRes
+                })
+                if ($signedHeadless) { Write-Log 'OK' 'Signed in automatically using stored vault credentials.' }
+            }
+            if (-not $signedHeadless) {
+                [void](Invoke-WithLock { [void](Open-Portal); Save-State })
+                if ((Get-InternetState -NoCache).State -eq 'Captive') {
+                    Out-Line @((Seg 'dim' '  Sign in on the page that opened; the fast DNS path is applied for you afterwards.'))
+                    if (Wait-ForAuthentication 180) { [void](Invoke-WithLock { Complete-Authentication }); Write-Log 'OK' 'Signed in. Post-login DNS applied.' }
+                }
             }
         }
     }
@@ -2303,7 +2315,7 @@ function Invoke-DashboardKey([string]$Key, $adv) {
     if ($aliases.ContainsKey($Key)) { $Key = $aliases[$Key] }
     switch ($Key) {
         '0' { Show-Advisory }
-        '1' { Start-Repair 'repair' }
+        '1' { Start-Repair 'quick heal' }
         'm' { Show-View 'routing priority' { Show-RouteMenu } -NoWait }
         'x' {
             Show-View 'full net reset (emergency recovery)' {
@@ -2336,10 +2348,22 @@ function Invoke-DashboardKey([string]$Key, $adv) {
                     $sw.Stop()
                     Write-HealSummary $r $sw
                     if ($r -and $r.Conn -eq 'Captive') {
-                        [void](Invoke-WithLock { [void](Open-Portal); Save-State })
-                        if ((Get-InternetState -NoCache).State -eq 'Captive') {
-                            Out-Line @((Seg 'dim' '  Sign in on the page that opened; the fast DNS path is applied for you afterwards.'))
-                            if (Wait-ForAuthentication 180) { [void](Invoke-WithLock { Complete-Authentication }); Write-Log 'OK' 'Signed in. Post-login DNS applied.' }
+                        $signedHeadless = $false
+                        if ($script:Cfg.AutoPortalLogin -and (Get-PortalCredentials)) {
+                            Out-Line @((Seg 'dim' '  Attempting automated sign-in using saved vault credentials...'))
+                            $signedHeadless = [bool](Invoke-WithLock {
+                                $hRes = Invoke-HeadlessPortalLogin (Get-InternetState -NoCache) -Manual
+                                Save-State
+                                $hRes
+                            })
+                            if ($signedHeadless) { Write-Log 'OK' 'Signed in automatically using stored vault credentials.' }
+                        }
+                        if (-not $signedHeadless) {
+                            [void](Invoke-WithLock { [void](Open-Portal); Save-State })
+                            if ((Get-InternetState -NoCache).State -eq 'Captive') {
+                                Out-Line @((Seg 'dim' '  Sign in on the page that opened; the fast DNS path is applied for you afterwards.'))
+                                if (Wait-ForAuthentication 180) { [void](Invoke-WithLock { Complete-Authentication }); Write-Log 'OK' 'Signed in. Post-login DNS applied.' }
+                            }
                         }
                     }
                 }
@@ -2360,6 +2384,11 @@ function Invoke-DashboardKey([string]$Key, $adv) {
                 if ($ups.Count -eq 0) {
                     Write-Log 'WARN' 'No active Ethernet link is connected. Plug in the campus LAN cable before opening the portal.'
                     return
+                }
+                $ipV4 = Get-ValidIPv4 $ups[0]
+                if (-not $ipV4 -and $script:IsAdmin) {
+                    Out-Line @((Seg 'warn' '  No valid IP lease (APIPA/unassigned); renewing DHCP lease first...'))
+                    [void](Invoke-WithLock { Shield-DataLink @{ Ad = $ups[0]; Env = (Get-AdapterEnvironment $ups[0]); Repaired = $false } })
                 }
                 [void](Invoke-WithLock {
                     if ($script:IsAdmin) {
@@ -5745,27 +5774,40 @@ function Get-LatencyLabel([double]$Ms) {
 }
 function Run-QuickProbe {
     Write-Banner 'LATENCY, PACKET LOSS & JITTER PROBE'
-    $ads = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })
-    $gw = $null
-    if ($ads.Count -gt 0) { $gw = @(Get-GatewaysV4 $ads[0]) | Select-Object -First 1 }
-    else {
-        $secAds = @(Get-OtherUplinkAdapters)
-        if ($secAds.Count -gt 0) { $gw = @(Get-GatewaysV4 $secAds[0]) | Select-Object -First 1 }
+    $ethAds = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })
+    $secAds = @(Get-OtherUplinkAdapters)
+    $gatewaysToProbe = @()
+    if ($ethAds.Count -gt 0) {
+        $egw = @(Get-GatewaysV4 $ethAds[0]) | Select-Object -First 1
+        if ($egw) { $gatewaysToProbe += @{ Label = 'Ethernet Gateway'; Ip = $egw } }
     }
-    if ($gw) {
-        $rtts = @(); $lost = 0
-        for ($i = 0; $i -lt 10; $i++) {
-            $r = Test-Ping $gw 600
-            if ($null -eq $r) { $lost++ } else { $rtts += $r }
-            Start-Sleep -Milliseconds 120
+    if ($secAds.Count -gt 0) {
+        $sgw = @(Get-GatewaysV4 $secAds[0]) | Select-Object -First 1
+        if ($sgw) { $gatewaysToProbe += @{ Label = ("{0} Gateway" -f $secAds[0].Name); Ip = $sgw } }
+    }
+    if ($gatewaysToProbe.Count -eq 0) {
+        Write-KV '[1] Gateway' 'No route found / cable disconnected' 'Red'
+    } else {
+        $gIdx = 1
+        foreach ($gItem in $gatewaysToProbe) {
+            $rtts = @(); $lost = 0
+            for ($i = 0; $i -lt 10; $i++) {
+                $r = Test-Ping $gItem.Ip 600
+                if ($null -eq $r) { $lost++ } else { $rtts += $r }
+                Start-Sleep -Milliseconds 120
+            }
+            $pTag = if ($gatewaysToProbe.Count -gt 1) { "[1{0}] {1} {2}" -f ([char](96 + $gIdx)), $gItem.Label, $gItem.Ip } else { "[1] Gateway {0}" -f $gItem.Ip }
+            if ($rtts.Count -gt 0) {
+                $avg = ($rtts | Measure-Object -Average).Average
+                $jit = ($rtts | Measure-Object -Maximum).Maximum - ($rtts | Measure-Object -Minimum).Minimum
+                $lab = Get-LatencyLabel $avg
+                Write-KV $pTag ("{0:N1} ms avg ({1}), jitter {2} ms, loss {3}%" -f $avg, $lab[0], $jit, ($lost * 10)) $(if ($lost -gt 1) { 'Yellow' } else { $lab[1] })
+            } else {
+                Write-KV $pTag 'No ping response (ICMP traffic may be filtered by router)' 'Yellow'
+            }
+            $gIdx++
         }
-        if ($rtts.Count -gt 0) {
-            $avg = ($rtts | Measure-Object -Average).Average
-            $jit = ($rtts | Measure-Object -Maximum).Maximum - ($rtts | Measure-Object -Minimum).Minimum
-            $lab = Get-LatencyLabel $avg
-            Write-KV "[1] Gateway $gw" ("{0:N1} ms avg ({1}), jitter {2} ms, loss {3}%" -f $avg, $lab[0], $jit, ($lost * 10)) $(if ($lost -gt 1) { 'Yellow' } else { $lab[1] })
-        } else { Write-KV "[1] Gateway $gw" 'No ping response (ICMP traffic may be filtered by router)' 'Yellow' }
-    } else { Write-KV '[1] Gateway' 'No route found / cable disconnected' 'Red' }
+    }
     $epProbe = Get-ActivePortalEndpoint
     $tcp = Test-TcpPort $epProbe.Ip $epProbe.Port 900
     $pp = Test-Ping $epProbe.Ip 800
