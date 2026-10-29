@@ -1612,10 +1612,9 @@ function Enable-VtMode {
     } catch { return $false }
 }
 
-function Set-ConsoleQuickEdit([bool]$Enable) {
-    # Only the legacy console has the "a click freezes the output" QuickEdit behaviour. Windows Terminal does not,
-    # so never compile the native helper there (less startup work, less for antivirus to look at).
-    if ($env:WT_SESSION -or (Test-InputRedirected)) { return }
+function Set-ConsoleQuickEdit([bool]$Enable = $true) {
+    # Ensure QuickEdit mode is always enabled and raw mouse capture is stripped so all console text is freely selectable
+    if (Test-InputRedirected) { return }
     try {
         if (-not ('LanFixer.Native' -as [type])) { [void](Enable-VtMode) }
         if (-not ('LanFixer.Native' -as [type])) { return }
@@ -1623,13 +1622,9 @@ function Set-ConsoleQuickEdit([bool]$Enable) {
         if ($h -eq [System.IntPtr]::Zero -or $h.ToInt64() -eq -1) { return }
         [uint32]$m = 0
         if (-not [LanFixer.Native]::GetConsoleMode($h, [ref]$m)) { return }
-        if (-not $Enable) {
-            $script:SavedInputMode = $m
-            [void][LanFixer.Native]::SetConsoleMode($h, (($m -band (-bnot 0x0040)) -bor 0x0080))
-        } elseif ($null -ne $script:SavedInputMode) {
-            [void][LanFixer.Native]::SetConsoleMode($h, $script:SavedInputMode)
-            $script:SavedInputMode = $null
-        }
+        # 0x0040 = ENABLE_QUICK_EDIT_MODE, 0x0080 = ENABLE_EXTENDED_FLAGS, 0x0010 = ENABLE_MOUSE_INPUT
+        $newMode = (($m -bor 0x0040) -bor 0x0080) -band (-bnot 0x0010)
+        [void][LanFixer.Native]::SetConsoleMode($h, $newMode)
     } catch {}
 }
 function Initialize-Ui {
@@ -1738,7 +1733,7 @@ function Show-Cursor([bool]$On) { if ($script:Ui.Vt) { [Console]::Write($script:
 # Ctrl+C needs no handler: PowerShell stops the pipeline and the try/finally in Start-Interactive restores the screen.
 # (A scriptblock delegate on the console's control thread has no runspace and can fault instead of cleaning up.)
 function Enter-Screen {
-    Set-ConsoleQuickEdit $false
+    Set-ConsoleQuickEdit $true
     Clear-InputBuffer
     if ($script:Ui.Vt -and $env:LANFIXER_NOALT -ne '1') { [Console]::Write($script:Esc + '[?1049h'); $script:Ui.Alt = $true }
     Clear-Screen
@@ -2060,7 +2055,7 @@ function Get-DashboardModel($t, $adv, [int]$Width = 0) {
     if ($w -ge 74 -and ($uiH -eq 0 -or $uiH -ge 28)) {
         $col1W = $cw
         [void]$L.Add(@((Seg 'accent!' ('  REPAIR & CONNECTIVITY'.PadRight($col1W + 2))), (Seg 'accent!' 'DIAGNOSTICS & TOOLS')))
-        [void]$L.Add(@((Seg $(if ($adv.Key -eq '1') { 'ok!' } else { 'text' }) ('  [1] Smart 7-Layer Heal'.PadRight($col1W + 2))), (Seg 'text' '[3] DNS Profile Engine')))
+        [void]$L.Add(@((Seg $(if ($adv.Key -eq '1') { 'ok!' } else { 'text' }) ('  [1] Quick Heal'.PadRight($col1W + 2))), (Seg 'text' '[3] DNS Profile Engine')))
         [void]$L.Add(@((Seg $(if ($adv.Key -eq '2') { 'ok!' } else { 'text' }) ('  [2] Arm Watchdog Guard'.PadRight($col1W + 2))), (Seg 'text' '[M] Routing Priority Engine')))
         [void]$L.Add(@((Seg $(if ($adv.Key -eq 'a') { 'ok!' } else { 'text' }) ('  [A] Portal Login Vault'.PadRight($col1W + 2))), (Seg 'text' '[4] Live Latency Probe')))
         [void]$L.Add(@((Seg $(if ($adv.Key -eq '7') { 'ok!' } else { 'text' }) ('  [7] Open Portal Page'.PadRight($col1W + 2))), (Seg 'text' '[5] Flush DNS & ARP Caches')))
@@ -2129,13 +2124,13 @@ function Show-Advisory {
     Write-Banner 'DECISION & PROBLEM-SOLVING GUIDE'
     $w = Get-UiWidth
     Out-Line @((Seg 'accent!' '  Recommendation'))
-    Out-Line @((Seg 'dim' '  * Plug in Ethernet cable  '), (Seg 'faint' '-> '), (Seg 'ok!' '[1] Smart 7-Layer Heal '), (Seg 'dim' '(repairs adapter, IP lease & routes)'))
+    Out-Line @((Seg 'dim' '  * Plug in Ethernet cable  '), (Seg 'faint' '-> '), (Seg 'ok!' '[1] Quick Heal '), (Seg 'dim' '(repairs adapter, IP lease & routes)'))
     Out-Line @()
     Out-Line @((Seg 'accent!' '  COMMON SYMPTOMS & 1-TOUCH FIXES'.PadRight(50)), (Seg 'accent!' 'ACTION'))
     Out-Line @((Seg 'faint' ('  ' + ($script:G.rule * $w))))
     $matrix = @(
         # 1. Connection & Initial Setup
-        @('Cable in, no IP / APIPA (169.254.x.x)',       '1', 'Smart 7-Layer Heal'),
+        @('Cable in, no IP / APIPA (169.254.x.x)',       '1', 'Quick Heal'),
         @('Campus portal login required for internet',   'A', 'Portal Login Vault'),
         @('Auto-repair on cable plug or system wake',    '2', 'Arm Background Watchdog'),
         # 2. DNS & Everyday Browsing
@@ -2447,7 +2442,7 @@ function Invoke-DashboardKey([string]$Key, $adv) {
                         if ($inet.State -eq 'Offline' -and (Test-TcpPort $script:Cfg.PortalIp $script:Cfg.PortalPort 900)) {
                             $inet = @{ State = 'Captive'; Location = $script:Cfg.PortalUrl; Via = 'link' }
                         } else {
-                            Write-Log 'WARN' ("Link state is '{0}' (not behind captive portal). Run [1] Smart 7-Layer Heal first." -f $inet.State)
+                            Write-Log 'WARN' ("Link state is '{0}' (not behind captive portal). Run [1] Quick Heal first." -f $inet.State)
                             return @{ State = $inet.State; Signed = $false; SkipBrowser = $true }
                         }
                     }

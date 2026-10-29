@@ -33,7 +33,7 @@ When launched, the console displays live telemetry (adapter status, IP configura
 
 | Key | Function | Description |
 | :---: | :--- | :--- |
-| **1** | **Smart 7-Layer Heal** | Executes automated recovery across physical link, DHCP lease, ARP table, DNS resolvers, and route metrics. |
+| **1** | **Quick Heal** | Executes automated recovery across physical link, DHCP lease, ARP table, DNS resolvers, and route metrics. |
 | **2** | **Arm Watchdog Guard** | Installs a lightweight Windows task that automatically runs repairs upon cable connection, sleep wake, or network disconnect. |
 | **3** | **DNS Profile Engine** | Toggles between local network DHCP resolvers (for internal services) and public secure DNS (Cloudflare / Google / Hybrid). |
 | **4** | **Live Latency Probe** | Measures ping latency, jitter, and packet loss to local gateway and internet endpoints. |
