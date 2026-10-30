@@ -1829,7 +1829,11 @@ $script:LiveGwRtt = $null
 # Returns $true when a new sample arrived. Never blocks.
 function Update-Pulse([string]$Gw) {
     $p = $script:Pulse
-    if ($p.Gw -ne $Gw) { $p.Gw = $Gw; $p.Hist.Clear(); $p.Task = $null; $script:LiveGwRtt = $null }
+    if ($p.Gw -ne $Gw) {
+        try { if ($p.Ping) { $p.Ping.Dispose() } } catch {}
+        $p.Ping = $null
+        $p.Gw = $Gw; $p.Hist.Clear(); $p.Task = $null; $script:LiveGwRtt = $null
+    }
     if (-not $Gw) { return $false }
     $changed = $false
     if ($p.Task -and $p.Task.IsCompleted) {
