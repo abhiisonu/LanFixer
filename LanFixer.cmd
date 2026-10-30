@@ -271,6 +271,7 @@ function ConvertTo-ArgString([string[]]$Arguments) {
 function Invoke-Native {
     param([string]$File, [string[]]$Arguments = @(), [int]$TimeoutMs = 20000)
     $res = @{ ExitCode = -1; TimedOut = $false; Output = '' }
+    $p = $null
     try {
         $psi = New-Object System.Diagnostics.ProcessStartInfo
         $psi.FileName = $File
@@ -284,6 +285,7 @@ function Invoke-Native {
         $se = $p.StandardError.ReadToEndAsync()
         if (-not $p.WaitForExit($TimeoutMs)) {
             try { $p.Kill() } catch {}
+            try { [void]$p.WaitForExit(1000) } catch {}
             $res.TimedOut = $true
             return $res
         }
@@ -291,6 +293,9 @@ function Invoke-Native {
         $res.ExitCode = $p.ExitCode
         $res.Output = ([string]$so.Result + [string]$se.Result)
     } catch { $res.Output = $_.Exception.Message }
+    finally {
+        if ($p) { try { $p.Dispose() } catch {} }
+    }
     return $res
 }
 function Get-SysExe([string]$Name) { return (Join-Path $script:Sys32 $Name) }
@@ -425,14 +430,17 @@ function Repair-StoreChildren([string]$Dir) {
     }
 }
 function Get-FileSha256([string]$Path) {
+    $stream = $null; $sha = $null
     try {
         $stream = [System.IO.File]::OpenRead($Path)
         $sha = [System.Security.Cryptography.SHA256]::Create()
         $hash = $sha.ComputeHash($stream)
-        $stream.Close(); $stream.Dispose(); $sha.Dispose()
         return ([System.BitConverter]::ToString($hash) -replace '-').ToUpperInvariant()
     } catch {
         try { return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToUpperInvariant() } catch { return $null }
+    } finally {
+        if ($stream) { try { $stream.Dispose() } catch {} }
+        if ($sha) { try { $sha.Dispose() } catch {} }
     }
 }
 # ---- optional per-institution override: <store>\config.json -------------------------------------
@@ -615,6 +623,7 @@ function Initialize-Store {
 # LOCKING (abandoned-mutex safe, because StopExisting can kill a holder)
 # ==============================================================================
 function Enter-Lock([int]$TimeoutMs = 1000) {
+    if (-not $script:IsAdmin) { return $false }
     try {
         if (-not $script:Mutex) { $script:Mutex = New-Object System.Threading.Mutex($false, 'Global\LanFixer_Lock') }
         if ($script:LockDepth -gt 0) {
@@ -657,12 +666,15 @@ function Enter-Lock([int]$TimeoutMs = 1000) {
     } catch { return $false }
 }
 function Exit-Lock {
+    if (-not $script:IsAdmin) { return }
     if ($script:LockDepth -gt 0) {
         $script:LockDepth--
         if ($script:LockDepth -eq 0) {
             if ($script:Mutex) { try { $script:Mutex.ReleaseMutex() } catch {} }
             $script:HasMutex = $false
         }
+    } else {
+        $script:HasMutex = $false
     }
 }
 function Invoke-WithLock {
@@ -787,24 +799,27 @@ function Get-ScopedDnsAnswers([string]$Name, [string]$SourceIp, [int]$TimeoutMs 
     }
     if ($pending.Count -eq 0) { return $out }
     $clock = [System.Diagnostics.Stopwatch]::StartNew()
-    while ($pending.Count -gt 0 -and $clock.ElapsedMilliseconds -lt $TimeoutMs -and $out.Count -eq 0) {
-        $slice = [int][math]::Min(25, [math]::Max(1, $TimeoutMs - $clock.ElapsedMilliseconds))
-        $rl = New-Object System.Collections.ArrayList
-        foreach ($s in $pending.Keys) { [void]$rl.Add($pending[$s].Client) }
-        try { [System.Net.Sockets.Socket]::Select($rl, $null, $null, ($slice * 1000)) } catch { Start-Sleep -Milliseconds 2 }
-        foreach ($s in @($pending.Keys)) {
-            $u = $pending[$s]
-            if (-not $rl.Contains($u.Client)) { continue }
-            try {
-                $ep = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Any, 0)
-                $ans = @(Get-DnsAAnswers ($u.Receive([ref]$ep)) $pkt)
-                if ($ans.Count -gt 0) { $out = @($ans) }
-            } catch {}
-            try { $u.Close() } catch {}
-            $pending.Remove($s)
+    try {
+        while ($pending.Count -gt 0 -and $clock.ElapsedMilliseconds -lt $TimeoutMs -and $out.Count -eq 0) {
+            $slice = [int][math]::Min(25, [math]::Max(1, $TimeoutMs - $clock.ElapsedMilliseconds))
+            $rl = New-Object System.Collections.ArrayList
+            foreach ($s in $pending.Keys) { [void]$rl.Add($pending[$s].Client) }
+            try { [System.Net.Sockets.Socket]::Select($rl, $null, $null, ($slice * 1000)) } catch { Start-Sleep -Milliseconds 2 }
+            foreach ($s in @($pending.Keys)) {
+                $u = $pending[$s]
+                if (-not $rl.Contains($u.Client)) { continue }
+                try {
+                    $ep = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Any, 0)
+                    $ans = @(Get-DnsAAnswers ($u.Receive([ref]$ep)) $pkt)
+                    if ($ans.Count -gt 0) { $out = @($ans) }
+                } catch {}
+                try { $u.Close() } catch {}
+                $pending.Remove($s)
+            }
         }
+    } finally {
+        foreach ($s in @($pending.Keys)) { try { $pending[$s].Close() } catch {} }
     }
-    foreach ($s in @($pending.Keys)) { try { $pending[$s].Close() } catch {} }
     return $out
 }
 # DNS lookup with a hard time limit (HttpWebRequest/GetHostAddresses alone can block for many seconds).
@@ -1170,29 +1185,33 @@ function New-CertCallback([string]$Pin, $Capture) {
 
 function ConvertFrom-ChunkedBytes([byte[]]$Data) {
     $out = New-Object System.IO.MemoryStream
-    $i = 0
-    while ($i -lt $Data.Length) {
-        $e = $i
-        $lfLen = 0
-        while ($e -lt $Data.Length) {
-            if ($e -lt ($Data.Length - 1) -and $Data[$e] -eq 13 -and $Data[$e + 1] -eq 10) { $lfLen = 2; break }
-            if ($Data[$e] -eq 10) { $lfLen = 1; break }
-            $e++
+    try {
+        $i = 0
+        while ($i -lt $Data.Length) {
+            $e = $i
+            $lfLen = 0
+            while ($e -lt $Data.Length) {
+                if ($e -lt ($Data.Length - 1) -and $Data[$e] -eq 13 -and $Data[$e + 1] -eq 10) { $lfLen = 2; break }
+                if ($Data[$e] -eq 10) { $lfLen = 1; break }
+                $e++
+            }
+            if ($lfLen -eq 0) { break }
+            $line = [System.Text.Encoding]::ASCII.GetString($Data, $i, $e - $i)
+            $semi = $line.IndexOf(';'); if ($semi -ge 0) { $line = $line.Substring(0, $semi) }
+            $n = 0
+            try { $n = [Convert]::ToInt32($line.Trim(), 16) } catch { break }
+            $i = $e + $lfLen
+            if ($n -le 0 -or $i -ge $Data.Length) { break }
+            $take = [Math]::Min($n, $Data.Length - $i)
+            if ($take -gt 0) { $out.Write($Data, $i, $take) }
+            $i += $take
+            if ($i -lt ($Data.Length - 1) -and $Data[$i] -eq 13 -and $Data[$i + 1] -eq 10) { $i += 2 }
+            elseif ($i -lt $Data.Length -and $Data[$i] -eq 10) { $i += 1 }
         }
-        if ($lfLen -eq 0) { break }
-        $line = [System.Text.Encoding]::ASCII.GetString($Data, $i, $e - $i)
-        $semi = $line.IndexOf(';'); if ($semi -ge 0) { $line = $line.Substring(0, $semi) }
-        $n = 0
-        try { $n = [Convert]::ToInt32($line.Trim(), 16) } catch { break }
-        $i = $e + $lfLen
-        if ($n -le 0 -or $i -ge $Data.Length) { break }
-        $take = [Math]::Min($n, $Data.Length - $i)
-        if ($take -gt 0) { $out.Write($Data, $i, $take) }
-        $i += $take
-        if ($i -lt ($Data.Length - 1) -and $Data[$i] -eq 13 -and $Data[$i + 1] -eq 10) { $i += 2 }
-        elseif ($i -lt $Data.Length -and $Data[$i] -eq 10) { $i += 1 }
+        return , ($out.ToArray())
+    } finally {
+        $out.Dispose()
     }
-    return , ($out.ToArray())
 }
 
 # Bounded gzip / deflate (zlib or raw) decoder. A decompression bomb (> MaxBytes) or undecodable data returns the raw bytes.
@@ -1363,6 +1382,7 @@ function Invoke-TlsHttp {
         }
     } catch { $r.Error = 'Error' }
     finally {
+        if ($ms) { try { $ms.Dispose() } catch {} }
         if ($ssl) { try { $ssl.Dispose() } catch {} }
         if ($sock) { try { $sock.Close() } catch {} }
     }
@@ -1602,12 +1622,13 @@ function Enable-VtMode {
     try {
         if (-not ('LanFixer.Native' -as [type])) {
             Add-Type -Namespace LanFixer -Name Native -MemberDefinition @'
-[System.Runtime.InteropServices.DllImport("kernel32.dll")] public static extern System.IntPtr GetStdHandle(int h);
-[System.Runtime.InteropServices.DllImport("kernel32.dll")] public static extern bool GetConsoleMode(System.IntPtr h, out uint m);
-[System.Runtime.InteropServices.DllImport("kernel32.dll")] public static extern bool SetConsoleMode(System.IntPtr h, uint m);
+[System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)] public static extern System.IntPtr GetStdHandle(int h);
+[System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)] public static extern bool GetConsoleMode(System.IntPtr h, out uint m);
+[System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)] public static extern bool SetConsoleMode(System.IntPtr h, uint m);
 '@
         }
         $h = [LanFixer.Native]::GetStdHandle(-11)
+        if ($h -eq [System.IntPtr]::Zero -or $h.ToInt64() -eq -1) { return $false }
         [uint32]$m = 0
         if (-not [LanFixer.Native]::GetConsoleMode($h, [ref]$m)) { return $false }
         if (($m -band 4) -ne 0) { return $true }
@@ -2096,7 +2117,7 @@ function Update-PulseRow($t) {
     $targetRow = $f.Model.PulseIdx + 1
     $promptRow = $f.Rows + 1
     $e = $script:Esc
-    [Console]::Write($e + '[' + $targetRow + ';1H' + (ConvertTo-AnsiString $segs) + $e + '[K' + $e + '[' + $promptRow + ';5H')
+    [Console]::Write($e + '[' + $targetRow + ';1H' + (ConvertTo-AnsiString $segs) + $e + '[K' + $e + '[' + $promptRow + ';5H' + $e + '[?25h')
     return $true
 }
 
@@ -6376,6 +6397,14 @@ function Invoke-LogicTests {
     $uprDef = [string](Get-Command Update-PulseRow -ErrorAction SilentlyContinue).Definition
     Write-Check 'Logic: Update-PulseRow uses absolute ANSI row positioning' ($uprDef.IndexOf('$targetRow') -ge 0 -and $uprDef.IndexOf('$promptRow') -ge 0)
     Write-Check 'Logic: dashboard routing priority sync triggers strictly on Wi-Fi Protected or non-Ethernet First' ($siDef.IndexOf("Routing -eq 'Wi-Fi Protected'") -ge 0 -and $siDef.IndexOf("Routing -ne 'Ethernet First'") -ge 0 -and $siDef.IndexOf("Ethernet Primary") -lt 0)
+    $inDef = [string](Get-Command Invoke-Native -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Invoke-Native disposes process handle and waits for rundown' (($inDef.IndexOf('$p.Dispose()') -ge 0) -and ($inDef.IndexOf('$p.WaitForExit(1000)') -ge 0))
+    $shaDef = [string](Get-Command Get-FileSha256 -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Get-FileSha256 safely disposes stream and crypto handles in finally' (($shaDef.IndexOf('$stream.Dispose()') -ge 0) -and ($shaDef.IndexOf('$sha.Dispose()') -ge 0))
+    $elDef2 = [string](Get-Command Enter-Lock -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Enter-Lock refuses non-admin callers without constructing Global mutex' ($elDef2.IndexOf('if (-not $script:IsAdmin) { return $false }') -ge 0)
+    $gdmDef = [string](Get-Command Get-DashboardModel -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Get-DashboardModel reserves categorized dock for width 74+ and height 28+' ($gdmDef.IndexOf('$uiH -ge 28') -ge 0)
     $cfgKeepHome = $script:Cfg
     $script:Cfg = @{ CampusDns = '172.16.1.2'; PortalIp = '10.114.0.5'; CampusDomain = 'nitjsr.ac.in'; PortalHost = 'gateway.nitjsr.ac.in' }
     $hvA = (Get-HomeCampusVerdict @('172.16.1.2', '8.8.8.8') '' $false $null)
@@ -6664,6 +6693,7 @@ function Show-Dashboard($t, $adv) {
     $m = Get-DashboardModel $t $adv
     Write-Frame $m.Lines
     Out-Line @((Seg 'accent!' ('  ' + $script:G.prompt + ' '))) -NoNewline
+    Show-Cursor $true
     $script:Frame = @{ Model = $m; Rows = $m.Lines.Count; WinW = (Get-UiWidth) }
 }
 function Show-DnsMenu {
@@ -6775,9 +6805,7 @@ function Start-Interactive {
                 if (Test-KeyAvailable) { $key = Read-KeyNow; break }
                 if ($t.GwIp -and (Update-Pulse $t.GwIp)) {
                     if ($null -ne $script:LiveGwRtt) { $t.GwRtt = $script:LiveGwRtt }
-                    if ($script:Ui.Vt) {
-                        if (-not (Update-PulseRow $t)) { Show-Dashboard $t $adv }
-                    }
+                    if ($script:Ui.Vt) { [void](Update-PulseRow $t) }
                 }   # ping a silent gateway too: the lost replies ARE the picture
                 if ((Get-UiWidth) -ne $lastW -or (Get-UiHeight) -ne $lastH) { $draw = $true; break }
                 $ivl = 2; if ($t.Problem -ne 'Healthy' -and $t.Problem -ne 'Online') { $ivl = 4 }   # quickest refresh: 2s healthy, 4s offline/degraded
