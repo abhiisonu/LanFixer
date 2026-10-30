@@ -189,6 +189,7 @@ $script:Mutex          = $null
 $script:HasMutex       = $false
 $script:LockDepth      = 0
 $script:CancelHandler  = $null
+$script:InDashboard    = $false
 
 # ==============================================================================
 # CORE HELPERS
@@ -212,6 +213,7 @@ function Write-Log {
         } catch {}
     }
     if (-not $script:UiOn) { return }
+    if ($script:InDashboard) { return }
     $g = $script:G
     switch ($Level) {
         'STEP' {
@@ -2085,12 +2087,12 @@ function Update-PulseRow($t) {
     if (-not $f -or -not $script:Ui.Vt -or $f.Model.PulseIdx -lt 0) { return $false }
     $hgt = Get-UiHeight
     if ($hgt -le 0 -or ($f.Rows + 1) -gt $hgt) { return $false }   # unknown or too small: skip the partial repaint
-    $up = $f.Rows - $f.Model.PulseIdx
-    if ($up -le 0) { return $false }
     $sparkWidth = [Math]::Max(4, [Math]::Min(36, $f.Model.Width - 54))
     $segs = Get-PulseSegs $t $sparkWidth
+    $targetRow = $f.Model.PulseIdx + 1
+    $promptRow = $f.Rows + 1
     $e = $script:Esc
-    [Console]::Write($e + '[' + $up + 'A' + "`r" + (ConvertTo-AnsiString $segs) + $e + '[K' + $e + '[' + $up + 'B' + $e + '[5G')
+    [Console]::Write($e + '[' + $targetRow + ';1H' + (ConvertTo-AnsiString $segs) + $e + '[K' + $e + '[' + $promptRow + ';5H')
     return $true
 }
 
@@ -2098,6 +2100,8 @@ function Update-PulseRow($t) {
 # VIEWS AND MENUS
 # ==============================================================================
 function Show-View([string]$Title, [scriptblock]$Body, [switch]$NoWait) {
+    $prevInDash = $script:InDashboard
+    $script:InDashboard = $false
     Clear-Screen
     Show-Cursor $true
     Write-Banner $Title
@@ -2107,6 +2111,7 @@ function Show-View([string]$Title, [scriptblock]$Body, [switch]$NoWait) {
         Out-Line @((Seg 'dim' '  Press any key to return to dashboard...'))
         Wait-AnyKey
     }
+    $script:InDashboard = $prevInDash
 }
 
 function Read-Choice {
@@ -6362,6 +6367,11 @@ function Invoke-LogicTests {
     Write-Check 'Logic: dashboard autopilot makes one sign-in attempt when it opens on an already captive link' (($siDef.IndexOf('$autoLoginTried') -ge 0) -and ($siDef.IndexOf('Invoke-HeadlessPortalLogin') -ge 0))
     Write-Check 'Logic: dashboard allows key [R] to export support report and preserves F5/Space refresh' ($siDef.IndexOf("Key -eq 'F5'") -ge 0 -and $siDef.IndexOf("ch -eq 'r'") -lt 0)
     Write-Check 'Logic: Get-StepperLines handles 0 or 1 rows safely without division by zero' ((@(Get-StepperLines @() 80)).Count -eq 0 -and (@(Get-StepperLines @(@{ State = 'ok' }) 80)).Count -eq 0)
+    $wlDef = [string](Get-Command Write-Log -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Write-Log suppresses console output during active dashboard loop' ($wlDef.IndexOf('InDashboard') -ge 0)
+    $uprDef = [string](Get-Command Update-PulseRow -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Update-PulseRow uses absolute ANSI row positioning' ($uprDef.IndexOf('$targetRow') -ge 0 -and $uprDef.IndexOf('$promptRow') -ge 0)
+    Write-Check 'Logic: dashboard routing priority sync triggers strictly on Wi-Fi Protected or non-Ethernet First' ($siDef.IndexOf("Routing -eq 'Wi-Fi Protected'") -ge 0 -and $siDef.IndexOf("Routing -ne 'Ethernet First'") -ge 0 -and $siDef.IndexOf("Ethernet Primary") -lt 0)
     $cfgKeepHome = $script:Cfg
     $script:Cfg = @{ CampusDns = '172.16.1.2'; PortalIp = '10.114.0.5'; CampusDomain = 'nitjsr.ac.in'; PortalHost = 'gateway.nitjsr.ac.in' }
     $hvA = (Get-HomeCampusVerdict @('172.16.1.2', '8.8.8.8') '' $false $null)
@@ -6743,7 +6753,7 @@ function Start-Interactive {
         Show-Dashboard $t $adv          # instant skeleton, then the real reading
         $t = Get-Telemetry; $adv = Get-Advice $t
         if ($script:IsAdmin -and -not $script:IsDry -and ($t.Problem -eq 'Healthy' -or $t.Problem -eq 'Online')) {
-            if (($t.RouteProfile -eq 'Adaptive' -or $t.RouteProfile -eq 'Ethernet') -and $t.Routing -ne 'Ethernet Primary') {
+            if (($t.RouteProfile -eq 'Adaptive' -and $t.Routing -eq 'Wi-Fi Protected') -or ($t.RouteProfile -eq 'Ethernet' -and $t.Routing -ne 'Ethernet First')) {
                 [void](Invoke-WithLock -WaitMs 2000 -Block { Complete-Authentication })
                 $t = Get-Telemetry; $adv = Get-Advice $t
             }
@@ -6751,9 +6761,11 @@ function Start-Interactive {
         $draw = $true
         $lastTel = Get-Date
         $lastW = Get-UiWidth
+        $lastH = Get-UiHeight
         $autoLoginTried = $false
+        $script:InDashboard = $true
         while ($true) {
-            if ($draw) { Show-Dashboard $t $adv; $draw = $false; $lastW = Get-UiWidth }
+            if ($draw) { Show-Dashboard $t $adv; $draw = $false; $lastW = Get-UiWidth; $lastH = Get-UiHeight; $script:InDashboard = $true }
             $key = $null
             while ($null -eq $key) {
                 if (Test-KeyAvailable) { $key = Read-KeyNow; break }
@@ -6763,15 +6775,15 @@ function Start-Interactive {
                         if (-not (Update-PulseRow $t)) { Show-Dashboard $t $adv }
                     }
                 }   # ping a silent gateway too: the lost replies ARE the picture
-                if ((Get-UiWidth) -ne $lastW) { $draw = $true; break }
+                if ((Get-UiWidth) -ne $lastW -or (Get-UiHeight) -ne $lastH) { $draw = $true; break }
                 $ivl = 2; if ($t.Problem -ne 'Healthy' -and $t.Problem -ne 'Online') { $ivl = 4 }   # quickest refresh: 2s healthy, 4s offline/degraded
                 if (((Get-Date) - $lastTel).TotalSeconds -ge $ivl) {
                     $t2 = Get-Telemetry; $lastTel = Get-Date
                     if ($script:IsAdmin -and -not $script:IsDry) {
                         $needsPrioritySync = (($t2.Problem -eq 'Healthy' -or $t2.Problem -eq 'Online') -and (
                             ($t.Problem -eq 'Captive') -or
-                            ($t2.RouteProfile -eq 'Adaptive' -and $t2.Routing -ne 'Ethernet Primary') -or
-                            ($t2.RouteProfile -eq 'Ethernet' -and $t2.Routing -ne 'Ethernet Primary')
+                            ($t2.RouteProfile -eq 'Adaptive' -and $t2.Routing -eq 'Wi-Fi Protected') -or
+                            ($t2.RouteProfile -eq 'Ethernet' -and $t2.Routing -ne 'Ethernet First')
                         ))
                         if ($needsPrioritySync) {
                             [void](Invoke-WithLock -WaitMs 2000 -Block { Complete-Authentication })
@@ -6807,15 +6819,19 @@ function Start-Interactive {
                 $draw = $true
                 continue
             }
+            $script:InDashboard = $false
             $handled = Invoke-DashboardKey $ch $adv
             Clear-InputBuffer
             if ($handled) {
                 Clear-Screen
                 $script:LiveGwRtt = $null
                 $t = Get-Telemetry; $adv = Get-Advice $t; $lastTel = Get-Date; $draw = $true
+            } else {
+                $script:InDashboard = $true
             }
         }
     } finally {
+        $script:InDashboard = $false
         try { if ($script:Pulse.Ping) { $script:Pulse.Ping.Dispose(); $script:Pulse.Ping = $null; $script:Pulse.Task = $null } } catch {}
         try { [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = [System.Diagnostics.ProcessPriorityClass]::Normal } catch {}
         Exit-Screen
