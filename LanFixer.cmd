@@ -826,6 +826,67 @@ function Get-ScopedDnsAnswers([string]$Name, [string]$SourceIp, [int]$TimeoutMs 
 # $SourceIp pins the lookup to ONE link: while a second uplink is up, the system-wide resolver answers from ITS DNS,
 # so a dead Ethernet resolver looks healthy. In that case only this adapter's own resolvers may answer; when none
 # does, the truthful answer is "no DNS on this link" ($null) and Invoke-HttpProbe reports DnsFail for that adapter.
+function Test-IsSinkholeIp([string]$Ip) {
+    if (-not $Ip) { return $true }
+    $s = ([string]$Ip).Trim()
+    # IPv4 RFC 5737 TEST-NET-1/2/3, loopback, 0.0.0.0/8, link-local, benchmarking, multicast, reserved
+    if ($s -match '^192\.0\.2\.' -or $s -match '^198\.51\.100\.' -or $s -match '^203\.0\.113\.' -or
+        $s -match '^127\.' -or $s -eq '0.0.0.0' -or $s -match '^0\.' -or $s -match '^169\.254\.' -or
+        $s -match '^198\.(1[89])\.' -or $s -match '^(22[4-9]|23[0-9]|24[0-9]|25[0-5])\.') {
+        return $true
+    }
+    # IPv6 documentation (2001:db8::), loopback (::1), unspecified (::), link-local (fe80::) or ULA (fc00::/fd00::)
+    if ($s -match '^(?i)2001:0?db8:' -or $s -eq '::1' -or $s -eq '::' -or
+        $s -match '^(?i)fe[89ab][0-9a-f]:' -or $s -match '^(?i)f[cd][0-9a-f]{2}:') {
+        return $true
+    }
+    return $false
+}
+
+function Get-DnsVerdictDecision([bool]$HasGlobalV6, [bool]$HasV6Route, [int]$V6DnsCount, [bool]$IsSinkhole) {
+    if ($V6DnsCount -le 0) { return 'None' }
+    if ($IsSinkhole) { return 'Neutralize' }
+    if (-not $HasGlobalV6 -or -not $HasV6Route) { return 'Neutralize' }
+    return 'Keep'
+}
+
+function Get-AdapterDnsVerdict($Ad) {
+    $hasGlobalV6 = $false
+    $hasV6Route = $false
+    $v6Dns = @()
+    $isSinkhole = $false
+    try {
+        $addrs = @(Get-NetIPAddress -InterfaceIndex $Ad.ifIndex -AddressFamily IPv6 -ErrorAction SilentlyContinue | Where-Object { [string]$_.AddressState -eq 'Preferred' })
+        foreach ($a in $addrs) {
+            $ip = [string]$a.IPAddress
+            if ($ip -match '^(?i)[23][0-9a-f]{3}:') { $hasGlobalV6 = $true; break }
+        }
+        $routes = @(Get-NetRoute -InterfaceIndex $Ad.ifIndex -AddressFamily IPv6 -DestinationPrefix '::/0' -ErrorAction SilentlyContinue)
+        foreach ($r in $routes) {
+            $nh = [string]$r.NextHop
+            if ($nh -and -not $nh.StartsWith('fe80:') -and -not $nh.StartsWith('fd') -and -not $nh.StartsWith('fc')) {
+                $hasV6Route = $true; break
+            }
+        }
+        $v6Dns = @(Get-DnsClientServerAddress -InterfaceIndex $Ad.ifIndex -AddressFamily IPv6 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty ServerAddresses)
+        if ($v6Dns.Count -gt 0) {
+            try {
+                $dnsq = Resolve-DnsName -Name 'connectivitycheck.gstatic.com' -Server $v6Dns[0] -Type A -QuickTimeout -DnsOnly -ErrorAction SilentlyContinue | Select-Object -First 1
+                if ($dnsq -and $dnsq.IPAddress -and (Test-IsSinkholeIp [string]$dnsq.IPAddress)) {
+                    $isSinkhole = $true
+                }
+            } catch {}
+        }
+    } catch {}
+    $decision = Get-DnsVerdictDecision $hasGlobalV6 $hasV6Route $v6Dns.Count $isSinkhole
+    return @{
+        Action      = $decision
+        HasGlobalV6 = $hasGlobalV6
+        HasV6Route  = $hasV6Route
+        V6DnsCount  = $v6Dns.Count
+        IsSinkhole  = $isSinkhole
+    }
+}
 function Resolve-HostBounded([string]$Name, [int]$TimeoutMs = 2500, [string]$SourceIp = '') {
     if (-not $Name) { return $null }
     $cleanName = $Name.Trim().TrimEnd('.')
@@ -835,20 +896,32 @@ function Resolve-HostBounded([string]$Name, [int]$TimeoutMs = 2500, [string]$Sou
     }
     if ($SourceIp -and (Test-OtherUplinkActive)) {
         $bounded = @(Get-ScopedDnsAnswers $cleanName $SourceIp 1200)
-        if ($bounded.Count -eq 0) { return $null }
-        return [string]$bounded[0]
+        foreach ($b in $bounded) {
+            if ($b -and -not (Test-IsSinkholeIp [string]$b)) { return [string]$b }
+        }
+        return $null
     }
     try {
         $ar = [System.Net.Dns]::BeginGetHostAddresses($cleanName, $null, $null)
         $ok = $ar.AsyncWaitHandle.WaitOne($TimeoutMs, $false)   # the runtime owns this handle: closing it early breaks later connects
         if ($ok) {
             $ips = [System.Net.Dns]::EndGetHostAddresses($ar)
-            foreach ($ip in $ips) { if ($ip.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork) { return $ip.ToString() } }
+            foreach ($ip in $ips) {
+                if ($ip.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork) {
+                    $s = $ip.ToString()
+                    if (-not (Test-IsSinkholeIp $s)) { return $s }
+                }
+            }
         }
     } catch {}
     try {
-        $dnsRec = Resolve-DnsName -Name $cleanName -Type A -QuickTimeout -DnsOnly -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($dnsRec -and $dnsRec.IPAddress) { return [string]$dnsRec.IPAddress }
+        $dnsRecs = @(Resolve-DnsName -Name $cleanName -Type A -QuickTimeout -DnsOnly -ErrorAction SilentlyContinue)
+        foreach ($rec in $dnsRecs) {
+            if ($rec -and $rec.IPAddress) {
+                $s = [string]$rec.IPAddress
+                if (-not (Test-IsSinkholeIp $s)) { return $s }
+            }
+        }
     } catch {}
     return $null
 }
@@ -1059,6 +1132,24 @@ function Restore-InterfaceMetrics([string]$Why) {
             [void](Invoke-Change ('{0}: {1} {2} metric back to automatic (older record)' -f $Why, $w.InterfaceAlias, $w.AddressFamily) { Set-NetIPInterface -InterfaceIndex $w.ifIndex -AddressFamily $w.AddressFamily -AutomaticMetric Enabled -ErrorAction Stop })
         }
         if (-not $script:IsDry) { $script:State.Misc['WifiMetricManaged'] = $false }
+    }
+    if ((Get-RouteProfileName) -eq 'Windows') {
+        foreach ($ea in @(Get-EthernetAdapters)) {
+            foreach ($af in @('IPv4', 'IPv6')) {
+                $ipif = Get-NetIPInterface -InterfaceIndex $ea.ifIndex -AddressFamily $af -ErrorAction SilentlyContinue | Select-Object -First 1
+                if ($ipif -and [string]$ipif.AutomaticMetric -ne 'Enabled') {
+                    [void](Invoke-Change ('{0}: {1} {2} automatic metric enabled' -f $Why, $ea.Name, $af) { Set-NetIPInterface -InterfaceIndex $ea.ifIndex -AddressFamily $af -AutomaticMetric Enabled -ErrorAction Stop })
+                }
+            }
+        }
+        foreach ($w in @(Get-OtherUplinkAdapters)) {
+            foreach ($af in @('IPv4', 'IPv6')) {
+                $ipif = Get-NetIPInterface -InterfaceIndex $w.ifIndex -AddressFamily $af -ErrorAction SilentlyContinue | Select-Object -First 1
+                if ($ipif -and [string]$ipif.AutomaticMetric -ne 'Enabled') {
+                    [void](Invoke-Change ('{0}: {1} {2} automatic metric enabled' -f $Why, $w.Name, $af) { Set-NetIPInterface -InterfaceIndex $w.ifIndex -AddressFamily $af -AutomaticMetric Enabled -ErrorAction Stop })
+                }
+            }
+        }
     }
 }
 
@@ -1932,6 +2023,7 @@ function New-Telemetry {
         Admin = $script:IsAdmin; Problem = ''; LinkUp = $false; Speed = ''; Nic = ''; Mac = ''; Ip = ''; GwIp = ''; GwRtt = $null; GwAlive = $false
         Conn = '-'; Env = ''; EnvScore = 0; Sticky = $false; DnsPrimary = ''; DnsProfile = ''; Mtu = ''; Routing = 'automatic'
         Watchdog = $false; Vault = $false; Pin = $false; Paused = $false; ArpPending = $false; RouteProfile = 'Adaptive'; LastFull = $null
+        UplinkActive = $false; UplinkName = ''; UplinkProfile = ''; UplinkIsPrimary = $false
     }
 }
 
@@ -1945,7 +2037,13 @@ function Get-HopRows($t, $adv) {
     $ip = 'None'; if ($t.Ip) { $ip = $t.Ip }
     $dns = '-'; if ($t.DnsPrimary) { $dns = $t.DnsPrimary }
     $net = '-'
-    switch ($t.Problem) { { $_ -eq 'Healthy' -or $_ -eq 'Online' } { $net = 'Reachable' } 'Captive' { $net = 'Sign-In' } 'Offline' { $net = 'Blocked' } }
+    switch ($t.Problem) {
+        { $_ -eq 'Healthy' -or $_ -eq 'Online' } {
+            if ($t.UplinkIsPrimary -and $t.UplinkName) { $net = 'via ' + $t.UplinkName } else { $net = 'Reachable' }
+        }
+        'Captive' { $net = 'Sign-In' }
+        'Offline' { $net = 'Blocked' }
+    }
     return @(
         @{ Label = 'Link'; Value = $link; State = $st[0] },
         @{ Label = 'Address'; Value = $ip; State = $st[1] },
@@ -2024,8 +2122,36 @@ function Get-DashboardModel($t, $adv, [int]$Width = 0) {
     [void]$L.Add(@((Seg 'text' '  '), (Seg 'faint' ($script:G.rule * $w))))
     # hero capsule
     $right = ''
-    if ($t.LinkUp) { $right = ('Ethernet ' + $script:G.mid + ' ' + $t.Speed) } elseif ($t.Problem) { $right = 'Ethernet' }
+    if ($t.LinkUp) {
+        if ($t.UplinkActive -and $t.UplinkName) {
+            $uLabel = if ($t.UplinkProfile) { "$($t.UplinkName) ($($t.UplinkProfile))" } else { $t.UplinkName }
+            if ($t.UplinkIsPrimary) {
+                $right = ('Eth ' + $t.Speed + ' (Standby) ' + $script:G.mid + ' Uplink: ' + $uLabel)
+            } else {
+                $right = ('Eth ' + $t.Speed + ' (Primary) ' + $script:G.mid + ' Uplink: ' + $uLabel)
+            }
+        } else {
+            $right = ('Ethernet ' + $script:G.mid + ' ' + $t.Speed)
+        }
+    } elseif ($t.Problem) {
+        if ($t.UplinkActive -and $t.UplinkName) {
+            $uLabel = if ($t.UplinkProfile) { "$($t.UplinkName) ($($t.UplinkProfile))" } else { $t.UplinkName }
+            $right = ('Ethernet (Down) ' + $script:G.mid + ' Uplink: ' + $uLabel)
+        } else {
+            $right = 'Ethernet (Down)'
+        }
+    }
     $heroL = @((Seg 'faint' '  ['), (Seg ($adv.Role + '!') (' ' + $script:G.dot + ' ' + $adv.Word.ToUpper() + ' ')), (Seg 'faint' ']'))
+    $maxRightLen = [Math]::Max(10, ($w + 2) - (Get-SegsLength $heroL) - 2)
+    if ($right.Length -gt $maxRightLen) {
+        if ($t.UplinkActive -and $t.UplinkName) {
+            $tag = if ($t.UplinkIsPrimary) { '(Standby)' } else { '(Primary)' }
+            $right = ('Eth ' + $t.Speed + ' ' + $tag + ' ' + $script:G.mid + ' ' + $t.UplinkName)
+        }
+        if ($right.Length -gt $maxRightLen) {
+            $right = Fit $right $maxRightLen
+        }
+    }
     $hp = ($w + 2) - (Get-SegsLength $heroL) - $right.Length
     [void]$L.Add(@($heroL + (Seg 'text' (' ' * [Math]::Max(2, $hp))) + (Seg 'dim' $right)))
     # path
@@ -2040,10 +2166,11 @@ function Get-DashboardModel($t, $adv, [int]$Width = 0) {
     $dnsv = '-'; if ($t.DnsProfile) { $dnsv = $t.DnsProfile; if ($t.DnsPrimary) { $dnsv += (' ' + $script:G.mid + ' ' + $t.DnsPrimary) } }
     $rout = if ($t.Routing) {
         switch ($t.Routing.ToLower()) {
-            'ethernet first'  { 'Ethernet First' }
-            'wi-fi protected' { 'Wi-Fi Protected' }
-            'automatic'       { if ($t.RouteProfile -and $t.RouteProfile -ne 'Adaptive') { "Auto ($($t.RouteProfile))" } else { 'Automatic' } }
-            default           { $t.Routing }
+            'ethernet first'   { if ($t.UplinkActive) { 'Ethernet First (10 vs 40)' } else { 'Ethernet First' } }
+            'wi-fi protected'  { 'Wi-Fi Protected (15 vs 50)' }
+            'ethernet demoted' { 'Ethernet Demoted (Metric 50)' }
+            'automatic'        { if ($t.RouteProfile -and $t.RouteProfile -ne 'Adaptive') { "Windows ($($t.RouteProfile))" } else { 'Automatic' } }
+            default            { $t.Routing }
         }
     } else { 'Automatic' }
     $curRtt = if ($null -ne $script:LiveGwRtt) { $script:LiveGwRtt } else { $t.GwRtt }
@@ -2304,6 +2431,7 @@ function Show-VaultMenu {
 function Start-Repair([string]$Title = 'quick heal') {
     Show-View $Title {
         if (-not (Assert-Admin)) { return }
+        if ($script:State.Misc -is [hashtable]) { $script:State.Misc['FailStreak'] = 0 }
         $script:ChangeCount = 0; $script:FailCount = 0
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
         $r = Pick-Hash (Invoke-WithLock { Invoke-HealPipeline })
@@ -2726,7 +2854,7 @@ function Test-GatewayAlive($Ad, [string]$Gw) {
         try { $eh = Get-AdapterEnvironment $Ad -UseCache; if ($null -ne $eh.Home) { $homeAd = [bool]$eh.Home } } catch {}
         $cfgProxy = $false
         if ($homeAd) { $cfgProxy = [bool]((Test-TcpPort $script:Cfg.PortalIp $script:Cfg.PortalPort 500) -or ($null -ne (Test-Ping $script:Cfg.CampusDns 500))) }
-        if ((Test-TcpPort $Gw 80 400) -or (Test-TcpPort $Gw 443 400) -or (Test-TcpPort $Gw 53 400) -or $cfgProxy) {
+        if ((Test-TcpPort $Gw 80 400) -or (Test-TcpPort $Gw 443 400) -or (Test-TcpPort $Gw 53 400) -or $cfgProxy -or (Test-TcpPort '1.1.1.1' 53 400) -or (Test-TcpPort '8.8.8.8' 53 400)) {
             return @{ Alive = $true; Rtt = $null; Via = 'arp' }
         }
         return @{ Alive = $false; Rtt = $null; Via = '' }
@@ -3236,9 +3364,13 @@ function Shield-GatewayArp($Ctx, [string]$ConnState) {
     foreach ($gw in @(Get-GatewaysV4 $ad)) {
         $existing = Get-NetNeighbor -InterfaceIndex $ad.ifIndex -IPAddress $gw -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($existing -and $existing.State -eq 'Permanent') {
-            $lockAlive = ($ConnState -eq 'Online') -or ($ConnState -ne 'Offline' -and (Test-GatewayAlive $ad $gw).Alive)
-            if ($lockAlive) { Write-Log 'INFO' "Gateway ARP lock for $gw verified."; continue }
-            Write-Log 'WARN' "Gateway unreachable or offline while ARP-locked: re-learning gateway $gw (the MAC may have changed)."
+            $gwTest = Test-GatewayAlive $ad $gw
+            $lockAlive = [bool]($gwTest.Alive)
+            if ($lockAlive) {
+                Write-Log 'INFO' "Gateway ARP lock for $gw verified ($(if ($ConnState -eq 'Online') { 'online' } else { 'gateway reachable; WAN offline' }))."
+                continue
+            }
+            Write-Log 'WARN' "Gateway $gw unreachable while ARP-locked: re-learning gateway $gw (the MAC may have changed)."
             Remove-GatewayLock $ad $gw
         }
         $macs = @(Get-GatewayMacs $ad $gw 3)
@@ -3397,7 +3529,7 @@ function Shield-RouteMetrics($Ctx, [string]$ConnState) {
     $plan = Get-RouteMetricPlan ([string]$Ctx.Env.Env) $ConnState $others.Count
     if ($plan.Mode -eq 'Restore') {
         if (-not $script:IsDry) { Remove-CampusHostRoutes $ad.ifIndex }
-        if (Test-MetricsManaged) { Restore-InterfaceMetrics ([string]$plan.Why) }
+        if (Test-MetricsManaged -or (Get-RouteProfileName) -eq 'Windows') { Restore-InterfaceMetrics ([string]$plan.Why) }
         return
     }
     # Branch 3 removes the campus host routes BEFORE promoting; branch 2 injects them AFTER demoting, so the
@@ -3681,8 +3813,36 @@ function Test-DhcpDnsUsable([string]$Guid, [string]$SourceIp = '') {
     } catch {}
     return $false
 }
+function Shield-DnsIntegrity($Ad) {
+    if (-not $script:IsAdmin) { return }
+    if ($Ad.MediaType -and $Ad.MediaType -ne '802.3') { return }
+    $guid = [string]$Ad.InterfaceGuid
+    try {
+        $verdict = Get-AdapterDnsVerdict $Ad
+        if ($verdict.Action -ne 'Neutralize') { return }
+        $v6Binding = Get-NetAdapterBinding -InterfaceIndex $Ad.ifIndex -ComponentId 'ms_tcpip6' -ErrorAction SilentlyContinue
+        if ($v6Binding -and $v6Binding.Enabled) {
+            Save-Original $guid 'MsTcpip6' 'True'
+            $why = if ($verdict.IsSinkhole) { "Neutralize rogue IPv6 DNS sinkhole on $($Ad.Name)" }
+                   else { "Neutralize unroutable IPv6 DNS forwarder on $($Ad.Name) (link lacks global IPv6 route)" }
+            $ok = Invoke-Change $why {
+                Set-DnsClientServerAddress -InterfaceIndex $Ad.ifIndex -ResetServerAddresses -ErrorAction SilentlyContinue
+                Set-NetIPInterface -InterfaceIndex $Ad.ifIndex -AddressFamily IPv6 -RouterDiscovery Disabled -ErrorAction SilentlyContinue
+                Disable-NetAdapterBinding -InterfaceIndex $Ad.ifIndex -ComponentId 'ms_tcpip6' -Confirm:$false -ErrorAction Stop
+            }
+            if ($ok -and -not $script:IsDry) {
+                (Get-SubTable 'Dns' $guid).Ipv6Neutralized = $true
+                Clear-DnsClientCache -ErrorAction SilentlyContinue
+                $script:ConnCache = $null
+            }
+        }
+    } catch {
+        Write-Log 'WARN' "Shield-DnsIntegrity skipped on $($Ad.Name): $_"
+    }
+}
 function Shield-Dns($Ctx, [string]$ConnState) {
     $ad = $Ctx.Ad
+    Shield-DnsIntegrity $ad
     $guid = [string]$ad.InterfaceGuid
     $d = Get-SubTable 'Dns' $guid
     $prof = Get-DnsProfileName
@@ -3755,6 +3915,7 @@ function Shield-Dns($Ctx, [string]$ConnState) {
         $nrptServers = @($campus + $nrptExtra | Where-Object { $_ } | Select-Object -Unique)
         Set-CampusNrpt $nrptServers $homeNet
     }
+    Shield-DnsIntegrity $ad
     if (-not $script:IsDry) {
         $d.Phase = $phase
         $d.ConnApplied = $(if ($ConnState -eq 'Online') { 'Online' } else { 'NotOnline' })
@@ -4291,6 +4452,7 @@ function Invoke-SupremeOmnifix {
         if (-not $script:IsDry) {
             $script:State.Misc['RouteProfile'] = 'Adaptive'
             $script:State.Misc['DnsProfile'] = 'Adaptive'
+            $script:State.Misc['FailStreak'] = 0
             $script:State.Misc.Remove('MtuCandidate')
             $script:State.Misc.Remove('DiscoveredDomain')
             $script:State.Misc.Remove('DiscoveredPortalIp')
@@ -4301,7 +4463,7 @@ function Invoke-SupremeOmnifix {
         Remove-CampusNrpt
         Remove-LegacyHostsEntries
         Remove-CampusHostRoutes
-        foreach ($ea in @(Get-EthernetAdapters)) { Release-ArpLocks $ea }
+        foreach ($ea in @(Get-EthernetAdapters)) { Release-ArpLocks $ea; Shield-DnsIntegrity $ea }
         Write-Log 'STEP' 'STAGE 2/5  Restoring clean routing metrics & MTU across all physical uplinks'
         Restore-InterfaceMetrics 'Full Net Reset metrics restore'
         if (-not $script:IsDry) {
@@ -5289,6 +5451,15 @@ function Restore-Everything {
             }
             continue
         }
+        if ($snap.ContainsKey('MsTcpip6')) {
+            $mv = [string]$snap['MsTcpip6']
+            if ($mv -eq 'True') {
+                [void](Invoke-Change "IPv6 re-enabled on adapter $guid" {
+                    $mAd = Get-NetAdapter -InterfaceGuid $guid -ErrorAction SilentlyContinue
+                    if ($mAd) { Enable-NetAdapterBinding -InterfaceIndex $mAd.ifIndex -ComponentId 'ms_tcpip6' -Confirm:$false -ErrorAction SilentlyContinue }
+                })
+            }
+        }
         if ($guid -eq 'Global') {
             if ($snap.ContainsKey('UsbSuspend')) { $uv = $snap['UsbSuspend']; [void](Invoke-Change 'USB selective suspend restored to your original value' { Restore-UsbSuspend $uv }) }
             if ($snap.ContainsKey('Llmnr')) {
@@ -5540,10 +5711,9 @@ function Set-RouteProfileMode([string]$Name) {
                 $ctx = @{ Ad = $eu; Env = (Get-AdapterEnvironment $eu) }
                 Shield-RouteMetrics $ctx $st
             }
-        } else {
-            if (($Name -eq 'Windows' -or $Name -eq 'Adaptive') -and (Test-MetricsManaged)) {
-                Restore-InterfaceMetrics "Routing profile set to $Name"
-            }
+        }
+        if ($Name -eq 'Windows' -or ($Name -eq 'Adaptive' -and $ethUps.Count -eq 0)) {
+            Restore-InterfaceMetrics "Routing profile set to $Name"
         }
         if (-not $script:IsDry) { Save-State }
     })
@@ -5930,6 +6100,7 @@ function Flush-NetworkCache {
     $script:ConnCache = $null
     $script:EnvCache = @{}
     $script:DhcpDiagCache = $null
+    if ($script:State.Misc -is [hashtable]) { $script:State.Misc['FailStreak'] = 0 }
     if ($script:State.Dns -is [hashtable]) {
         foreach ($dk in @($script:State.Dns.Keys)) {
             if ($script:State.Dns[$dk] -is [hashtable] -and $script:State.Dns[$dk].ContainsKey('OrderTime')) {
@@ -6229,6 +6400,12 @@ function Invoke-LogicTests {
     $tRout.Routing = 'Wi-Fi Protected'
     $routTxt = @((& $mdlText (Get-DashboardModel $tRout (Get-Advice $tRout) 79)))
     Write-Check 'UI: dashboard prints Wi-Fi Protected verbatim, never lower-cased' ((@($routTxt | Where-Object { $_ -cmatch 'Wi-Fi Protected' }).Count -ge 1) -and (@($routTxt | Where-Object { $_ -cmatch 'wi-fi protected' }).Count -eq 0))
+    $tDual = New-Telemetry
+    $tDual.Admin = $true; $tDual.Problem = 'Healthy'; $tDual.LinkUp = $true; $tDual.Speed = '1 Gbps'; $tDual.Nic = 'Realtek'
+    $tDual.Ip = '10.1.12.192'; $tDual.Env = 'Campus'; $tDual.EnvScore = 5; $tDual.DnsProfile = 'Adaptive'; $tDual.DnsPrimary = '172.16.1.2'
+    $tDual.Routing = 'Wi-Fi Protected'; $tDual.UplinkActive = $true; $tDual.UplinkName = 'Wi-Fi'; $tDual.UplinkProfile = 'NIT_JSR'; $tDual.UplinkIsPrimary = $true
+    $dualTxt = @((& $mdlText (Get-DashboardModel $tDual (Get-Advice $tDual) 79)))
+    Write-Check 'UI: dual-homed dashboard surfaces active Wi-Fi uplink truthfully' ((@($dualTxt | Where-Object { $_ -match 'Uplink:\s*Wi-Fi' }).Count -ge 1) -and (@($dualTxt | Where-Object { $_ -match 'via Wi-Fi' }).Count -ge 1))
     # v4.5.2: the metric planner must never sabotage a NON-campus wired network (three strict branches).
     $pOther = Get-RouteMetricPlan 'Other' 'Online' 1
     Write-Check 'Logic: a HEALTHY non-campus wired link is never demoted (no campus routes)' (($pOther.Mode -eq 'Restore') -and ($pOther.CampusRoutes -eq $false) -and ([int]$pOther.Ethernet -eq 0))
@@ -6490,6 +6667,8 @@ function Invoke-LogicTests {
         }
     }
     Write-Check 'Logic: RFC 8910 DHCP option 114 binary decoder extracts captive portal URL' ($decodedOpt114 -ceq $opt114Url)
+    Write-Check 'Logic: sinkhole detector catches 192.0.2.1 and unroutable test blocks' ((Test-IsSinkholeIp '192.0.2.1') -and (Test-IsSinkholeIp '198.51.100.25') -and (Test-IsSinkholeIp '203.0.113.8') -and (Test-IsSinkholeIp '127.0.0.1') -and (-not (Test-IsSinkholeIp '142.251.43.142')) -and (-not (Test-IsSinkholeIp '1.1.1.1')))
+    Write-Check 'Logic: universal DNS verdict engine neutralizes unroutable or sinkholed IPv6 and preserves genuine dual-stack' (((Get-DnsVerdictDecision $false $false 2 $false) -eq 'Neutralize') -and ((Get-DnsVerdictDecision $true $true 2 $true) -eq 'Neutralize') -and ((Get-DnsVerdictDecision $true $true 2 $false) -eq 'Keep') -and ((Get-DnsVerdictDecision $false $false 0 $false) -eq 'None'))
     $script:State = $stSave
 }
 function Invoke-SelfTest {
@@ -6543,11 +6722,11 @@ $script:WdCache = $null
 # Pure decision (unit-tested). The dashboard may only claim "Ethernet First" when the Ethernet adapter is really the
 # lowest-metric path: while a campus link is captive, Shield-RouteMetrics deliberately demotes it to 50 and promotes
 # Wi-Fi to 15, and reporting "Ethernet First" then is a plain lie (the traffic is going out over the hotspot).
-function Get-RoutingLabel([bool]$Managed, [int]$Metric, [bool]$LinkUp) {
+function Get-RoutingLabel([bool]$Managed, [int]$Metric, [bool]$LinkUp, [bool]$UplinkActive = $true) {
     if (-not $Managed) { return 'automatic' }
-    if (-not $LinkUp) { return 'Wi-Fi Protected' }
+    if (-not $LinkUp) { return $(if ($UplinkActive) { 'Wi-Fi Protected' } else { 'automatic' }) }
+    if ($Metric -ge 45) { return $(if ($UplinkActive) { 'Wi-Fi Protected' } else { 'Ethernet Demoted' }) }
     if ($Metric -le 15) { return 'Ethernet First' }
-    if ($Metric -ge 45) { return 'Wi-Fi Protected' }
     return 'Ethernet First'
 }
 function Get-Telemetry {
@@ -6556,6 +6735,17 @@ function Get-Telemetry {
     $ads = @(Get-EthernetAdapters)
     $ad = $ads | Where-Object { $_.Status -eq 'Up' } | Select-Object -First 1
     if (-not $ad) { $ad = $ads | Select-Object -First 1 }
+    $others = @(Get-OtherUplinkAdapters)
+    if ($others.Count -gt 0) {
+        $t.UplinkActive = $true
+        $t.UplinkName = [string]$others[0].Name
+        if (-not $script:UplinkProfileCache -or (((Get-Date) - $script:UplinkProfileCache.Time).TotalSeconds -gt 15)) {
+            $prof = ''
+            try { $prof = [string](Get-NetConnectionProfile -InterfaceIndex $others[0].ifIndex -ErrorAction SilentlyContinue).Name } catch {}
+            $script:UplinkProfileCache = @{ Time = (Get-Date); Val = $prof }
+        }
+        $t.UplinkProfile = [string]$script:UplinkProfileCache.Val
+    }
     if ($ad) {
         $desc = [string]$ad.InterfaceDescription
         $t.Nic = ($desc -replace ' Family Controller', '' -replace ' Gigabit Network Connection', ' GbE' -replace ' PCI-E NIC', '')
@@ -6574,12 +6764,23 @@ function Get-Telemetry {
             $ipif = Get-IPv4Interface $ad
             if ($ipif) {
                 $t.Mtu = [string]$ipif.NlMtu
-                $t.Routing = Get-RoutingLabel (Test-MetricsManaged) ([int]$ipif.InterfaceMetric) $true
+                # Self-healing: if no secondary uplink is active and Ethernet metric is demoted (>=45), promote Ethernet back to primary (metric 10)
+                if (-not $t.UplinkActive -and (Test-MetricsManaged) -and [int]$ipif.InterfaceMetric -ge 45) {
+                    if ($script:IsAdmin -and -not $script:IsDry) {
+                        [void](Set-InterfaceMetric $ipif 10 "Self-heal: Sole uplink, restoring Ethernet to primary metric 10")
+                        $ipif = Get-IPv4Interface $ad
+                    }
+                }
+                $t.Routing = Get-RoutingLabel (Test-MetricsManaged) ([int]$ipif.InterfaceMetric) $true $t.UplinkActive
             }
             $raw = @((Get-DnsClientServerAddress -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses)
             if ($raw.Count -gt 0) { $t.DnsPrimary = [string]$raw[0] }
             $t.DnsProfile = Get-DnsProfileName
         }
+    }
+    $t.RouteProfile = Get-RouteProfileName
+    if ($t.UplinkActive -and ($t.Routing -eq 'Wi-Fi Protected' -or ($t.Problem -ne 'Healthy' -and $t.Problem -ne 'Online') -or $t.RouteProfile -eq 'Wifi')) {
+        $t.UplinkIsPrimary = $true
     }
     if (-not $script:WdCache -or (((Get-Date) - $script:WdCache.Time).TotalSeconds -gt 30)) { $script:WdCache = @{ Time = (Get-Date); Val = (Test-WatchdogInstalled) } }
     $t.Watchdog = [bool]$script:WdCache.Val
@@ -6587,7 +6788,6 @@ function Get-Telemetry {
     $t.Pin = ([string]$script:State.Misc['PortalPin'] -ne '')
     $t.Paused = ($script:State.Misc['PortalLoginSuspended'] -eq $true)
     $t.ArpPending = (@(Get-PendingGatewayMacs).Count -gt 0)
-    $t.RouteProfile = Get-RouteProfileName
     if (-not $t.LinkUp -and (Test-MetricsManaged) -and (Test-OtherUplinkActive)) { $t.Routing = Get-RoutingLabel $true 0 $false }
     $lf = Get-StateTime 'LastFull'
     if ($lf -gt [datetime]'2001-01-01') { $t.LastFull = $lf }
@@ -6613,7 +6813,12 @@ function Get-Advice($t) {
     }
     switch ($t.Problem) {
         { $_ -eq 'Healthy' -or $_ -eq 'Online' } {
-            $r.Status = 'Connected to network. All communication layers verified optimal.'
+            if ($t.UplinkIsPrimary -and $t.UplinkName) {
+                $uLabel = if ($t.UplinkProfile) { "$($t.UplinkName) ($($t.UplinkProfile))" } else { $t.UplinkName }
+                $r.Status = "Internet active via $uLabel. Ethernet link is in standby ($($t.Routing))."
+            } else {
+                $r.Status = 'Connected to network. All communication layers verified optimal.'
+            }
             if (-not $t.Watchdog) {
                 $r.Action = 'Press [ENTER] to arm background watchdog guard (or press 2).'
                 $r.Key = '2'; $r.KeyLabel = 'arm the watchdog'
