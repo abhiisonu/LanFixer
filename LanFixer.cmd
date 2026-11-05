@@ -9,7 +9,7 @@ exit /b %errorlevel%
 
 <#
 .SYNOPSIS
-    Lan Fixer 6.1.1 - Sovereign self-healing Ethernet stabilizer for campus/hostel LANs (Windows 10/11, Ethernet only).
+    Lan Fixer 6.1.2 - Sovereign self-healing Ethernet stabilizer for campus/hostel LANs (Windows 10/11, Ethernet only).
     Author: A.S.
 .DESCRIPTION
     Single file, ASCII only. Run it normally for the control center, or use -Mode:
@@ -131,7 +131,7 @@ try { Add-Type -AssemblyName System.Security -ErrorAction SilentlyContinue } cat
 # ==============================================================================
 # CONFIG (edit here, nowhere else)
 # ==============================================================================
-$script:Version = '6.1.1'
+$script:Version = '6.1.2'
 $script:Sys32   = Join-Path $env:SystemRoot 'System32'
 $script:SelfPath = if ($env:LANFIXER_SELF -and (Test-Path -LiteralPath $env:LANFIXER_SELF)) { $env:LANFIXER_SELF } elseif ($PSCommandPath -and (Test-Path -LiteralPath $PSCommandPath)) { $PSCommandPath } elseif ($MyInvocation.MyCommand.Path -and (Test-Path -LiteralPath $MyInvocation.MyCommand.Path)) { $MyInvocation.MyCommand.Path } elseif ($PSScriptRoot -and (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'LanFixer.cmd'))) { (Join-Path $PSScriptRoot 'LanFixer.cmd') } else { (Join-Path (Get-Location).Path 'LanFixer.cmd') }
 $script:IsDry   = [bool]$DryRun
@@ -1130,6 +1130,14 @@ function Test-AllowSystemFallback([bool]$Explicit, [string]$State, [bool]$OtherU
 # ==============================================================================
 # INTERFACE METRICS (apply only while Ethernet is verified online; always restorable to the ORIGINAL values)
 # ==============================================================================
+function Get-AllWirelessAdapters {
+    $ethGuids = @(Get-EthernetAdapters | ForEach-Object { [string]$_.InterfaceGuid })
+    return @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object {
+        $ethGuids -notcontains [string]$_.InterfaceGuid -and
+        ($_.InterfaceAlias -match 'Wi-?Fi|Wireless|WLAN' -or $_.InterfaceDescription -match 'Wi-?Fi|Wireless|802\.11|WLAN') -and
+        $_.InterfaceDescription -notmatch 'Virtual|Hyper-V|VMware|VirtualBox|\bTAP\b|\bTUN\b|\bWSL\b|Tailscale|ZeroTier|WireGuard|Wintun|Loopback|Npcap|OpenVPN|AnyConnect|Fortinet|PANGP|WARP|Wi-Fi Direct'
+    })
+}
 function Get-OtherUplinkAdapters {
     $ethGuids = @(Get-EthernetAdapters | ForEach-Object { [string]$_.InterfaceGuid })
     $candidates = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object {
@@ -2262,9 +2270,18 @@ function Get-DashboardModel($t, $adv, [int]$Width = 0) {
     $rout = if ($t.Routing) {
         switch ($t.Routing.ToLower()) {
             'ethernet first'   { if ($t.UplinkActive) { 'Ethernet First (10 vs 40)' } else { 'Ethernet First' } }
-            'wi-fi protected'  { 'Wi-Fi Protected (15 vs 50)' }
+            'wi-fi first'      { 'Wi-Fi First (15 vs 50)' }
+            'wi-fi standby'    { 'Wi-Fi Priority (Wired Active, Wi-Fi Standby)' }
+            'wi-fi priority'   { 'Wi-Fi Priority (Wired Active, Wi-Fi Standby)' }
+            'wi-fi protected'  { if ($t.RouteProfile -eq 'Wifi') { 'Wi-Fi First (15 vs 50)' } else { 'Wi-Fi Protected (15 vs 50)' } }
             'ethernet demoted' { 'Ethernet Demoted (Metric 50)' }
-            'automatic'        { if ($t.RouteProfile -and $t.RouteProfile -ne 'Adaptive') { "Windows ($($t.RouteProfile))" } else { 'Automatic' } }
+            'windows default'  { 'Windows Default (Auto)' }
+            'automatic'        {
+                if ($t.RouteProfile -eq 'Wifi') { 'Wi-Fi Priority (Wired Active, Wi-Fi Standby)' }
+                elseif ($t.RouteProfile -eq 'Ethernet') { 'Ethernet Priority' }
+                elseif ($t.RouteProfile -eq 'Windows') { 'Windows Default (Auto)' }
+                else { 'Automatic' }
+            }
             default            { $t.Routing }
         }
     } else { 'Automatic' }
@@ -3636,7 +3653,9 @@ function Shield-RouteMetrics($Ctx, [string]$ConnState) {
             [void](Set-InterfaceMetric $eth ([int]$plan.Ethernet) ("Ethernet {0} metric set to {1} ({2})" -f $af, $plan.Ethernet, $plan.Why))
         }
     }
-    foreach ($w in $others) {
+    $targetWireless = @(Get-AllWirelessAdapters)
+    $allTargetOthers = @(@($others) + @($targetWireless) | Sort-Object ifIndex -Unique)
+    foreach ($w in $allTargetOthers) {
         foreach ($af in @('IPv4', 'IPv6')) {
             $wi = Get-NetIPInterface -InterfaceIndex $w.ifIndex -AddressFamily $af -ErrorAction SilentlyContinue | Select-Object -First 1
             if ($wi -and [int]$wi.InterfaceMetric -ne [int]$plan.Others) {
@@ -5803,16 +5822,22 @@ function Set-RouteProfileMode([string]$Name) {
     [void](Invoke-WithLock {
         $script:State.Misc['RouteProfile'] = $Name
         Write-Log 'OK' "Routing priority profile is now: $Name"
-        $ethUps = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })
-        if ($ethUps.Count -gt 0) {
-            $st = (Get-InternetState -NoCache).State
-            foreach ($eu in $ethUps) {
-                $ctx = @{ Ad = $eu; Env = (Get-AdapterEnvironment $eu) }
-                Shield-RouteMetrics $ctx $st
+        if ($Name -eq 'Wifi') {
+            foreach ($w in (Get-AllWirelessAdapters)) {
+                if ($w.Status -eq 'Disabled') {
+                    try { Enable-NetAdapter -InterfaceIndex $w.ifIndex -Confirm:$false -ErrorAction SilentlyContinue } catch {}
+                }
             }
         }
-        if ($Name -eq 'Windows' -or ($Name -eq 'Adaptive' -and $ethUps.Count -eq 0)) {
-            Restore-InterfaceMetrics "Routing profile set to $Name"
+        $allEth = @(Get-EthernetAdapters)
+        $ethUps = @($allEth | Where-Object { $_.Status -eq 'Up' })
+        $primaryEth = if ($ethUps.Count -gt 0) { $ethUps[0] } elseif ($allEth.Count -gt 0) { $allEth[0] } else { $null }
+        if ($Name -eq 'Windows') {
+            Restore-InterfaceMetrics "Routing profile set to Windows Default"
+        } elseif ($primaryEth) {
+            $st = if ($ethUps.Count -gt 0) { (Get-InternetState -NoCache).State } else { 'Offline' }
+            $ctx = @{ Ad = $primaryEth; Env = (Get-AdapterEnvironment $primaryEth) }
+            Shield-RouteMetrics $ctx $st
         }
         if (-not $script:IsDry) { Save-State }
     })
@@ -6821,7 +6846,16 @@ $script:WdCache = $null
 # Pure decision (unit-tested). The dashboard may only claim "Ethernet First" when the Ethernet adapter is really the
 # lowest-metric path: while a campus link is captive, Shield-RouteMetrics deliberately demotes it to 50 and promotes
 # Wi-Fi to 15, and reporting "Ethernet First" then is a plain lie (the traffic is going out over the hotspot).
-function Get-RoutingLabel([bool]$Managed, [int]$Metric, [bool]$LinkUp, [bool]$UplinkActive = $true) {
+function Get-RoutingLabel([bool]$Managed, [int]$Metric, [bool]$LinkUp, [bool]$UplinkActive = $true, [string]$Profile = '') {
+    if (-not $Profile -and $script:State -is [hashtable] -and $script:State.Misc -is [hashtable]) {
+        $Profile = [string]$script:State.Misc['RouteProfile']
+    }
+    if ($Profile -eq 'Windows') { return 'automatic' }
+    if ($Profile -eq 'Wifi') {
+        if ($UplinkActive) { return 'Wi-Fi First' }
+        return 'Wi-Fi Standby'
+    }
+    if ($Profile -eq 'Ethernet') { return 'Ethernet First' }
     if (-not $Managed) { return 'automatic' }
     if (-not $LinkUp) { return $(if ($UplinkActive) { 'Wi-Fi Protected' } else { 'automatic' }) }
     if ($Metric -ge 45) { return $(if ($UplinkActive) { 'Wi-Fi Protected' } else { 'Ethernet Demoted' }) }
@@ -7099,7 +7133,7 @@ function Start-Interactive {
         Show-Dashboard $t $adv          # instant skeleton, then the real reading
         $t = Get-Telemetry; $adv = Get-Advice $t
         if ($script:IsAdmin -and -not $script:IsDry -and ($t.Problem -eq 'Healthy' -or $t.Problem -eq 'Online')) {
-            if (($t.RouteProfile -eq 'Adaptive' -and $t.Routing -eq 'Wi-Fi Protected') -or ($t.RouteProfile -eq 'Ethernet' -and $t.Routing -ne 'Ethernet First')) {
+            if (($t.RouteProfile -eq 'Adaptive' -and $t.Routing -eq 'Wi-Fi Protected' -and -not $t.UplinkActive) -or ($t.RouteProfile -eq 'Ethernet' -and $t.Routing -ne 'Ethernet First') -or ($t.RouteProfile -eq 'Wifi' -and ($t.Routing -ne 'Wi-Fi First' -and $t.UplinkActive))) {
                 [void](Invoke-WithLock -WaitMs 2000 -Block { Complete-Authentication })
                 $t = Get-Telemetry; $adv = Get-Advice $t
             }
@@ -7126,8 +7160,9 @@ function Start-Interactive {
                     if ($script:IsAdmin -and -not $script:IsDry) {
                         $needsPrioritySync = (($t2.Problem -eq 'Healthy' -or $t2.Problem -eq 'Online') -and (
                             ($t.Problem -eq 'Captive') -or
-                            ($t2.RouteProfile -eq 'Adaptive' -and $t2.Routing -eq 'Wi-Fi Protected') -or
-                            ($t2.RouteProfile -eq 'Ethernet' -and $t2.Routing -ne 'Ethernet First')
+                            ($t2.RouteProfile -eq 'Adaptive' -and $t2.Routing -eq 'Wi-Fi Protected' -and -not $t2.UplinkActive) -or
+                            ($t2.RouteProfile -eq 'Ethernet' -and $t2.Routing -ne 'Ethernet First') -or
+                            ($t2.RouteProfile -eq 'Wifi' -and ($t2.Routing -ne 'Wi-Fi First' -and $t2.UplinkActive))
                         ))
                         if ($needsPrioritySync) {
                             [void](Invoke-WithLock -WaitMs 2000 -Block { Complete-Authentication })
