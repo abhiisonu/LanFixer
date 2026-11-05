@@ -9,7 +9,7 @@ exit /b %errorlevel%
 
 <#
 .SYNOPSIS
-    Lan Fixer 6.1.2 - Sovereign self-healing Ethernet stabilizer for campus/hostel LANs (Windows 10/11, Ethernet only).
+    Lan Fixer 6.1.3 - Sovereign self-healing Ethernet stabilizer for campus/hostel LANs (Windows 10/11, Ethernet only).
     Author: A.S.
 .DESCRIPTION
     Single file, ASCII only. Run it normally for the control center, or use -Mode:
@@ -131,7 +131,7 @@ try { Add-Type -AssemblyName System.Security -ErrorAction SilentlyContinue } cat
 # ==============================================================================
 # CONFIG (edit here, nowhere else)
 # ==============================================================================
-$script:Version = '6.1.2'
+$script:Version = '6.1.3'
 $script:Sys32   = Join-Path $env:SystemRoot 'System32'
 $script:SelfPath = if ($env:LANFIXER_SELF -and (Test-Path -LiteralPath $env:LANFIXER_SELF)) { $env:LANFIXER_SELF } elseif ($PSCommandPath -and (Test-Path -LiteralPath $PSCommandPath)) { $PSCommandPath } elseif ($MyInvocation.MyCommand.Path -and (Test-Path -LiteralPath $MyInvocation.MyCommand.Path)) { $MyInvocation.MyCommand.Path } elseif ($PSScriptRoot -and (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'LanFixer.cmd'))) { (Join-Path $PSScriptRoot 'LanFixer.cmd') } else { (Join-Path (Get-Location).Path 'LanFixer.cmd') }
 $script:IsDry   = [bool]$DryRun
@@ -3217,6 +3217,40 @@ function Test-WatchdogInstalled {
 }
 
 # ==============================================================================
+function Reset-PhysicalAdapterHardware($Ad) {
+    if (-not $Ad) { return $false }
+    $pnpId = [string]$Ad.PnPDeviceID
+    $pnpExe = Get-SysExe 'pnputil.exe'
+    $restarted = $false
+    if ($pnpId -and (Test-Path -LiteralPath $pnpExe)) {
+        try {
+            $r = Invoke-Native $pnpExe @('/restart-device', $pnpId) 15000
+            if ($r.ExitCode -eq 0 -and ($r.Output -notmatch 'Failed|Error')) {
+                Write-Log 'OK' "Hardware PnP bus cycled on $($Ad.Name) ($pnpId)."
+                $restarted = $true
+            } else {
+                Write-Log 'INFO' "pnputil /restart-device returned code $($r.ExitCode); falling back to driver cycling."
+            }
+        } catch {
+            Write-Log 'INFO' "PnP cycle exception: $($_.Exception.Message)"
+        }
+    }
+    if (-not $restarted) {
+        try {
+            Disable-NetAdapter -Name $Ad.Name -Confirm:$false -ErrorAction Stop
+            Start-Sleep -Milliseconds 1200
+            Enable-NetAdapter -Name $Ad.Name -Confirm:$false -ErrorAction Stop
+            Write-Log 'OK' "Kernel NDIS driver cycled (disable/enable) on $($Ad.Name)."
+            $restarted = $true
+        } catch {
+            Write-Log 'WARN' "Driver cycle failed on $($Ad.Name): $($_.Exception.Message). Falling back to Restart-NetAdapter."
+            Restart-NetAdapter -Name $Ad.Name -Confirm:$false -ErrorAction Stop
+            $restarted = $true
+        }
+    }
+    return $restarted
+}
+
 # LAYER 1 - HARDWARE & POWER SHIELD (only touches settings the driver really exposes)
 # ==============================================================================
 function Get-NicClassKey($Ad) {
@@ -3317,7 +3351,7 @@ function Repair-Dhcp($Ad, [switch]$ForceRelease) {
     # Step 2: link reset (rate-limited so a dead port cannot cause a loop)
     if (Test-Elapsed ("Restart:" + $guid) 300) {
         Set-StateTime ("Restart:" + $guid)
-        [void](Invoke-Change "Link reset on $($Ad.Name)" { Restart-NetAdapter -Name $Ad.Name -Confirm:$false -ErrorAction Stop })
+        [void](Invoke-Change "Zero-reboot hardware/link reset on $($Ad.Name)" { Reset-PhysicalAdapterHardware $Ad })
         $script:PendingRestart.Remove($guid)
         # Adaptive STP convergence window (up to 45s, instant early-exit on lease acquisition)
         for ($i = 0; $i -lt 90; $i++) { if (Get-ValidIPv4 $Ad) { Write-Log 'OK' 'Lease acquired after link reset.'; return $true }; Start-Sleep -Milliseconds 500 }
@@ -3325,7 +3359,10 @@ function Repair-Dhcp($Ad, [switch]$ForceRelease) {
         Write-Log 'INFO' 'Link reset skipped (done less than 5 minutes ago).'
     }
     # Step 3: release + renew
-    [void](Invoke-Change "DHCP release/renew on $($Ad.Name)" {
+    # Step 3: DHCP stack unfreeze and release/renew
+    [void](Invoke-Change "DHCP stack unfreeze and release/renew on $($Ad.Name)" {
+        Restart-Service -Name Dhcp -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Milliseconds 800
         [void](Invoke-Native $ipconfig @('/release', $Ad.Name) 10000)
         $r = Invoke-Native $ipconfig @('/renew', $Ad.Name) 25000
         if ($r.TimedOut) { throw 'ipconfig /renew timed out' }
@@ -4559,8 +4596,11 @@ function Invoke-SupremeOmnifix {
     $swOmni = [System.Diagnostics.Stopwatch]::StartNew()
     Write-Section 'FULL NET RESET (5-STAGE DEEP RECOVERY)'
     $r = Pick-Hash (Invoke-WithLock {
-        Write-Log 'STEP' 'STAGE 1/5  Rescanning PnP hardware bus & neutralizing WFP DNS interceptors / dead proxies'
-        if (-not $script:IsDry) { [void](Invoke-Native (Get-SysExe 'pnputil.exe') @('/scan-devices') 5000) }
+        Write-Log 'STEP' 'STAGE 1/5  Cycling PnP hardware transceiver, rescanning bus & neutralizing WFP DNS interceptors / proxies'
+        if (-not $script:IsDry) {
+            foreach ($oa in @(Get-EthernetAdapters)) { Reset-PhysicalAdapterHardware $oa }
+            [void](Invoke-Native (Get-SysExe 'pnputil.exe') @('/scan-devices') 5000)
+        }
         $script:ConnCache = $null
         $script:EnvCache = @{}
         if (-not $script:IsDry) {
@@ -4597,6 +4637,7 @@ function Invoke-SupremeOmnifix {
             Get-NetNeighbor -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.State -ne 'Permanent' } | Remove-NetNeighbor -Confirm:$false -ErrorAction SilentlyContinue
             Get-NetNeighbor -AddressFamily IPv6 -ErrorAction SilentlyContinue | Where-Object { $_.State -ne 'Permanent' } | Remove-NetNeighbor -Confirm:$false -ErrorAction SilentlyContinue
             [void](Invoke-Native (Get-SysExe 'nbtstat.exe') @('-R') 5000)
+            Restart-Service -Name Dhcp -Force -ErrorAction SilentlyContinue
             Restart-Service -Name NlaSvc -Force -ErrorAction SilentlyContinue
             Start-Service -Name netprofm -ErrorAction SilentlyContinue
         }
@@ -4613,8 +4654,11 @@ function Invoke-SupremeOmnifix {
             }
         }
         if ($anyVerifyFail -and -not $script:IsDry -and ($resHeal.Conn -ne 'Captive')) {
-            [void](Invoke-Change 'Resetting corrupted Winsock catalog (fallback recovery)' {
-                [void](Invoke-Native (Get-SysExe 'netsh.exe') @('winsock', 'reset', 'catalog') 8000)
+            [void](Invoke-Change 'Zero-reboot live network stack cycling (NDIS, DHCP & TCPIP state unfreeze)' {
+                Restart-Service -Name Dhcp -Force -ErrorAction SilentlyContinue
+                Restart-Service -Name NlaSvc -Force -ErrorAction SilentlyContinue
+                Start-Service -Name netprofm -ErrorAction SilentlyContinue
+                foreach ($ea in @(Get-EthernetAdapters)) { Reset-PhysicalAdapterHardware $ea }
             })
         }
         Save-State
@@ -4764,7 +4808,7 @@ function Invoke-HealPipeline([switch]$SkipSystemStack) {
             $nm = $script:PendingRestart[$g]
             if (Test-Elapsed ("Restart:" + $g) 300) {
                 Set-StateTime ("Restart:" + $g)
-                if (Invoke-Change "Link reset on $nm to apply driver settings" { Restart-NetAdapter -Name $nm -Confirm:$false -ErrorAction Stop }) { $didHwRestart = $true }
+                if (Invoke-Change "Zero-reboot link reset on $nm to apply driver settings" { $rAd = Get-NetAdapter -Name $nm -ErrorAction SilentlyContinue; if ($rAd) { Reset-PhysicalAdapterHardware $rAd } else { Restart-NetAdapter -Name $nm -Confirm:$false -ErrorAction Stop } }) { $didHwRestart = $true }
             }
         }
         $script:PendingRestart = @{}
@@ -5759,7 +5803,7 @@ function Restore-Everything {
         }
     }
     if (-not $script:IsDry) {
-        foreach ($n in @($restartNames.Keys)) { [void](Invoke-Change "Link reset on $n to apply restored driver settings" { Restart-NetAdapter -Name $n -Confirm:$false -ErrorAction Stop }) }
+        foreach ($n in @($restartNames.Keys)) { [void](Invoke-Change "Zero-reboot link reset on $n to apply restored driver settings" { $rAd = Get-NetAdapter -Name $n -ErrorAction SilentlyContinue; if ($rAd) { Reset-PhysicalAdapterHardware $rAd } else { Restart-NetAdapter -Name $n -Confirm:$false -ErrorAction Stop } }) }
         Clear-DnsClientCache -ErrorAction SilentlyContinue
         [void](Invoke-Native (Get-SysExe 'netsh.exe') @('interface', 'ip', 'delete', 'arpcache') 8000)
         [void](Invoke-Native (Get-SysExe 'nbtstat.exe') @('-R') 8000)
