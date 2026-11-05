@@ -9,7 +9,7 @@ exit /b %errorlevel%
 
 <#
 .SYNOPSIS
-    Lan Fixer 6.1.0 - Sovereign self-healing Ethernet stabilizer for campus/hostel LANs (Windows 10/11, Ethernet only).
+    Lan Fixer 6.1.1 - Sovereign self-healing Ethernet stabilizer for campus/hostel LANs (Windows 10/11, Ethernet only).
     Author: A.S.
 .DESCRIPTION
     Single file, ASCII only. Run it normally for the control center, or use -Mode:
@@ -120,6 +120,7 @@ param(
     [string]$RouteProfile = 'Adaptive',
     [switch]$DryRun,
     [switch]$NoPause,
+    [switch]$Force,
     [Parameter(DontShow)][switch]$LfElevated
 )
 
@@ -130,7 +131,7 @@ try { Add-Type -AssemblyName System.Security -ErrorAction SilentlyContinue } cat
 # ==============================================================================
 # CONFIG (edit here, nowhere else)
 # ==============================================================================
-$script:Version = '6.1.0'
+$script:Version = '6.1.1'
 $script:Sys32   = Join-Path $env:SystemRoot 'System32'
 $script:SelfPath = if ($env:LANFIXER_SELF -and (Test-Path -LiteralPath $env:LANFIXER_SELF)) { $env:LANFIXER_SELF } elseif ($PSCommandPath -and (Test-Path -LiteralPath $PSCommandPath)) { $PSCommandPath } elseif ($MyInvocation.MyCommand.Path -and (Test-Path -LiteralPath $MyInvocation.MyCommand.Path)) { $MyInvocation.MyCommand.Path } elseif ($PSScriptRoot -and (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'LanFixer.cmd'))) { (Join-Path $PSScriptRoot 'LanFixer.cmd') } else { (Join-Path (Get-Location).Path 'LanFixer.cmd') }
 $script:IsDry   = [bool]$DryRun
@@ -620,12 +621,54 @@ function Initialize-Store {
 }
 
 # ==============================================================================
-# LOCKING (abandoned-mutex safe, because StopExisting can kill a holder)
+# LOCKING (abandoned-mutex safe, cross-session DACL verified, PID-tracked)
 # ==============================================================================
+function Get-LanFixerMutex([string]$Name = 'Global\LanFixer_Lock') {
+    if ($Name -eq 'Global\LanFixer_Lock' -and $script:Mutex) { return $script:Mutex }
+    try {
+        $mSec = New-Object System.Security.AccessControl.MutexSecurity
+        $ruleWorld = New-Object System.Security.AccessControl.MutexAccessRule(
+            (New-Object System.Security.Principal.SecurityIdentifier([System.Security.Principal.WellKnownSidType]::WorldSid, $null)),
+            [System.Security.AccessControl.MutexRights]::FullControl,
+            [System.Security.AccessControl.AccessControlType]::Allow
+        )
+        $mSec.AddAccessRule($ruleWorld)
+        $ruleAdmin = New-Object System.Security.AccessControl.MutexAccessRule(
+            (New-Object System.Security.Principal.SecurityIdentifier([System.Security.Principal.WellKnownSidType]::BuiltinAdministratorsSid, $null)),
+            [System.Security.AccessControl.MutexRights]::FullControl,
+            [System.Security.AccessControl.AccessControlType]::Allow
+        )
+        $mSec.AddAccessRule($ruleAdmin)
+        $created = $false
+        $m = New-Object System.Threading.Mutex($false, $Name, [ref]$created, $mSec)
+        if ($Name -eq 'Global\LanFixer_Lock') { $script:Mutex = $m }
+        return $m
+    } catch {
+        try {
+            $m = [System.Threading.Mutex]::OpenExisting($Name, [System.Security.AccessControl.MutexRights]::Synchronize -bor [System.Security.AccessControl.MutexRights]::Modify)
+            if ($Name -eq 'Global\LanFixer_Lock') { $script:Mutex = $m }
+            return $m
+        } catch {
+            try {
+                $m = New-Object System.Threading.Mutex($false, $Name)
+                if ($Name -eq 'Global\LanFixer_Lock') { $script:Mutex = $m }
+                return $m
+            } catch {
+                try {
+                    $localName = $Name -replace '^Global\\', 'Local\'
+                    $m = New-Object System.Threading.Mutex($false, $localName)
+                    if ($Name -eq 'Global\LanFixer_Lock') { $script:Mutex = $m }
+                    return $m
+                } catch { return $null }
+            }
+        }
+    }
+}
 function Enter-Lock([int]$TimeoutMs = 1000) {
     if (-not $script:IsAdmin) { return $false }
     try {
-        if (-not $script:Mutex) { $script:Mutex = New-Object System.Threading.Mutex($false, 'Global\LanFixer_Lock') }
+        if (-not $script:Mutex) { $script:Mutex = Get-LanFixerMutex 'Global\LanFixer_Lock' }
+        if (-not $script:Mutex) { return $false }
         if ($script:LockDepth -gt 0) {
             $script:LockDepth++
             $script:HasMutex = $true
@@ -633,9 +676,32 @@ function Enter-Lock([int]$TimeoutMs = 1000) {
         }
         $got = $false
         try { $got = $script:Mutex.WaitOne($TimeoutMs) } catch [System.Threading.AbandonedMutexException] { $got = $true }
+        if (-not $got) {
+            $lf = Join-Path $script:StoreDir 'lock.json'
+            $holderDead = $false
+            if (Test-Path -LiteralPath $lf) {
+                try {
+                    $raw = [System.IO.File]::ReadAllText($lf)
+                    $h = ConvertFrom-Json -InputObject $raw
+                    if ($h -and $h.Pid) {
+                        $p = Get-Process -Id ([int]$h.Pid) -ErrorAction SilentlyContinue
+                        if (-not $p) { $holderDead = $true }
+                    }
+                } catch {}
+            }
+            if ($holderDead) {
+                try { Remove-Item -LiteralPath $lf -Force -ErrorAction SilentlyContinue } catch {}
+                try { $got = $script:Mutex.WaitOne(1000) } catch [System.Threading.AbandonedMutexException] { $got = $true }
+            }
+        }
         if ($got) {
             $script:LockDepth = 1
             $script:HasMutex = $true
+            try {
+                $lf = Join-Path $script:StoreDir 'lock.json'
+                $meta = @{ Pid = $PID; Mode = ([string]$Mode); Time = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss'); User = [string]$env:USERNAME }
+                [System.IO.File]::WriteAllText($lf, (ConvertTo-Json -InputObject $meta -Compress))
+            } catch {}
             $memMisc = @{}
             if ($script:State -is [hashtable] -and $script:State.Misc -is [hashtable]) {
                 foreach ($mk in @('LearnedDhcp','DiscoveredDomain','DiscoveredPortalUrl','DiscoveredPortalIp','DiscoveryTime','InjectedHostRoutes')) {
@@ -670,6 +736,10 @@ function Exit-Lock {
     if ($script:LockDepth -gt 0) {
         $script:LockDepth--
         if ($script:LockDepth -eq 0) {
+            try {
+                $lf = Join-Path $script:StoreDir 'lock.json'
+                if (Test-Path -LiteralPath $lf) { Remove-Item -LiteralPath $lf -Force -ErrorAction SilentlyContinue }
+            } catch {}
             if ($script:Mutex) { try { $script:Mutex.ReleaseMutex() } catch {} }
             $script:HasMutex = $false
         }
@@ -680,8 +750,33 @@ function Exit-Lock {
 function Invoke-WithLock {
     param([scriptblock]$Block, [int]$WaitMs = 20000)
     if (-not $script:IsAdmin) { return (& $Block) }   # read-only/limited mode: no shared lock needed (and a standard user cannot open it)
-    if (-not (Enter-Lock $WaitMs)) { Write-Log 'WARN' 'Another Lan Fixer operation is running. Try again in a moment.'; return $null }
+    if (-not (Enter-Lock $WaitMs)) {
+        $holderDesc = 'Another Lan Fixer operation'
+        try {
+            $lf = Join-Path $script:StoreDir 'lock.json'
+            if (Test-Path -LiteralPath $lf) {
+                $h = ConvertFrom-Json (Get-Content -LiteralPath $lf -Raw -ErrorAction SilentlyContinue)
+                if ($h -and $h.Mode) { $holderDesc = ("Lan Fixer ({0}, PID {1})" -f $h.Mode, $h.Pid) }
+            }
+        } catch {}
+        Write-Log 'WARN' ("{0} is running. Try again in a moment." -f $holderDesc)
+        return $null
+    }
     try { return (& $Block) } finally { Exit-Lock }
+}
+function Test-InteractiveSessionActive {
+    try {
+        $intFile = Join-Path $script:StoreDir 'interactive.json'
+        if (Test-Path -LiteralPath $intFile) {
+            $meta = ConvertFrom-Json (Get-Content -LiteralPath $intFile -Raw -ErrorAction SilentlyContinue)
+            if ($meta -and $meta.Pid -and ($meta.Pid -ne $PID)) {
+                $p = Get-Process -Id ([int]$meta.Pid) -ErrorAction SilentlyContinue
+                if ($p -and ($p.ProcessName -match 'powershell|cmd|LanFixer')) { return $true }
+                Remove-Item -LiteralPath $intFile -Force -ErrorAction SilentlyContinue
+            }
+        }
+    } catch {}
+    return $false
 }
 function Assert-Admin {
     if ($script:IsAdmin) { return $true }
@@ -5084,6 +5179,10 @@ function Clear-FailStreakIfRecovered([string]$Problem) {
     return $true
 }
 function Invoke-AutoHeal {
+    if (Test-InteractiveSessionActive) {
+        Write-Log 'INFO' 'AutoHeal pass skipped: interactive control center session is active.'
+        return 0
+    }
     if (-not (Enter-Lock 3000)) { return 0 }
     $curUpCount = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' }).Count
     $prevUpCount = if ($null -ne $script:State.Misc['LastAutoHealUpCount']) { [int]$script:State.Misc['LastAutoHealUpCount'] } else { -1 }
@@ -6983,7 +7082,15 @@ function Start-Interactive {
         }
         return
     }
-    if ($script:IsAdmin) { [void](Invoke-WithLock -WaitMs 3000 -Block { $script:WatchdogOn = Test-WatchdogInstalled; Update-WatchdogIfStale }) }
+    if ($script:IsAdmin) {
+        $script:WatchdogOn = Test-WatchdogInstalled
+        try { Update-WatchdogIfStale } catch {}
+    }
+    try {
+        $intFile = Join-Path $script:StoreDir 'interactive.json'
+        $meta = @{ Pid = $PID; StartTime = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss'); User = [string]$env:USERNAME }
+        [System.IO.File]::WriteAllText($intFile, (ConvertTo-Json -InputObject $meta -Compress))
+    } catch {}
     try { [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = [System.Diagnostics.ProcessPriorityClass]::AboveNormal } catch {}
     Enter-Screen
     try {
@@ -7069,6 +7176,13 @@ function Start-Interactive {
         }
     } finally {
         $script:InDashboard = $false
+        try {
+            $intFile = Join-Path $script:StoreDir 'interactive.json'
+            if (Test-Path -LiteralPath $intFile) {
+                $meta = ConvertFrom-Json (Get-Content -LiteralPath $intFile -Raw -ErrorAction SilentlyContinue)
+                if ($meta -and $meta.Pid -eq $PID) { Remove-Item -LiteralPath $intFile -Force -ErrorAction SilentlyContinue }
+            }
+        } catch {}
         try { if ($script:Pulse.Ping) { $script:Pulse.Ping.Dispose(); $script:Pulse.Ping = $null; $script:Pulse.Task = $null } } catch {}
         try { [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = [System.Diagnostics.ProcessPriorityClass]::Normal } catch {}
         Exit-Screen
@@ -7076,6 +7190,39 @@ function Start-Interactive {
 }
 $script:IsAdmin = Test-IsAdmin
 $adminModes = @('Interactive', 'Heal', 'AutoHeal', 'Omnifix', 'FullNetReset', 'FlushCache', 'InstallWatchdog', 'UninstallWatchdog', 'InstallShield', 'UninstallShield', 'ResetFactory', 'SetDnsProfile', 'SetRouteProfile')
+if ($Mode -eq 'Interactive') {
+    $intFile = Join-Path $script:Cfg.StoreDir 'interactive.json'
+    if (Test-Path -LiteralPath $intFile) {
+        try {
+            $existing = ConvertFrom-Json (Get-Content -LiteralPath $intFile -Raw -ErrorAction SilentlyContinue)
+            if ($existing -and $existing.Pid -and ($existing.Pid -ne $PID)) {
+                $p = Get-Process -Id ([int]$existing.Pid) -ErrorAction SilentlyContinue
+                if ($p -and ($p.ProcessName -match 'powershell|cmd|LanFixer')) {
+                    if ($Force) {
+                        try { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } catch {}
+                        Remove-Item -LiteralPath $intFile -Force -ErrorAction SilentlyContinue
+                    } else {
+                        try {
+                            $ws = New-Object -ComObject WScript.Shell
+                            [void]$ws.AppActivate($p.Id)
+                        } catch {}
+                        Write-Host ''
+                        Write-Host '  ========================================================================' -ForegroundColor Cyan
+                        Write-Host ("  Lan Fixer is already running in another window (PID {0})." -f $p.Id) -ForegroundColor Yellow
+                        Write-Host '  Switched focus to the active window.' -ForegroundColor Gray
+                        Write-Host '  (Use -Force or close the existing window to replace it)' -ForegroundColor DarkGray
+                        Write-Host '  ========================================================================' -ForegroundColor Cyan
+                        Write-Host ''
+                        Start-Sleep -Seconds 2
+                        exit 0
+                    }
+                } else {
+                    Remove-Item -LiteralPath $intFile -Force -ErrorAction SilentlyContinue
+                }
+            }
+        } catch {}
+    }
+}
 if (-not $script:IsAdmin -and -not $script:IsDry -and ($adminModes -contains $Mode)) {
     $elevated = $false
     if (-not $LfElevated -and $script:SelfPath) {
@@ -7136,6 +7283,13 @@ try {
     Write-Log 'FAIL' ([string]$_.ScriptStackTrace)
     $exitCode = 1
 } finally {
+    try {
+        $intFile = Join-Path $script:StoreDir 'interactive.json'
+        if (Test-Path -LiteralPath $intFile) {
+            $meta = ConvertFrom-Json (Get-Content -LiteralPath $intFile -Raw -ErrorAction SilentlyContinue)
+            if ($meta -and $meta.Pid -eq $PID) { Remove-Item -LiteralPath $intFile -Force -ErrorAction SilentlyContinue }
+        }
+    } catch {}
     Save-State
     Exit-Lock
     if ($script:UiOn) { Exit-Screen }
