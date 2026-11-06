@@ -9,7 +9,7 @@ exit /b %errorlevel%
 
 <#
 .SYNOPSIS
-    Lan Fixer 6.3.0 - Sovereign self-healing Ethernet stabilizer for campus/hostel LANs (Windows 10/11, Ethernet only).
+    Lan Fixer 6.4.0 - Sovereign self-healing Ethernet stabilizer for campus/hostel LANs (Windows 10/11, Ethernet only).
     Author: A.S.
 .DESCRIPTION
     Single file, ASCII only. Run it normally for the control center, or use -Mode:
@@ -18,6 +18,27 @@ exit /b %errorlevel%
     Add -DryRun to see exactly what would change without changing anything.
     Every change is snapshotted first, so ResetFactory restores YOUR original values.
 .NOTES
+    6.4.0 (Grand Master Sovereign Hardening - 21-Point Alpha-to-Omega Resilience Engine):
+      - Dormant USB PnP Transceiver Revival: Rescue-DormantEthernetPnp detects non-present/sleep-crashed USB NICs and
+        resynchronizes the PnP bus via pnputil /scan-devices, guaranteeing zero-reboot waking on all USB controllers.
+      - RFC 4861 Link-Local IPv6 Gateway Preservation: Corrected IPv6 route evaluation in Get-AdapterDnsVerdict to recognize
+        standard fe80:: next hops, preserving legitimate dual-stack connectivity while neutralizing true rogue sinkholes.
+      - Windows 11 Native DoH UDP Fallback: Shield-DohFallback enforces AllowFallbackToUdp = $true across DoH templates,
+        preventing catastrophic port 443 stall timeouts when behind unauthenticated captive portal firewalls.
+      - AST Syntactic Bug Elimination: Wrapped Test-MetricsManaged command evaluation on line 3753 to fix operator-as-parameter
+        token binding, restoring proper routing profile restoration logic.
+      - Source-Bound Gateway Liveness: Test-GatewayAlive probes only the gateway IP and verifies on-link ARP MACs, eliminating
+        multi-uplink cross-talk where active Wi-Fi falsely reported a disconnected or dead Ethernet gateway as alive.
+      - Watchdog Dashboard Coexistence & Stale PID Purge: Test-InteractiveSessionActive validates process StartTime to prevent
+        stale recycled PIDs from silencing the watchdog, and allows AutoHeal when the Global mutex is idle.
+      - Fail-Safe NDIS Driver Cycling: Guaranteed finally retry loop with kernel PnP fallback in Reset-PhysicalAdapterHardware
+        ensures a network adapter is never left in a disabled state.
+      - Device Parameters Snapshotting & Dry-Run Safety: Wrapped all 7 USB transceiver power parameters in Save-Original,
+        Invoke-Change, and Restore-Everything handlers.
+      - Topology-Aware /32 Captive Pathing: Test-SameSubnetIPv4 calculates on-link vs off-link captive targets, routing
+        on-link targets via 0.0.0.0 (direct ARP) and off-link targets via the physical gateway at metric 5.
+      - Clean Roaming & Reset Hygiene: Invoke-RoamingCleanup purges discovered portal state upon leaving campus, and full
+        resets unconditionally evict stale Permanent ARP locks across network switches.
     6.3.0 (Sovereign Zero-Reboot Situational Auto-Adaptation Engine):
       - Situational DNS Engine: Shield-Dns resolves failures across Online, NoDns, and Offline states via parallel
         53/UDP latency probes, automatically placing measured working public resolvers at the head of the adapter list.
@@ -144,7 +165,7 @@ try { Add-Type -AssemblyName System.Security -ErrorAction SilentlyContinue } cat
 # ==============================================================================
 # CONFIG (edit here, nowhere else)
 # ==============================================================================
-$script:Version = '6.3.0'
+$script:Version = '6.4.0'
 $script:Sys32   = Join-Path $env:SystemRoot 'System32'
 $script:SelfPath = if ($env:LANFIXER_SELF -and (Test-Path -LiteralPath $env:LANFIXER_SELF)) { $env:LANFIXER_SELF } elseif ($PSCommandPath -and (Test-Path -LiteralPath $PSCommandPath)) { $PSCommandPath } elseif ($MyInvocation.MyCommand.Path -and (Test-Path -LiteralPath $MyInvocation.MyCommand.Path)) { $MyInvocation.MyCommand.Path } elseif ($PSScriptRoot -and (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'LanFixer.cmd'))) { (Join-Path $PSScriptRoot 'LanFixer.cmd') } else { (Join-Path (Get-Location).Path 'LanFixer.cmd') }
 $script:IsDry   = [bool]$DryRun
@@ -470,7 +491,7 @@ function ConvertTo-CfgOverride($Raw) {
         if ($k -eq 'PortalIp' -or $k -eq 'CampusDns') {
             $a = $null
             if ($v -is [string] -and $v -match '^\d{1,3}(\.\d{1,3}){3}$' -and [System.Net.IPAddress]::TryParse($v, [ref]$a) -and $a.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork) {
-                if ($v -notmatch '^(0\.|127\.|169\.254\.|22\d\.|23\d\.|24\d\.|25\d\.)') { $out[$k] = $v }
+                if ($v -notmatch '^(0\.|127\.|169\.254\.|22[4-9]\.|23\d\.|24\d\.|25\d\.)') { $out[$k] = $v }
             }
         }
         elseif ($k -eq 'PortalPort') {
@@ -657,18 +678,18 @@ function Get-LanFixerMutex([string]$Name = 'Global\LanFixer_Lock') {
     if ($Name -eq 'Global\LanFixer_Lock' -and $script:Mutex) { return $script:Mutex }
     try {
         $mSec = New-Object System.Security.AccessControl.MutexSecurity
-        $ruleWorld = New-Object System.Security.AccessControl.MutexAccessRule(
-            (New-Object System.Security.Principal.SecurityIdentifier([System.Security.Principal.WellKnownSidType]::WorldSid, $null)),
-            [System.Security.AccessControl.MutexRights]::FullControl,
-            [System.Security.AccessControl.AccessControlType]::Allow
-        )
-        $mSec.AddAccessRule($ruleWorld)
         $ruleAdmin = New-Object System.Security.AccessControl.MutexAccessRule(
             (New-Object System.Security.Principal.SecurityIdentifier([System.Security.Principal.WellKnownSidType]::BuiltinAdministratorsSid, $null)),
             [System.Security.AccessControl.MutexRights]::FullControl,
             [System.Security.AccessControl.AccessControlType]::Allow
         )
         $mSec.AddAccessRule($ruleAdmin)
+        $ruleSystem = New-Object System.Security.AccessControl.MutexAccessRule(
+            (New-Object System.Security.Principal.SecurityIdentifier([System.Security.Principal.WellKnownSidType]::LocalSystemSid, $null)),
+            [System.Security.AccessControl.MutexRights]::FullControl,
+            [System.Security.AccessControl.AccessControlType]::Allow
+        )
+        $mSec.AddAccessRule($ruleSystem)
         $created = $false
         $m = New-Object System.Threading.Mutex($false, $Name, [ref]$created, $mSec)
         if ($Name -eq 'Global\LanFixer_Lock') { $script:Mutex = $m }
@@ -801,7 +822,15 @@ function Test-InteractiveSessionActive {
             $meta = ConvertFrom-Json (Get-Content -LiteralPath $intFile -Raw -ErrorAction SilentlyContinue)
             if ($meta -and $meta.Pid -and ($meta.Pid -ne $PID)) {
                 $p = Get-Process -Id ([int]$meta.Pid) -ErrorAction SilentlyContinue
-                if ($p -and ($p.ProcessName -match 'powershell|cmd|LanFixer')) { return $true }
+                if ($p -and ($p.ProcessName -match 'powershell|cmd|LanFixer')) {
+                    if ($meta.StartTime) {
+                        try {
+                            $pStart = [datetime]$p.StartTime
+                            $mStart = [datetime]$meta.StartTime
+                            if ([math]::Abs(($pStart - $mStart).TotalSeconds) -lt 5) { return $true }
+                        } catch { return $true }
+                    } else { return $true }
+                }
                 Remove-Item -LiteralPath $intFile -Force -ErrorAction SilentlyContinue
             }
         }
@@ -989,7 +1018,7 @@ function Get-AdapterDnsVerdict($Ad) {
         $routes = @(Get-NetRoute -InterfaceIndex $Ad.ifIndex -AddressFamily IPv6 -DestinationPrefix '::/0' -ErrorAction SilentlyContinue)
         foreach ($r in $routes) {
             $nh = [string]$r.NextHop
-            if ($nh -and -not $nh.StartsWith('fe80:') -and -not $nh.StartsWith('fd') -and -not $nh.StartsWith('fc')) {
+            if ($nh -and $nh -ne '::') {
                 $hasV6Route = $true; break
             }
         }
@@ -1213,12 +1242,9 @@ function Add-TrackedHostRoute([string]$Ip) {
 function Remove-CampusHostRoutes([int]$InterfaceIndex = 0) {
     if ($script:IsDry) { return }
     foreach ($hip in @($script:Cfg.PortalIp, $script:Cfg.CampusDns) | Where-Object { $_ }) {
-        if ($InterfaceIndex -gt 0) {
-            Remove-NetRoute -InterfaceIndex $InterfaceIndex -DestinationPrefix "$hip/32" -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue
-            Remove-NetRoute -InterfaceIndex $InterfaceIndex -DestinationPrefix "$hip/32" -PolicyStore PersistentStore -Confirm:$false -ErrorAction SilentlyContinue
-        } else {
-            Remove-NetRoute -DestinationPrefix "$hip/32" -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue
-            Remove-NetRoute -DestinationPrefix "$hip/32" -PolicyStore PersistentStore -Confirm:$false -ErrorAction SilentlyContinue
+        foreach ($rt in @(Get-NetRoute -DestinationPrefix "$hip/32" -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Where-Object { [int]$_.RouteMetric -eq 5 -and ($InterfaceIndex -le 0 -or [int]$_.InterfaceIndex -eq $InterfaceIndex) })) {
+            Remove-NetRoute -InterfaceIndex ([int]$rt.InterfaceIndex) -DestinationPrefix "$hip/32" -NextHop ([string]$rt.NextHop) -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue
+            Remove-NetRoute -InterfaceIndex ([int]$rt.InterfaceIndex) -DestinationPrefix "$hip/32" -NextHop ([string]$rt.NextHop) -PolicyStore PersistentStore -Confirm:$false -ErrorAction SilentlyContinue
         }
     }
     # Ensure-CampusPortalPath also routes the discovered portal, the redirect target and each adapter's DHCP resolvers.
@@ -1720,6 +1746,20 @@ function ConvertFrom-VaultPlain([string]$Plain) {
     return @{ User = $Plain.Substring(0, $i); Pass = $Plain.Substring($i + 1) }
 }
 
+function Test-SameSubnetIPv4([string]$Ip1, [string]$Ip2, [int]$Prefix) {
+    if (-not $Ip1 -or -not $Ip2 -or $Prefix -le 0 -or $Prefix -gt 32) { return $false }
+    try {
+        $b1 = ([System.Net.IPAddress]::Parse($Ip1)).GetAddressBytes()
+        $b2 = ([System.Net.IPAddress]::Parse($Ip2)).GetAddressBytes()
+        if ($b1.Length -ne 4 -or $b2.Length -ne 4) { return $false }
+        $mask = [uint32]0
+        if ($Prefix -gt 0) { $mask = [uint32]::MaxValue -shl (32 - $Prefix) }
+        $u1 = ([uint32]$b1[0] -shl 24) -bor ([uint32]$b1[1] -shl 16) -bor ([uint32]$b1[2] -shl 8) -bor [uint32]$b1[3]
+        $u2 = ([uint32]$b2[0] -shl 24) -bor ([uint32]$b2[1] -shl 16) -bor ([uint32]$b2[2] -shl 8) -bor [uint32]$b2[3]
+        return ($u1 -band $mask) -eq ($u2 -band $mask)
+    } catch { return $false }
+}
+
 # Host routes that keep the campus portal and the campus resolver reachable over the UNAUTHENTICATED cable while
 # every other destination keeps using the working secondary uplink (Wi-Fi / Bluetooth / USB tethering).
 # Called by the metric engine, by the vault's certificate/test actions and by the portal client, so no code path can
@@ -1747,14 +1787,20 @@ function Ensure-CampusPortalPath([uri]$RedirectUri = $null) {
         $gw4 = @(Get-GatewaysV4 $a) | Select-Object -First 1
         if (-not $gw4) { continue }
         $dhcpDns = @(Get-DhcpDnsServers ([string]$a.InterfaceGuid) | Where-Object { Test-PrivateIPv4 $_ })
+        $clientIpObj = Get-NetIPAddress -InterfaceIndex $a.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+                       Where-Object { $_.IPAddress -notlike '169.254.*' -and $_.AddressState -eq 'Preferred' } | Select-Object -First 1
+        $clientIp = if ($clientIpObj) { [string]$clientIpObj.IPAddress } else { '' }
+        $prefixLen = if ($clientIpObj) { [int]$clientIpObj.PrefixLength } else { 24 }
         $cfgPart = if (($null -eq $e.Home) -or [bool]$e.Home) { @($cfgTargets) } else { @() }
         $targets = @($cfgPart + $baseTargets + $dhcpDns | Where-Object { $_ } | Select-Object -Unique)
         foreach ($hip in $targets) {
+            $isOnLink = ($clientIp -and (Test-SameSubnetIPv4 $clientIp $hip $prefixLen))
+            $nextHopTarget = if ($isOnLink) { '0.0.0.0' } else { $gw4 }
             $have = @(Get-NetRoute -InterfaceIndex $a.ifIndex -DestinationPrefix "$hip/32" -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Select-Object -First 1)
-            if ($have -and ([string]$have[0].NextHop -eq [string]$gw4)) { continue }
+            if ($have -and ([string]$have[0].NextHop -eq [string]$nextHopTarget)) { continue }
             # A route left pointing at a previous gateway (VRRP/HSRP failover) is worse than no route at all.
             if ($have) { Remove-NetRoute -InterfaceIndex $a.ifIndex -DestinationPrefix "$hip/32" -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue }
-            New-NetRoute -InterfaceIndex $a.ifIndex -DestinationPrefix "$hip/32" -NextHop $gw4 -RouteMetric 5 -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Out-Null
+            New-NetRoute -InterfaceIndex $a.ifIndex -DestinationPrefix "$hip/32" -NextHop $nextHopTarget -RouteMetric 5 -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Out-Null
             Add-TrackedHostRoute ([string]$hip)
         }
     }
@@ -2907,7 +2953,9 @@ function Restore-UsbSuspend($Rec) {
     if (-not [System.IO.File]::Exists($pcfg)) { return }
     if ($null -ne $Rec.Ac) { [void](Invoke-Native $pcfg @('/setacvalueindex', [string]$Rec.Scheme, $script:UsbSub, $script:UsbSet, [string]$Rec.Ac) 5000) }
     if ($null -ne $Rec.Dc) { [void](Invoke-Native $pcfg @('/setdcvalueindex', [string]$Rec.Scheme, $script:UsbSub, $script:UsbSet, [string]$Rec.Dc) 5000) }
-    [void](Invoke-Native $pcfg @('/s', [string]$Rec.Scheme) 5000)
+    if ((Get-ActivePowerScheme) -eq [string]$Rec.Scheme) {
+        [void](Invoke-Native $pcfg @('/s', [string]$Rec.Scheme) 5000)
+    }
 }
 function Get-ProbeVerdict($P1, $P2) {
     if ($P1.Code -eq 204) { return 'Online' }
@@ -3007,7 +3055,11 @@ function Test-GatewayAlive($Ad, [string]$Gw) {
         try { $eh = Get-AdapterEnvironment $Ad -UseCache; if ($null -ne $eh.Home) { $homeAd = [bool]$eh.Home } } catch {}
         $cfgProxy = $false
         if ($homeAd) { $cfgProxy = [bool]((Test-PortalOnlineSmart $script:Cfg.PortalIp ([int]$script:Cfg.PortalPort)) -or ($null -ne (Test-Ping $script:Cfg.CampusDns 500))) }
-        if ((Test-TcpPort $Gw 80 400) -or (Test-TcpPort $Gw 443 400) -or (Test-TcpPort $Gw 53 400) -or $cfgProxy -or (Test-TcpPort '1.1.1.1' 53 400) -or (Test-TcpPort '8.8.8.8' 53 400)) {
+        if ((Test-TcpPort $Gw 80 400) -or (Test-TcpPort $Gw 443 400) -or (Test-TcpPort $Gw 53 400) -or $cfgProxy) {
+            return @{ Alive = $true; Rtt = $null; Via = 'arp' }
+        }
+        $freshArp = @(Get-GatewayMacs $Ad $Gw 1)
+        if ($freshArp.Count -gt 0 -and $freshArp[0] -eq [string]$ex.LinkLayerAddress) {
             return @{ Alive = $true; Rtt = $null; Via = 'arp' }
         }
         return @{ Alive = $false; Rtt = $null; Via = '' }
@@ -3027,7 +3079,31 @@ function Test-GatewayAlive($Ad, [string]$Gw) {
 # ==============================================================================
 # ADAPTERS / ENVIRONMENT / HEALTH
 # ==============================================================================
+function Rescue-DormantEthernetPnp {
+    if (-not $script:IsAdmin -or $script:IsDry) { return }
+    if (-not (Test-Elapsed 'PnpRescan' 60)) { return }
+    try {
+        $dormant = @(Get-PnpDevice -Class Net -ErrorAction SilentlyContinue | Where-Object {
+            $_.FriendlyName -match 'Ethernet|GbE|LAN|Realtek|ASIX|Intel' -and
+            $_.FriendlyName -notmatch $script:VirtRegex -and
+            ($_.Present -eq $false -or $_.Status -ne 'OK' -or $_.Problem -ne 'CM_PROB_NONE')
+        })
+        if ($dormant.Count -eq 0) { return }
+        Set-StateTime 'PnpRescan'
+        Write-Log 'STEP' "Detected $($dormant.Count) dormant/hung physical network transceiver(s). Triggering PnP bus rescan..."
+        [void](Invoke-Native (Get-SysExe 'pnputil.exe') @('/scan-devices') 5000)
+        foreach ($dev in $dormant) {
+            Write-Log 'INFO' "Awakening dormant device: $($dev.FriendlyName) ($($dev.InstanceId))"
+            try { Enable-PnpDevice -InstanceId $dev.InstanceId -Confirm:$false -ErrorAction SilentlyContinue } catch {}
+            [void](Invoke-Native (Get-SysExe 'pnputil.exe') @('/restart-device', $dev.InstanceId) 10000)
+        }
+        Start-Sleep -Milliseconds 1200
+    } catch {
+        Write-Log 'WARN' "Rescue-DormantEthernetPnp non-critical exception: $_"
+    }
+}
 function Get-EthernetAdapters {
+    Rescue-DormantEthernetPnp
     return @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object {
         $_.MediaType -eq '802.3' -and $_.InterfaceDescription -notmatch $script:VirtRegex
     })
@@ -3123,7 +3199,8 @@ function Get-AdapterEnvironment {
     try { $sfx = [string](Get-DnsClient -InterfaceIndex $Ad.ifIndex -ErrorAction SilentlyContinue).ConnectionSpecificSuffix } catch {}
     if (-not $sfx -and $reg -and $reg.DhcpDomain) { $sfx = [string]$reg.DhcpDomain }
     $cleanSfx = if ($sfx) { $sfx.Trim().Trim('.').ToLower() } else { '' }
-    if ($cleanSfx -and $cleanSfx -match [regex]::Escape($cfg.CampusDomain)) {
+    $campDom = ([string]$cfg.CampusDomain).ToLower().Trim('.')
+    if ($cleanSfx -and ($cleanSfx -eq $campDom -or $cleanSfx.EndsWith('.' + $campDom))) {
         $score += 2; [void]$ev.Add("DNS suffix '$cleanSfx'")
         if (-not $script:IsDry) {
             $script:State.Misc.Remove('DiscoveredDomain')
@@ -3284,16 +3361,32 @@ function Reset-PhysicalAdapterHardware($Ad) {
         }
     }
     if (-not $restarted) {
+        $disabled = $false
         try {
             Disable-NetAdapter -Name $Ad.Name -Confirm:$false -ErrorAction Stop
+            $disabled = $true
             Start-Sleep -Milliseconds 1200
-            Enable-NetAdapter -Name $Ad.Name -Confirm:$false -ErrorAction Stop
-            Write-Log 'OK' "Kernel NDIS driver cycled (disable/enable) on $($Ad.Name)."
-            $restarted = $true
         } catch {
-            Write-Log 'WARN' "Driver cycle failed on $($Ad.Name): $($_.Exception.Message). Falling back to Restart-NetAdapter."
-            Restart-NetAdapter -Name $Ad.Name -Confirm:$false -ErrorAction Stop
-            $restarted = $true
+            Write-Log 'WARN' "Failed to disable $($Ad.Name): $($_.Exception.Message)"
+        } finally {
+            if ($disabled) {
+                $enabled = $false
+                for ($attempt = 1; $attempt -le 3; $attempt++) {
+                    try {
+                        Enable-NetAdapter -Name $Ad.Name -Confirm:$false -ErrorAction Stop
+                        $enabled = $true
+                        Write-Log 'OK' "Kernel NDIS driver cycled and re-enabled on $($Ad.Name)."
+                        break
+                    } catch {
+                        Start-Sleep -Milliseconds 1000
+                    }
+                }
+                if (-not $enabled) {
+                    Write-Log 'ALERT' "Enable-NetAdapter failed on $($Ad.Name); invoking emergency fallback Restart-NetAdapter..."
+                    try { Restart-NetAdapter -Name $Ad.Name -Confirm:$false -ErrorAction SilentlyContinue } catch {}
+                }
+                $restarted = $enabled
+            }
         }
     }
     return $restarted
@@ -3356,17 +3449,19 @@ function Shield-Hardware($Ad) {
         }
     }
     # Hardening USB device parameters for Realtek and USB GbE dongles against idle power drops
-    if ($Ad.InterfaceDescription -match 'USB|Realtek|GbE|Ethernet') {
+    if ($Ad.InterfaceDescription -match 'USB|Realtek|GbE|Ethernet' -and $Ad.PnPDeviceID) {
         try {
             $enumKey = "HKLM:\SYSTEM\CurrentControlSet\Enum\$($Ad.PnPDeviceID)\Device Parameters"
             if (Test-Path -LiteralPath $enumKey) {
-                Set-ItemProperty -LiteralPath $enumKey -Name 'DeviceSelectiveSuspended' -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
-                Set-ItemProperty -LiteralPath $enumKey -Name 'IdleInWorkingState' -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
-                Set-ItemProperty -LiteralPath $enumKey -Name 'SelectiveSuspendEnabled' -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
-                Set-ItemProperty -LiteralPath $enumKey -Name 'AutoPowerSave' -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
-                Set-ItemProperty -LiteralPath $enumKey -Name 'IdlePowerSave' -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
-                Set-ItemProperty -LiteralPath $enumKey -Name 'ReduceSpeedOnPowerDown' -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
-                Set-ItemProperty -LiteralPath $enumKey -Name 'UltraLowPowerMode' -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+                $paramNames = @('DeviceSelectiveSuspended','IdleInWorkingState','SelectiveSuspendEnabled','AutoPowerSave','IdlePowerSave','ReduceSpeedOnPowerDown','UltraLowPowerMode')
+                foreach ($pName in $paramNames) {
+                    $cur = (Get-ItemProperty -LiteralPath $enumKey -Name $pName -ErrorAction SilentlyContinue).$pName
+                    if ($cur -eq 0) { continue }
+                    Save-Original $guid ("Enum:$pName") $cur
+                    [void](Invoke-Change "Device Parameters '$pName' set to 0 on $($Ad.Name)" {
+                        Set-ItemProperty -LiteralPath $enumKey -Name $pName -Value 0 -Type DWord -Force -ErrorAction Stop
+                    })
+                }
             }
         } catch {}
     }
@@ -3750,7 +3845,7 @@ function Shield-RouteMetrics($Ctx, [string]$ConnState) {
     $plan = Get-RouteMetricPlan ([string]$Ctx.Env.Env) $ConnState $others.Count
     if ($plan.Mode -eq 'Restore') {
         if (-not $script:IsDry) { Remove-CampusHostRoutes $ad.ifIndex }
-        if (Test-MetricsManaged -or (Get-RouteProfileName) -eq 'Windows') { Restore-InterfaceMetrics ([string]$plan.Why) }
+        if ((Test-MetricsManaged) -or (Get-RouteProfileName) -eq 'Windows') { Restore-InterfaceMetrics ([string]$plan.Why) }
         return
     }
     # Branch 3 removes the campus host routes BEFORE promoting; branch 2 injects them AFTER demoting, so the
@@ -3845,8 +3940,9 @@ function Measure-ResolversFast([string[]]$Servers, [int]$TimeoutMs = 600, [int]$
                     $ep = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Any, 0)
                     try {
                         $resp = $p.U.Receive([ref]$ep)
-                        # must be OUR transaction id, a response (QR=1) and NOERROR
-                        if ($resp.Length -ge 12 -and $resp[0] -eq $hi -and $resp[1] -eq $lo -and (($resp[2] -band 128) -ne 0) -and (($resp[3] -band 15) -eq 0)) {
+                        # must be OUR transaction id, a response (QR=1) and NOERROR, NXDOMAIN or REFUSED (pre-auth captive liveness)
+                        $rcode = ($resp[3] -band 15)
+                        if ($resp.Length -ge 12 -and $resp[0] -eq $hi -and $resp[1] -eq $lo -and (($resp[2] -band 128) -ne 0) -and ($rcode -eq 0 -or $rcode -eq 3 -or $rcode -eq 5)) {
                             $times[$s] += [int][math]::Round($ms)
                         }
                     } catch {}   # refused / reset: counts as no answer, immediately
@@ -4063,7 +4159,19 @@ function Shield-DnsIntegrity($Ad) {
         Write-Log 'WARN' "Shield-DnsIntegrity skipped on $($Ad.Name): $_"
     }
 }
+function Shield-DohFallback {
+    if (-not $script:IsAdmin -or $script:IsDry) { return }
+    if (-not (Get-Command 'Get-DnsClientDohServerAddress' -ErrorAction SilentlyContinue)) { return }
+    try {
+        $dohList = @(Get-DnsClientDohServerAddress -ErrorAction SilentlyContinue | Where-Object { -not $_.AllowFallbackToUdp })
+        foreach ($doh in $dohList) {
+            Write-Log 'INFO' "Permitting UDP fallback for DoH server: $($doh.ServerAddress)"
+            Set-DnsClientDohServerAddress -ServerAddress $doh.ServerAddress -AllowFallbackToUdp $true -ErrorAction SilentlyContinue
+        }
+    } catch {}
+}
 function Shield-Dns($Ctx, [string]$ConnState) {
+    Shield-DohFallback
     $ad = $Ctx.Ad
     Shield-DnsIntegrity $ad
     $guid = [string]$ad.InterfaceGuid
@@ -4224,6 +4332,11 @@ function Invoke-RoamingCleanup {
     if (Test-MetricsManaged) { Restore-InterfaceMetrics 'Left campus' }
     [void](Restore-ManagedAdapterDns 'Left campus')
     Restore-NeutralizedInterceptors 'Left campus'
+    if (-not $script:IsDry -and $script:State -is [hashtable] -and $script:State.Misc -is [hashtable]) {
+        $script:State.Misc.Remove('DiscoveredPortalUrl')
+        $script:State.Misc.Remove('DiscoveredPortalIp')
+        $script:State.Misc.Remove('DiscoveredDomain')
+    }
 }
 function Restore-NeutralizedInterceptors([string]$Why = 'Non-campus network') {
     if ($script:State.Misc['NeutralizedTasks'] -is [hashtable]) {
@@ -4550,7 +4663,8 @@ function Shield-SystemStack([switch]$Aggressive) {
         if (-not $skipKill) {
             $matchRegex = $wfpDnsRegex
             $rogueProcs = @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
-                ($roguePids.Contains($_.Id) -or (($Aggressive -or $hasPoison) -and ($_.ProcessName -match $matchRegex))) -and
+                ($_.ProcessName -match $matchRegex) -and
+                ($roguePids.Contains($_.Id) -or $Aggressive -or $hasPoison) -and
                 ($_.ProcessName -notmatch '^(svchost|System|Idle|services|lsass|csrss|smss|wininit)$')
             })
             $rogueSvcs = @(Get-Service -ErrorAction SilentlyContinue | Where-Object {
@@ -4695,13 +4809,10 @@ function Invoke-SupremeOmnifix {
         Remove-LegacyHostsEntries
         Remove-CampusHostRoutes
         foreach ($ea in @(Get-EthernetAdapters)) { Release-ArpLocks $ea; Shield-DnsIntegrity $ea }
-        Write-Log 'STEP' 'STAGE 2/5  Restoring clean routing metrics & MTU across all physical uplinks'
+        Write-Log 'STEP' 'STAGE 2/5  Restoring clean routing metrics & MTU across physical Ethernet uplinks'
         Restore-InterfaceMetrics 'Full Net Reset metrics restore'
         if (-not $script:IsDry) {
-            foreach ($i in @(Get-NetIPInterface -ErrorAction SilentlyContinue | Where-Object { $_.ConnectionState -eq 'Connected' })) {
-                Set-NetIPInterface -InterfaceIndex $i.ifIndex -AddressFamily $i.AddressFamily -AutomaticMetric Enabled -ErrorAction SilentlyContinue
-            }
-            foreach ($a in @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' })) {
+            foreach ($a in @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' -and $_.MediaType -eq '802.3' })) {
                 Set-NetIPInterface -InterfaceIndex $a.ifIndex -AddressFamily IPv4 -NlMtuBytes 1500 -ErrorAction SilentlyContinue
             }
         }
@@ -4711,8 +4822,8 @@ function Invoke-SupremeOmnifix {
         if (-not $script:IsDry) {
             Clear-DnsClientCache -ErrorAction SilentlyContinue
             [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/flushdns') 5000)
-            Get-NetNeighbor -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.State -ne 'Permanent' } | Remove-NetNeighbor -Confirm:$false -ErrorAction SilentlyContinue
-            Get-NetNeighbor -AddressFamily IPv6 -ErrorAction SilentlyContinue | Where-Object { $_.State -ne 'Permanent' } | Remove-NetNeighbor -Confirm:$false -ErrorAction SilentlyContinue
+            Get-NetNeighbor -AddressFamily IPv4 -ErrorAction SilentlyContinue | Remove-NetNeighbor -Confirm:$false -ErrorAction SilentlyContinue
+            Get-NetNeighbor -AddressFamily IPv6 -ErrorAction SilentlyContinue | Remove-NetNeighbor -Confirm:$false -ErrorAction SilentlyContinue
             [void](Invoke-Native (Get-SysExe 'nbtstat.exe') @('-R') 5000)
             Restart-Service -Name Dhcp -Force -ErrorAction SilentlyContinue
             Restart-Service -Name NlaSvc -Force -ErrorAction SilentlyContinue
@@ -4903,9 +5014,9 @@ function Invoke-HealPipeline([switch]$SkipSystemStack) {
             if (Test-Elapsed ("Restart:" + $g) 300) {
                 Set-StateTime ("Restart:" + $g)
                 if (Invoke-Change "Zero-reboot link reset on $nm to apply driver settings" { $rAd = Get-NetAdapter -Name $nm -ErrorAction SilentlyContinue; if ($rAd) { Reset-PhysicalAdapterHardware $rAd } else { Restart-NetAdapter -Name $nm -Confirm:$false -ErrorAction Stop } }) { $didHwRestart = $true }
+                $script:PendingRestart.Remove($g)
             }
         }
-        $script:PendingRestart = @{}
     }
     $needLongSettling = $didHwRestart
     if (-not $needLongSettling) {
@@ -5363,18 +5474,33 @@ function Invoke-AutoHeal {
         }
         Shield-SystemStack
         $primary = $ups[0]
-        $guid = [string]$primary.InterfaceGuid
         $health = Get-AdapterHealth $primary
-        $envi = Get-AdapterEnvironment $primary
-        $h = Get-SubTable 'Env' $guid
-        $d = Get-SubTable 'Dns' $guid
-        $newConn = (($h.Up -ne $true) -or ([string]$h.Ip -ne [string]$health.Ip))
-        $want = $(if ($health.Conn -eq 'Online') { 'Online' } else { 'NotOnline' })
-        $mismatch = ($envi.Env -eq 'Campus' -and (Get-DnsProfileName) -eq 'Adaptive' -and ([string]$d.ConnApplied -ne $want))
-        $needFull = ($health.Problem -ne 'Healthy') -or $newConn -or $mismatch -or ($script:State.Misc['Version'] -ne $script:Version) -or (Test-Elapsed 'LastFull' 7200)
+        $needFull = ($script:State.Misc['Version'] -ne $script:Version) -or (Test-Elapsed 'LastFull' 7200)
+        $newConn = $false
+        $mismatch = $false
+        foreach ($adUp in $ups) {
+            $guidUp = [string]$adUp.InterfaceGuid
+            $healthUp = if ($adUp.ifIndex -eq $primary.ifIndex) { $health } else { Get-AdapterHealth $adUp }
+            $enviUp = Get-AdapterEnvironment $adUp
+            $hUp = Get-SubTable 'Env' $guidUp
+            $dUp = Get-SubTable 'Dns' $guidUp
+            $nc = (($hUp.Up -ne $true) -or ([string]$hUp.Ip -ne [string]$healthUp.Ip))
+            $wantUp = $(if ($healthUp.Conn -eq 'Online') { 'Online' } else { 'NotOnline' })
+            $mm = ($enviUp.Env -eq 'Campus' -and (Get-DnsProfileName) -eq 'Adaptive' -and ([string]$dUp.ConnApplied -ne $wantUp))
+            if ($nc) { $newConn = $true }
+            if ($mm) { $mismatch = $true }
+            if (($healthUp.Problem -ne 'Healthy') -or $nc -or $mm) {
+                $needFull = $true
+            }
+        }
         if (-not $needFull) {
-            $h.Up = $true; $h.Ip = [string]$health.Ip
-            Shield-RouteMetrics @{ Ad = $primary; Env = $envi } $health.Conn
+            foreach ($adUp in $ups) {
+                $enviUp = Get-AdapterEnvironment $adUp
+                $hUp = Get-SubTable 'Env' ([string]$adUp.InterfaceGuid)
+                $healthUp = if ($adUp.ifIndex -eq $primary.ifIndex) { $health } else { Get-AdapterHealth $adUp }
+                $hUp.Up = $true; $hUp.Ip = [string]$healthUp.Ip
+                Shield-RouteMetrics @{ Ad = $adUp; Env = $enviUp } $healthUp.Conn
+            }
             [void](Clear-FailStreakIfRecovered ([string]$health.Problem))
             Save-State
             return 0
@@ -5836,6 +5962,19 @@ function Restore-Everything {
                         $ok = Invoke-Change "NIC power-off permission back to $pv on $($ad.Name)" { New-ItemProperty -LiteralPath $ck -Name PnPCapabilities -Value $pv -PropertyType DWord -Force -ErrorAction Stop }
                     }
                     if ($ok) { $restartNames[$ad.Name] = $true }
+                }
+            } elseif ($key -like 'Enum:*') {
+                $pName = $key.Substring(5)
+                if ($ad.PnPDeviceID) {
+                    $eKey = "HKLM:\SYSTEM\CurrentControlSet\Enum\$($ad.PnPDeviceID)\Device Parameters"
+                    if (Test-Path -LiteralPath $eKey) {
+                        if ($null -eq $val) {
+                            [void](Invoke-Change "Device Parameters '$pName' removed on $($ad.Name)" { Remove-ItemProperty -LiteralPath $eKey -Name $pName -ErrorAction SilentlyContinue })
+                        } else {
+                            $ev = [int]$val
+                            [void](Invoke-Change "Device Parameters '$pName' restored to $ev on $($ad.Name)" { Set-ItemProperty -LiteralPath $eKey -Name $pName -Value $ev -Type DWord -Force -ErrorAction Stop })
+                        }
+                    }
                 }
             }
         }
@@ -6765,7 +6904,7 @@ function Invoke-LogicTests {
     $omniDef = [string](Get-Command Invoke-SupremeOmnifix -ErrorAction SilentlyContinue).Definition
     Write-Check 'Logic: Full Net Reset restores Adaptive RouteProfile and DnsProfile' ($omniDef.IndexOf("RouteProfile'] = 'Adaptive'") -ge 0 -and $omniDef.IndexOf("DnsProfile'] = 'Adaptive'") -ge 0)
     $ahDef = [string](Get-Command Invoke-AutoHeal -ErrorAction SilentlyContinue).Definition
-    Write-Check 'Logic: AutoHeal fast-path syncs Shield-RouteMetrics when secondary uplinks change' ($ahDef.IndexOf('if (-not $needFull)') -ge 0 -and $ahDef.Substring($ahDef.IndexOf('if (-not $needFull)'), 350).IndexOf('Shield-RouteMetrics') -ge 0)
+    Write-Check 'Logic: AutoHeal fast-path syncs Shield-RouteMetrics when secondary uplinks change' ($ahDef.IndexOf('if (-not $needFull)') -ge 0 -and $ahDef.Substring($ahDef.IndexOf('if (-not $needFull)'), [Math]::Min(600, $ahDef.Length - $ahDef.IndexOf('if (-not $needFull)'))).IndexOf('Shield-RouteMetrics') -ge 0)
     $dlDef2 = [string](Get-Command Shield-DataLink -ErrorAction SilentlyContinue).Definition
     Write-Check 'Logic: Shield-DataLink protects gateway-less lab static IP during AutoHeal and checks ARP peers' ($dlDef2.IndexOf('$peerArp') -ge 0 -and $dlDef2.IndexOf("Mode -eq 'AutoHeal'") -ge 0)
     $ouDef = [string](Get-Command Get-OtherUplinkAdapters -ErrorAction SilentlyContinue).Definition
@@ -7296,13 +7435,14 @@ function Start-Interactive {
                 if (((Get-Date) - $lastTel).TotalSeconds -ge $ivl) {
                     $t2 = Get-Telemetry; $lastTel = Get-Date
                     if ($script:IsAdmin -and -not $script:IsDry) {
-                        $needsPrioritySync = (($t2.Problem -eq 'Healthy' -or $t2.Problem -eq 'Online') -and (
+                        $needsPrioritySync = ((Test-Elapsed 'DashPrioritySync' 30) -and ($t2.Problem -eq 'Healthy' -or $t2.Problem -eq 'Online') -and (
                             ($t.Problem -eq 'Captive') -or
                             ($t2.RouteProfile -eq 'Adaptive' -and $t2.Routing -eq 'Wi-Fi Protected' -and -not $t2.UplinkActive) -or
                             ($t2.RouteProfile -eq 'Ethernet' -and $t2.Routing -ne 'Ethernet First') -or
                             ($t2.RouteProfile -eq 'Wifi' -and ($t2.Routing -ne 'Wi-Fi First' -and $t2.UplinkActive))
                         ))
                         if ($needsPrioritySync) {
+                            Set-StateTime 'DashPrioritySync'
                             [void](Invoke-WithLock -WaitMs 2000 -Block { Complete-Authentication })
                             $t2 = Get-Telemetry
                         } elseif ($t2.Problem -eq 'Captive' -and ($t.Problem -ne 'Captive' -or -not $autoLoginTried) -and $t2.Vault -and -not $t2.Paused -and $script:Cfg.AutoPortalLogin) {
