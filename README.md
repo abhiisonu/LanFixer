@@ -5,12 +5,13 @@
 **Autonomous Single-File Network Stabilization & Captive Portal Engine for Windows**
 
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-0078D6?style=flat-square&logo=windows)](https://github.com/abhiisonu/LanFixer)
+[![Version](https://img.shields.io/badge/Release-v6.4.0-blue?style=flat-square)](https://github.com/abhiisonu/LanFixer/releases/tag/v6.4.0)
 [![Architecture](https://img.shields.io/badge/Arch-x64%20%7C%20ARM64%20%7C%20x86-0A84FF?style=flat-square)](https://github.com/abhiisonu/LanFixer)
 [![Runtime](https://img.shields.io/badge/Engine-PowerShell%205.1%2B%20%7C%20Batch%20Polyglot-172B4D?style=flat-square)](https://github.com/abhiisonu/LanFixer)
 [![Dependencies](https://img.shields.io/badge/Dependencies-0%20External%20Binaries-2ea44f?style=flat-square)](https://github.com/abhiisonu/LanFixer)
 [![Encoding](https://img.shields.io/badge/Encoding-100%25%20Pure%20ASCII-586069?style=flat-square)](https://github.com/abhiisonu/LanFixer)
 [![Security](https://img.shields.io/badge/Vault-Windows%20DPAPI%20Encrypted-critical?style=flat-square&logo=shield)](https://github.com/abhiisonu/LanFixer)
-[![Self-Test](https://img.shields.io/badge/Test%20Suite-197%20Assertions%20Passing-brightgreen?style=flat-square)](https://github.com/abhiisonu/LanFixer)
+[![Self-Test](https://img.shields.io/badge/Test%20Suite-207%2B%20Assertions%20Passing-brightgreen?style=flat-square)](https://github.com/abhiisonu/LanFixer)
 [![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square)](LICENSE)
 
 [Quickstart](#quickstart) &bull;
@@ -42,7 +43,7 @@ It permanently resolves captive portal lockouts, dual-homed metric collisions (E
  79-Col ANSI/ASCII Live TUI                     CLI Automation (-Mode Heal, etc.)
   + Real-Time Latency Sparklines                 + Task Scheduler Watchdog Daemon
   + Interactive DPAPI Vault                      + Non-Destructive State Snapshots
-  + 18 One-Touch Operation Keys                  + 197 In-Memory Verification Tests
+  + 18 One-Touch Operation Keys                  + 207+ In-Memory Verification Tests
 ```
 
 ---
@@ -200,7 +201,7 @@ LanFixer.cmd -Mode ResetFactory
 
 | Exit Code | Meaning |
 | :---: | :--- |
-| `0` | Success: The operation completed without errors, or all 197 verification tests passed. |
+| `0` | Success: The operation completed without errors, or all 207+ verification tests passed. |
 | `1` | Error: A verification assertion failed, an unhandled exception occurred, or an elevated mode was executed without administrative rights. |
 
 ---
@@ -213,7 +214,7 @@ Built according to strict systems programming guidelines:
 * **DPAPI Machine Cryptography**: Portal credentials in the vault are encrypted on disk via Windows Data Protection API (`System.Security.Cryptography.ProtectedData::Protect`) with `DataProtectionScope.LocalMachine` and hardware-derived machine entropy (`Get-VaultEntropy`). Keys are non-exportable and readable exclusively by `SYSTEM` and elevated Administrators.
 * **Strict ACL Enforcement**: The persistent storage directory (`%ProgramData%\LanFixer`) and vault file (`vault.bin`) are locked with inheritance disabled via `icacls.exe` and granted access exclusively to `SYSTEM` and `Administrators`.
 * **Anti-Rogue DHCP Domain Validation**: Credentials stored for a campus portal are strictly pinned to configured target domains or hashes; credentials are never transmitted to unauthorized captive endpoints.
-* **Global Mutex Concurrency Guard**: Inter-process synchronization is enforced using a named global Win32 mutex (`Global\LanFixer_Lock`). Concurrent runs wait gracefully with abandoned-mutex protection rather than colliding.
+* **Global Mutex Concurrency Guard**: Inter-process synchronization is enforced using a named global Win32 mutex (`Global\LanFixer_Lock`). Mutex DACL is locked to `LocalSystem` and `BuiltinAdministrators`.
 * **100% Pure 7-Bit ASCII**: The script contains zero UTF-8 multibyte characters. It will never break, mangle, or crash on non-English Windows editions (CJK, Cyrillic, Turkish, Latin-1 codepages).
 * **Non-Destructive Snapshots**: Before modifying adapter metrics, DNS profiles, or power settings, original configurations are snapshotted to `%ProgramData%\LanFixer\state.clixml` with automatic `.bak` backup transactions. `Factory Reset` (`9`) guarantees instant restoration.
 
@@ -227,7 +228,7 @@ LanFixer includes a built-in diagnostic and logic test harness that can be run o
 LanFixer.cmd -Mode SelfTest -NoPause
 ```
 
-### Test Coverage Breakdown (197 Total Assertions)
+### Test Coverage Breakdown (207+ Total Assertions)
 
 ```
 [+] Runtime & Privilege (11 Checks):
@@ -238,10 +239,16 @@ LanFixer.cmd -Mode SelfTest -NoPause
     - Kernel drivers existence (tcpip.sys, ndis.sys, afd.sys)
     - Protected store ACL permissions and XML schema conformance
 
-[+] Pure Logic Invariants (165 Assertions):
+[+] Pure Logic Invariants (175+ Assertions):
     - Win32 CLI argument quoting & escaping rules (trailing backslashes, embedded quotes, spaces)
     - HTTP captive redirect and status parsing (200, 204, 302, 503, chunked transfer-encoding)
     - Dual-homed metric assignment rules (15 vs 50, gateway reachability)
+    - Source-bound gateway liveness probing (zero multi-uplink Wi-Fi leakage)
+    - RFC 4861 fe80:: link-local IPv6 gateway route preservation
+    - Windows 11 native DoH template UDP fallback enforcement (AllowFallbackToUdp = $true)
+    - Dynamic topology-aware /32 route calculations (0.0.0.0 on-link vs gateway off-link)
+    - Dormant USB PnP transceiver revival & fail-safe NDIS driver cycling
+    - Stale PID reuse start-time detection & named mutex DACL security
     - DPAPI LocalMachine encryption and decryption round-trip
     - Gateway ARP neighbor stability (24-hour verification window)
     - Bounded DNS queries (2500ms timeout clamp)
