@@ -1,3 +1,9 @@
+            [void](Invoke-Native (Get-SysExe 'pnputil.exe') @('/restart-device', $dev.InstanceId) 10000)
+        }
+    } catch {
+        Write-Log 'WARN' "Rescue-DormantEthernetPnp non-critical exception: $_"
+    }
+}
 function Get-EthernetAdapters {
     Rescue-DormantEthernetPnp
     return @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object {
@@ -792,9 +798,3 @@ function Shield-GatewayArp($Ctx, [string]$ConnState) {
         }
         if ($dec -eq 'wait') { Write-Log 'WARN' ("Gateway {0} still answers from the new MAC {1}; it is locked only after 24 stable hours." -f $gw, $mac); continue }
         $ip = $Ctx.Env.Ip
-        $ok = Invoke-Change "Gateway ARP locked: $gw -> $mac" {
-            Remove-NetNeighbor -InterfaceIndex $ad.ifIndex -IPAddress $gw -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue
-            Remove-NetNeighbor -InterfaceIndex $ad.ifIndex -IPAddress $gw -PolicyStore PersistentStore -Confirm:$false -ErrorAction SilentlyContinue
-            try {
-                New-NetNeighbor -InterfaceIndex $ad.ifIndex -IPAddress $gw -LinkLayerAddress $mac -State Permanent -PolicyStore ActiveStore -ErrorAction Stop | Out-Null
-                if ($script:Cfg.ArpPersistent) { New-NetNeighbor -InterfaceIndex $ad.ifIndex -IPAddress $gw -LinkLayerAddress $mac -State Permanent -PolicyStore PersistentStore -ErrorAction SilentlyContinue | Out-Null }

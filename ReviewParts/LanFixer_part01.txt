@@ -18,12 +18,17 @@ exit /b %errorlevel%
     Add -DryRun to see exactly what would change without changing anything.
     Every change is snapshotted first, so ResetFactory restores YOUR original values.
 .NOTES
-    6.5.0 (Omniscient Layer 1-7 Healer & Sovereign Ultra Weapon Reset Engine):
-      - Invoke-UltraSystemReset: 7-stage nuclear stack resuscitation engine implementing full-spectrum low-level remediation.
-      - Dual-Stack TCP/IP & Winsock Nuclear Restoration: netsh winsock reset catalog (32/64-bit), netsh int ip/ipv6 reset, netsh int tcp reset.
-      - Routing & Firewall Nuclear Purge: route -f (clears all gateways and non-interface routes), netsh advfirewall reset (factory firewall defaults), netsh branchcache reset.
-      - Cache & NetBIOS Eviction: netsh interface ip delete arpcache, nbtstat -R & nbtstat -RR, Remove-NetNeighbor IPv4/IPv6, Clear-DnsClientCache, ipconfig /flushdns.
-      - Topological Service Stack Resuscitation: cleanly stops dependent services (netprofm, NlaSvc, Dnscache, Dhcp, iphlpsvc, dot3svc, WlanSvc) before reset and restarts them in strict topological dependency order (BFE -> mpssvc -> Dhcp -> Dnscache -> iphlpsvc -> dot3svc -> WlanSvc -> NlaSvc -> netprofm).
+    6.5.0 (Omniscient Layer 1-7 Healer & Sovereign Supermost Ultra Weapon Reset Engine):
+      - Invoke-UltraSystemReset: 8-stage omnipotent nuclear stack resuscitation engine implementing full-spectrum low-level remediation.
+      - Dual-Architecture Winsock LSP & NSP Annihilation: wipes 64-bit System32 and 32-bit SysWOW64 Winsock catalogs (netsh winsock reset catalog & reset).
+      - Dual-Stack TCP/IP & Heuristics Normalization: netsh int ip/ipv6 reset, netsh int tcp reset, autotuninglevel=normal, RSS/RSC enabled, ECN/timestamps disabled, initialrto=3000.
+      - Transition Tunnel Disablement: disables Teredo, ISATAP, and 6to4 transition tunnels to eliminate campus IPv6 routing sinkholes.
+      - Routing & Destination Cache Nuclear Purge: route -f (clears all gateways and non-interface routes), deletes IPv4/IPv6 destination caches.
+      - Firewall & Cache Factory Reset: netsh advfirewall reset & allprofiles on, netsh branchcache reset/flush, netsh winhttp reset proxy/autoproxy/tracing.
+      - Cache & NetBIOS Eviction: netsh interface ip delete arpcache, netsh int ip/ipv6 delete neighbors, arp -d *, nbtstat -R & -RR, Clear-DnsClientCache, ipconfig /flushdns.
+      - DHCP Registry Zeroing & Protocol Bindings: zeroes out cached DhcpIPAddress/DhcpServer keys in registry to force pure DHCP Discover, re-enables core protocol bindings, defeats PHY EEE/green power traps.
+      - Topological Service Stack Resuscitation: cleanly halts 8 dependent services before reset and restarts them in strict topological dependency order (BFE -> mpssvc -> Dhcp -> Dnscache -> iphlpsvc -> dot3svc -> WlanSvc -> NlaSvc -> netprofm).
+      - 802.1X Wired AutoConfig Reconnection: issues netsh lan reconnect across wired LAN interfaces.
       - Full DHCP Stack Cycle & Dynamic DNS: ipconfig /release & /renew (IPv4/IPv6), ipconfig /registerdns, and 802.1D Spanning Tree Protocol (STP) convergence loop.
       - Interactive TUI & CLI Integration: Key [U] on dashboard, dual-tier selector on [X], -Mode UltraReset / FullNetReset CLI dispatch.
     6.4.2 (Sovereign Grand Master Final Hardening & PnP Optimization):
@@ -793,8 +798,3 @@ function Enter-Lock([int]$TimeoutMs = 1000) {
                     if ($script:State.Misc.ContainsKey($mk)) { $memMisc[$mk] = $script:State.Misc[$mk] }
                 }
             }
-            $memEnv = if ($script:State -is [hashtable] -and $script:State.Env -is [hashtable]) { $script:State.Env.Clone() } else { @{} }
-            $script:State = Get-State
-            if ($memMisc['LearnedDhcp'] -and -not $script:State.Misc['LearnedDhcp']) { $script:State.Misc['LearnedDhcp'] = $memMisc['LearnedDhcp'] }
-            if ($memMisc['DiscoveryTime'] -and ([string]$memMisc['DiscoveryTime'] -ge [string]$script:State.Misc['DiscoveryTime'])) {
-                foreach ($mk in @('DiscoveredDomain','DiscoveredPortalUrl','DiscoveredPortalIp','DiscoveryTime')) {

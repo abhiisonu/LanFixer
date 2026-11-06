@@ -1,3 +1,105 @@
+      <StartBoundary>$Start</StartBoundary>
+      <Enabled>true</Enabled>
+    </TimeTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>S-1-5-18</UserId>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT20M</ExecutionTimeLimit>
+    <Priority>5</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>%SystemRoot%\System32\cmd.exe</Command>
+      <Arguments>$([System.Security.SecurityElement]::Escape($CmdArgs))</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+"@
+}
+function New-NotifyTaskXml([string]$Title = 'Lan Fixer', [string]$Message = '') {
+    $titleXml = [System.Security.SecurityElement]::Escape($Title)
+    $msgXml   = [System.Security.SecurityElement]::Escape($Message)
+    $script = @"
+[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
+[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null
+`$ip = (Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { `$_.InterfaceAlias -match 'Ethernet|LAN' -and `$_.IPAddress -notlike '169.254.*' } | Select-Object -First 1).IPAddress
+`$m = if ('$msgXml') { '$msgXml' } elseif (`$ip) { "Ethernet is back online (`$ip)! You can turn off a mobile hotspot." } else { "Ethernet is back online! You can turn off a mobile hotspot." }
+`$xml = New-Object Windows.Data.Xml.Dom.XmlDocument
+`$xml.LoadXml('<toast><visual><binding template=""ToastGeneric""><text>$titleXml</text><text>' + [System.Security.SecurityElement]::Escape(`$m) + '</text></binding></visual></toast>')
+`$toast = New-Object Windows.UI.Notifications.ToastNotification `$xml
+`$appId = '{1AC14E77-02E7-4E60-B746-AC6A9D31BDE8}\WindowsPowerShell\v1.0\powershell.exe'
+try { [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier(`$appId).Show(`$toast) } catch {}
+"@
+    $b64 = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($script))
+    $args = "-NoProfile -ExecutionPolicy Bypass -EncodedCommand $b64"
+    return @"
+<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>Displays LAN Fixer recovery notifications in the active user desktop session.</Description>
+    <Author>Lan Fixer</Author>
+  </RegistrationInfo>
+  <Triggers />
+  <Principals>
+    <Principal id="Users">
+      <GroupId>S-1-5-32-545</GroupId>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>true</Hidden>
+    <ExecutionTimeLimit>PT1M</ExecutionTimeLimit>
+  </Settings>
+  <Actions Context="Users">
+    <Exec>
+      <Command>%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe</Command>
+      <Arguments>$args</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+"@
+}
+
+function Show-NativeToast([string]$Title, [string]$Message) {
+    try {
+        [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
+        [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null
+        $xml = New-Object Windows.Data.Xml.Dom.XmlDocument
+        $xml.LoadXml("<toast><visual><binding template=""ToastGeneric""><text>$([System.Security.SecurityElement]::Escape($Title))</text><text>$([System.Security.SecurityElement]::Escape($Message))</text></binding></visual></toast>")
+        $toast = New-Object Windows.UI.Notifications.ToastNotification $xml
+        $appId = '{1AC14E77-02E7-4E60-B746-AC6A9D31BDE8}\WindowsPowerShell\v1.0\powershell.exe'
+        [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($appId).Show($toast)
+    } catch {}
+}
+
+function Invoke-RecoveryToast([string]$Ip = '') {
+    if (-not (Test-Elapsed 'LastRecoveryToast' 600)) { return }
+    $title = 'Lan Fixer'
     $msg   = if ($Ip) { "Ethernet is back online ($Ip)! You can turn off a mobile hotspot." } else { 'Ethernet is back online! You can turn off a mobile hotspot.' }
     if (Test-IsSystem) {
         $u = $null
@@ -696,105 +798,3 @@ function Show-Diagnostics {
         if ((Get-Content -LiteralPath $hp -ErrorAction SilentlyContinue) -match [regex]::Escape($script:Cfg.PortalHost)) {
             Write-KV 'Old v1 hosts pin' 'FOUND (a Heal removes it)' 'Yellow'
             [void]$issues.Add('Old Lan Fixer v1 hosts-file pin present (can go stale); a Heal removes it')
-        }
-    } catch {}
-
-    Write-Section 'RECENT ACTIVITY LOG (LAST 12 ENTRIES)'
-    if (Test-Path -LiteralPath $script:LogFile) {
-        foreach ($ll in @(Get-Content -LiteralPath $script:LogFile -Tail 12 -ErrorAction SilentlyContinue)) {
-            $lRole = if ($ll -match '\[(FAIL|ALERT)\]') { 'bad' } elseif ($ll -match '\[WARN\]') { 'warn' } elseif ($ll -match '\[OK\]') { 'ok' } else { 'dim' }
-            Out-Line @((Seg $lRole ('  ' + (Fit ([string]$ll) ([Math]::Max(50, (Get-UiWidth) - 2))))))
-        }
-    } else {
-        Out-Line @((Seg 'dim' '  (no log entries recorded yet)'))
-    }
-
-    Write-Section 'DIAGNOSTIC SUMMARY & VERDICT'
-    if ($issues.Count -eq 0) { Out-Line @((Seg 'ok' ('  ' + $script:G.ok + ' ')), (Seg 'text' 'No problems found.')) }
-    else { foreach ($i in $issues) { Out-Wrapped 'warn' $script:G.warn 'warn' ([string]$i) 2 } }
-    Write-Host ''
-}
-
-# ==============================================================================
-# QUICK PROBE (real numbers, real thresholds)
-# ==============================================================================
-function Get-LatencyLabel([double]$Ms) {
-    if ($Ms -lt 5) { return @('excellent', 'Green') }
-    if ($Ms -lt 20) { return @('good', 'Green') }
-    if ($Ms -lt 60) { return @('fair', 'Yellow') }
-    return @('poor', 'Red')
-}
-function Run-QuickProbe {
-    Write-Banner 'LATENCY, PACKET LOSS & JITTER PROBE'
-    $ethAds = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })
-    $secAds = @(Get-OtherUplinkAdapters)
-    $gatewaysToProbe = @()
-    if ($ethAds.Count -gt 0) {
-        $egw = @(Get-GatewaysV4 $ethAds[0]) | Select-Object -First 1
-        if ($egw) { $gatewaysToProbe += @{ Label = 'Ethernet Gateway'; Ip = $egw } }
-    }
-    if ($secAds.Count -gt 0) {
-        $sgw = @(Get-GatewaysV4 $secAds[0]) | Select-Object -First 1
-        if ($sgw) { $gatewaysToProbe += @{ Label = ("{0} Gateway" -f $secAds[0].Name); Ip = $sgw } }
-    }
-    if ($gatewaysToProbe.Count -eq 0) {
-        Write-KV '[1] Gateway' 'No route found / cable disconnected' 'Red'
-    } else {
-        $gIdx = 1
-        foreach ($gItem in $gatewaysToProbe) {
-            $rtts = @(); $lost = 0
-            for ($i = 0; $i -lt 10; $i++) {
-                $r = Test-Ping $gItem.Ip 600
-                if ($null -eq $r) { $lost++ } else { $rtts += $r }
-                Start-Sleep -Milliseconds 120
-            }
-            $pTag = if ($gatewaysToProbe.Count -gt 1) { "[1{0}] {1} {2}" -f ([char](96 + $gIdx)), $gItem.Label, $gItem.Ip } else { "[1] Gateway {0}" -f $gItem.Ip }
-            if ($rtts.Count -gt 0) {
-                $avg = ($rtts | Measure-Object -Average).Average
-                $jit = ($rtts | Measure-Object -Maximum).Maximum - ($rtts | Measure-Object -Minimum).Minimum
-                $lab = Get-LatencyLabel $avg
-                Write-KV $pTag ("{0:N1} ms avg ({1}), jitter {2} ms, loss {3}%" -f $avg, $lab[0], $jit, ($lost * 10)) $(if ($lost -gt 1) { 'Yellow' } else { $lab[1] })
-            } else {
-                Write-KV $pTag 'No ping response (ICMP traffic may be filtered by router)' 'Yellow'
-            }
-            $gIdx++
-        }
-    }
-    $epProbe = Get-ActivePortalEndpoint
-    $tcp = Test-TcpPort $epProbe.Ip $epProbe.Port 900
-    $pp = Test-Ping $epProbe.Ip 800
-    Write-KV ("[2] Portal {0}" -f $epProbe.Ip) ("tcp/{0} {1}, ping {2}" -f $epProbe.Port, $(if ($tcp) { 'open' } else { 'closed' }), $(if ($null -ne $pp) { "$pp ms" } else { 'no reply' })) $(if ($tcp) { 'Green' } else { 'Yellow' })
-    $servers = @(@(Get-ActiveCampusDns) + @($script:Cfg.PublicDns) | Select-Object -Unique)
-    $meas = Measure-ResolversFast $servers
-    foreach ($s in $servers) {
-        $ms = $meas[$s]
-        if ($null -ne $ms) { $lab = Get-LatencyLabel $ms; Write-KV ("[3] DNS {0}" -f $s) ("{0} ms median lookup ({1})" -f $ms, $lab[0]) $lab[1] }
-        else { Write-KV ("[3] DNS {0}" -f $s) 'No response (unreachable or blocked prior to login)' 'Yellow' }
-    }
-    $st = (Get-InternetState -NoCache).State
-    $col = $(switch ($st) { 'Online' { 'Green' } 'Captive' { 'Yellow' } default { 'Red' } })
-    Write-KV '[4] HTTP internet probe' $st $col
-    Write-Host ''
-}
-
-# ==============================================================================
-# FLUSH
-# ==============================================================================
-# Turns captured Write-Host output (information records) back into plain text, honouring -NoNewline.
-function ConvertTo-ReportText($Records) {
-    $sb = New-Object System.Text.StringBuilder
-    foreach ($r in @($Records)) {
-        if ($r -is [System.Management.Automation.InformationRecord]) {
-            $m = $r.MessageData
-            $txt = ''; $nn = $false
-            if ($m -is [System.Management.Automation.HostInformationMessage]) { $txt = [string]$m.Message; $nn = [bool]$m.NoNewLine }
-            else { $txt = [string]$m }
-            [void]$sb.Append($txt)
-            if (-not $nn) { [void]$sb.Append("`r`n") }
-        } elseif ($r -is [System.Management.Automation.ErrorRecord]) { [void]$sb.Append('[error] ' + $r.Exception.Message + "`r`n") }
-        elseif ($null -ne $r) { [void]$sb.Append(([string]$r) + "`r`n") }
-    }
-    return $sb.ToString()
-}
-# Saves the full audit (adapters, MAC, lease, resolvers, events) plus the last log lines as a text file.
-# Output is CAPTURED and written with one atomic file write: no Start-Transcript (host-dependent, fails when a

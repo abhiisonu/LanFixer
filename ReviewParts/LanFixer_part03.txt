@@ -1,3 +1,8 @@
+        try { $sock.EndConnect($iar) } catch { $r.Error = 'ConnectFailure'; return $r }
+        $ns = New-Object System.Net.Sockets.NetworkStream($sock, $false)
+        $ns.ReadTimeout = $TimeoutMs; $ns.WriteTimeout = $TimeoutMs
+        $cb = New-CertCallback $Pin $Capture
+        $ssl = New-Object System.Net.Security.SslStream($ns, $false, $cb)
         $protocols = [System.Security.Authentication.SslProtocols]::Tls12
         try { $protocols = [System.Security.Authentication.SslProtocols]'Tls12, Tls13' } catch {
             # keep TLS 1.2: never fall back to the OS default list (it can still include TLS 1.0/1.1)
@@ -793,8 +798,3 @@ function Get-DashboardModel($t, $adv, [int]$Width = 0) {
     }
     $hp = ($w + 2) - (Get-SegsLength $heroL) - $right.Length
     [void]$L.Add(@($heroL + (Seg 'text' (' ' * [Math]::Max(2, $hp))) + (Seg 'dim' $right)))
-    # path
-    foreach ($ln in @(Get-StepperLines (Get-HopRows $t $adv) $w)) { [void]$L.Add($ln) }
-    [void]$L.Add(@())
-    $pulseIdx = $L.Count
-    [void]$L.Add((Get-PulseSegs $t ([Math]::Max(4, [Math]::Min(36, $w - 54)))))

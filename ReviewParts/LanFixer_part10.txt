@@ -1,3 +1,105 @@
+        }
+    } catch {}
+
+    Write-Section 'RECENT ACTIVITY LOG (LAST 12 ENTRIES)'
+    if (Test-Path -LiteralPath $script:LogFile) {
+        foreach ($ll in @(Get-Content -LiteralPath $script:LogFile -Tail 12 -ErrorAction SilentlyContinue)) {
+            $lRole = if ($ll -match '\[(FAIL|ALERT)\]') { 'bad' } elseif ($ll -match '\[WARN\]') { 'warn' } elseif ($ll -match '\[OK\]') { 'ok' } else { 'dim' }
+            Out-Line @((Seg $lRole ('  ' + (Fit ([string]$ll) ([Math]::Max(50, (Get-UiWidth) - 2))))))
+        }
+    } else {
+        Out-Line @((Seg 'dim' '  (no log entries recorded yet)'))
+    }
+
+    Write-Section 'DIAGNOSTIC SUMMARY & VERDICT'
+    if ($issues.Count -eq 0) { Out-Line @((Seg 'ok' ('  ' + $script:G.ok + ' ')), (Seg 'text' 'No problems found.')) }
+    else { foreach ($i in $issues) { Out-Wrapped 'warn' $script:G.warn 'warn' ([string]$i) 2 } }
+    Write-Host ''
+}
+
+# ==============================================================================
+# QUICK PROBE (real numbers, real thresholds)
+# ==============================================================================
+function Get-LatencyLabel([double]$Ms) {
+    if ($Ms -lt 5) { return @('excellent', 'Green') }
+    if ($Ms -lt 20) { return @('good', 'Green') }
+    if ($Ms -lt 60) { return @('fair', 'Yellow') }
+    return @('poor', 'Red')
+}
+function Run-QuickProbe {
+    Write-Banner 'LATENCY, PACKET LOSS & JITTER PROBE'
+    $ethAds = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })
+    $secAds = @(Get-OtherUplinkAdapters)
+    $gatewaysToProbe = @()
+    if ($ethAds.Count -gt 0) {
+        $egw = @(Get-GatewaysV4 $ethAds[0]) | Select-Object -First 1
+        if ($egw) { $gatewaysToProbe += @{ Label = 'Ethernet Gateway'; Ip = $egw } }
+    }
+    if ($secAds.Count -gt 0) {
+        $sgw = @(Get-GatewaysV4 $secAds[0]) | Select-Object -First 1
+        if ($sgw) { $gatewaysToProbe += @{ Label = ("{0} Gateway" -f $secAds[0].Name); Ip = $sgw } }
+    }
+    if ($gatewaysToProbe.Count -eq 0) {
+        Write-KV '[1] Gateway' 'No route found / cable disconnected' 'Red'
+    } else {
+        $gIdx = 1
+        foreach ($gItem in $gatewaysToProbe) {
+            $rtts = @(); $lost = 0
+            for ($i = 0; $i -lt 10; $i++) {
+                $r = Test-Ping $gItem.Ip 600
+                if ($null -eq $r) { $lost++ } else { $rtts += $r }
+                Start-Sleep -Milliseconds 120
+            }
+            $pTag = if ($gatewaysToProbe.Count -gt 1) { "[1{0}] {1} {2}" -f ([char](96 + $gIdx)), $gItem.Label, $gItem.Ip } else { "[1] Gateway {0}" -f $gItem.Ip }
+            if ($rtts.Count -gt 0) {
+                $avg = ($rtts | Measure-Object -Average).Average
+                $jit = ($rtts | Measure-Object -Maximum).Maximum - ($rtts | Measure-Object -Minimum).Minimum
+                $lab = Get-LatencyLabel $avg
+                Write-KV $pTag ("{0:N1} ms avg ({1}), jitter {2} ms, loss {3}%" -f $avg, $lab[0], $jit, ($lost * 10)) $(if ($lost -gt 1) { 'Yellow' } else { $lab[1] })
+            } else {
+                Write-KV $pTag 'No ping response (ICMP traffic may be filtered by router)' 'Yellow'
+            }
+            $gIdx++
+        }
+    }
+    $epProbe = Get-ActivePortalEndpoint
+    $tcp = Test-TcpPort $epProbe.Ip $epProbe.Port 900
+    $pp = Test-Ping $epProbe.Ip 800
+    Write-KV ("[2] Portal {0}" -f $epProbe.Ip) ("tcp/{0} {1}, ping {2}" -f $epProbe.Port, $(if ($tcp) { 'open' } else { 'closed' }), $(if ($null -ne $pp) { "$pp ms" } else { 'no reply' })) $(if ($tcp) { 'Green' } else { 'Yellow' })
+    $servers = @(@(Get-ActiveCampusDns) + @($script:Cfg.PublicDns) | Select-Object -Unique)
+    $meas = Measure-ResolversFast $servers
+    foreach ($s in $servers) {
+        $ms = $meas[$s]
+        if ($null -ne $ms) { $lab = Get-LatencyLabel $ms; Write-KV ("[3] DNS {0}" -f $s) ("{0} ms median lookup ({1})" -f $ms, $lab[0]) $lab[1] }
+        else { Write-KV ("[3] DNS {0}" -f $s) 'No response (unreachable or blocked prior to login)' 'Yellow' }
+    }
+    $st = (Get-InternetState -NoCache).State
+    $col = $(switch ($st) { 'Online' { 'Green' } 'Captive' { 'Yellow' } default { 'Red' } })
+    Write-KV '[4] HTTP internet probe' $st $col
+    Write-Host ''
+}
+
+# ==============================================================================
+# FLUSH
+# ==============================================================================
+# Turns captured Write-Host output (information records) back into plain text, honouring -NoNewline.
+function ConvertTo-ReportText($Records) {
+    $sb = New-Object System.Text.StringBuilder
+    foreach ($r in @($Records)) {
+        if ($r -is [System.Management.Automation.InformationRecord]) {
+            $m = $r.MessageData
+            $txt = ''; $nn = $false
+            if ($m -is [System.Management.Automation.HostInformationMessage]) { $txt = [string]$m.Message; $nn = [bool]$m.NoNewLine }
+            else { $txt = [string]$m }
+            [void]$sb.Append($txt)
+            if (-not $nn) { [void]$sb.Append("`r`n") }
+        } elseif ($r -is [System.Management.Automation.ErrorRecord]) { [void]$sb.Append('[error] ' + $r.Exception.Message + "`r`n") }
+        elseif ($null -ne $r) { [void]$sb.Append(([string]$r) + "`r`n") }
+    }
+    return $sb.ToString()
+}
+# Saves the full audit (adapters, MAC, lease, resolvers, events) plus the last log lines as a text file.
+# Output is CAPTURED and written with one atomic file write: no Start-Transcript (host-dependent, fails when a
 # transcript is already running or the console is wrapped/redirected).
 function New-SupportReport {
     $dir = [Environment]::GetFolderPath('Desktop')
@@ -696,105 +798,3 @@ function Invoke-LogicTests {
     Write-Check 'Logic: Daemon mode exists in ValidateSet' ($srcTxt -match "ValidateSet\([^)]*'Daemon'")
     Write-Check 'Logic: Start-AutonomousDaemon is defined' ($null -ne (Get-Command Start-AutonomousDaemon -ErrorAction SilentlyContinue))
     $idkDef = [string](Get-Command Invoke-DashboardKey -ErrorAction SilentlyContinue).Definition
-    Write-Check 'Logic: Invoke-DashboardKey handles key B for autonomous daemon' ($idkDef.IndexOf("Start-AutonomousDaemon") -ge 0)
-    $omniWinsock = [string](Get-Command Invoke-SupremeOmnifix -ErrorAction SilentlyContinue).Definition
-    Write-Check 'Logic: Invoke-SupremeOmnifix resets Winsock catalog' ($omniWinsock.IndexOf("winsock") -ge 0)
-    $diagDef = [string](Get-Command Show-Diagnostics -ErrorAction SilentlyContinue).Definition
-    Write-Check 'Logic: Show-Diagnostics displays subnet calculus and NDIS health' ($diagDef.IndexOf("Get-SubnetInfoFromLease") -ge 0 -and $diagDef.IndexOf("Test-NdisLinkHealth") -ge 0)
-
-    Write-Check 'Logic: UltraReset mode exists in ValidateSet' ($srcTxt -match "ValidateSet\([^)]*'UltraReset'")
-    Write-Check 'Logic: Invoke-UltraSystemReset is defined' ($null -ne (Get-Command Invoke-UltraSystemReset -ErrorAction SilentlyContinue))
-    $ultraDef = [string](Get-Command Invoke-UltraSystemReset -ErrorAction SilentlyContinue).Definition
-    Write-Check 'Logic: Ultra System Reset resets dual-stack TCP/IP, Winsock, route -f, and firewall' ($ultraDef.IndexOf('netsh') -ge 0 -and $ultraDef.IndexOf('route.exe') -ge 0 -and $ultraDef.IndexOf('advfirewall') -ge 0 -and $ultraDef.IndexOf('winsock') -ge 0)
-    Write-Check 'Logic: Ultra System Reset resuscitates services topologically and registers DNS' ($ultraDef.IndexOf('registerdns') -ge 0 -and $ultraDef.IndexOf('Wait-StpConvergence') -ge 0)
-    $idkDefNow = [string](Get-Command Invoke-DashboardKey -ErrorAction SilentlyContinue).Definition
-    Write-Check 'Logic: Invoke-DashboardKey handles key U for Ultra System Reset' ($idkDefNow.IndexOf("Invoke-UltraSystemReset") -ge 0)
-
-    $script:State = $stSave
-}
-function Invoke-SelfTest {
-    $script:TestFail = 0; $script:TestWarn = 0
-    Write-Banner 'SYSTEM INTEGRITY SELF-TEST (READ-ONLY)'
-    Write-Check ("PowerShell " + $PSVersionTable.PSVersion) ($PSVersionTable.PSVersion.Major -ge 5)
-    Write-Check 'Running as Administrator' $script:IsAdmin $true 'needed for repairs, not for audits'
-    foreach ($c in 'Get-NetAdapter','Get-NetIPInterface','Set-NetIPInterface','Get-NetNeighbor','New-NetNeighbor','Remove-NetNeighbor','Get-DnsClientServerAddress','Set-DnsClientServerAddress','Add-DnsClientNrptRule','Get-DnsClientNrptRule','Resolve-DnsName','Get-NetAdapterAdvancedProperty','Set-NetAdapterAdvancedProperty','Set-NetConnectionProfile','Restart-NetAdapter','Get-WinEvent') {
-        Write-Check ("Cmdlet " + $c) ([bool](Get-Command $c -ErrorAction SilentlyContinue))
-    }
-    foreach ($x in 'schtasks.exe','icacls.exe','ipconfig.exe','arp.exe','rundll32.exe','nbtstat.exe','pnputil.exe','dism.exe') {
-        Write-Check ("Tool " + $x) (Test-Path -LiteralPath (Get-SysExe $x))
-    }
-    Write-Check 'Kernel driver tcpip.sys exists' (Test-Path -LiteralPath (Join-Path $script:Sys32 'drivers\tcpip.sys'))
-    Write-Check 'Kernel driver ndis.sys exists' (Test-Path -LiteralPath (Join-Path $script:Sys32 'drivers\ndis.sys'))
-    Write-Check 'Kernel driver afd.sys exists' (Test-Path -LiteralPath (Join-Path $script:Sys32 'drivers\afd.sys'))
-    $ads = @(Get-EthernetAdapters)
-    Write-Check ("Ethernet adapters found: " + $ads.Count) ($ads.Count -gt 0) $true 'plug in / enable your wired adapter'
-    foreach ($a in $ads) { Write-Check ("  {0}: {1}" -f $a.Name, $a.Status) ($a.Status -eq 'Up') $true }
-    Write-Check 'Protected store exists' (Test-Path -LiteralPath $script:StoreDir) $true 'created on first elevated run'
-    Write-Check 'Protected store ACL verified' $script:StoreSecure $true
-    Write-Check 'State file readable' ((Get-State) -is [hashtable]) $true
-    Write-Check 'Watchdog task installed' (Test-WatchdogInstalled) $true 'optional: menu option 2'
-    if (Test-WatchdogInstalled) {
-        $wa = Get-WatchdogArguments
-        Write-Check 'Watchdog runs the current protected copy' (($null -ne $wa) -and ($wa -eq (Get-WatchdogExpectedArguments))) $true 'run menu option 2 or any elevated heal to repoint it'
-    }
-    $xmlOk = $false
-    try { [void][xml](New-WatchdogXml '/c test' '2026-01-01T00:00:00'); [void][xml](New-PortalTaskXml); $xmlOk = $true } catch {}
-    Write-Check 'Task XML is well-formed' $xmlOk
-    $ip = Resolve-HostBounded 'connectivitycheck.gstatic.com' 2500
-    Write-Check 'DNS resolution works right now' ([bool]$ip) $true
-    Write-Check ("Internet probe: " + (Get-InternetState -NoCache).State) $true
-    Invoke-LogicTests
-    Write-Host ''
-    if ($script:TestFail -eq 0) { Out-Line @((Seg 'ok!' ('  ' + $script:G.dot + '  ready')), (Seg 'dim' ('   {0} {1} warnings' -f $script:G.mid, $script:TestWarn))) }
-    else { Out-Line @((Seg 'bad!' ('  ' + $script:G.dot + '  ' + $script:TestFail + ' failed')), (Seg 'dim' ('   {0} {1} warnings' -f $script:G.mid, $script:TestWarn))) }
-}
-
-# ==============================================================================
-# CONTROL CENTER (79 columns, ASCII only, auto-refreshing)
-# ==============================================================================
-function Pick-Hash($Value) { return (@($Value | Where-Object { $_ -is [hashtable] }) | Select-Object -First 1) }
-function Wait-AnyKey {
-    if (Test-InputRedirected) { return }   # headless / piped: never block
-    Clear-InputBuffer
-    try { [void](Read-KeyNow) } catch { try { [void](Read-Host) } catch {} }
-    Clear-InputBuffer
-}
-$script:WdCache = $null
-# Pure decision (unit-tested). The dashboard may only claim "Ethernet First" when the Ethernet adapter is really the
-# lowest-metric path: while a campus link is captive, Shield-RouteMetrics deliberately demotes it to 50 and promotes
-# Wi-Fi to 15, and reporting "Ethernet First" then is a plain lie (the traffic is going out over the hotspot).
-function Get-RoutingLabel([bool]$Managed, [int]$Metric, [bool]$LinkUp, [bool]$UplinkActive = $true, [string]$Profile = '') {
-    if (-not $Profile -and $script:State -is [hashtable] -and $script:State.Misc -is [hashtable]) {
-        $Profile = [string]$script:State.Misc['RouteProfile']
-    }
-    if ($Profile -eq 'Windows') { return 'automatic' }
-    if ($Profile -eq 'Wifi') {
-        if ($UplinkActive) { return 'Wi-Fi First' }
-        return 'Wi-Fi Standby'
-    }
-    if ($Profile -eq 'Ethernet') {
-        if (-not $LinkUp) { return 'Ethernet Down' }
-        if (-not $Managed) { return 'Ethernet (unmanaged)' }
-        if ($Metric -le 15) { return 'Ethernet First' }
-        return 'Ethernet (metric drifted)'
-    }
-    if (-not $Managed) { return 'automatic' }
-    if (-not $LinkUp) { return $(if ($UplinkActive) { 'Wi-Fi Protected' } else { 'automatic' }) }
-    if ($Metric -ge 45) { return $(if ($UplinkActive) { 'Wi-Fi Protected' } else { 'Ethernet Demoted' }) }
-    if ($Metric -le 15) { return 'Ethernet First' }
-    return 'Ethernet First'
-}
-function Get-Telemetry {
-    $t = New-Telemetry
-    $t.Problem = 'NoAdapter'
-    $ads = @(Get-EthernetAdapters)
-    $ad = $ads | Where-Object { $_.Status -eq 'Up' } | Select-Object -First 1
-    if (-not $ad) { $ad = $ads | Select-Object -First 1 }
-    $others = @(Get-OtherUplinkAdapters)
-    if ($others.Count -gt 0) {
-        $t.UplinkActive = $true
-        $t.UplinkName = [string]$others[0].Name
-        if (-not $script:UplinkProfileCache -or (((Get-Date) - $script:UplinkProfileCache.Time).TotalSeconds -gt 15)) {
-            $prof = ''
-            try { $prof = [string](Get-NetConnectionProfile -InterfaceIndex $others[0].ifIndex -ErrorAction SilentlyContinue).Name } catch {}
-            $script:UplinkProfileCache = @{ Time = (Get-Date); Val = $prof }

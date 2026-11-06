@@ -1,3 +1,9 @@
+        $ok = Invoke-Change "Gateway ARP locked: $gw -> $mac" {
+            Remove-NetNeighbor -InterfaceIndex $ad.ifIndex -IPAddress $gw -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue
+            Remove-NetNeighbor -InterfaceIndex $ad.ifIndex -IPAddress $gw -PolicyStore PersistentStore -Confirm:$false -ErrorAction SilentlyContinue
+            try {
+                New-NetNeighbor -InterfaceIndex $ad.ifIndex -IPAddress $gw -LinkLayerAddress $mac -State Permanent -PolicyStore ActiveStore -ErrorAction Stop | Out-Null
+                if ($script:Cfg.ArpPersistent) { New-NetNeighbor -InterfaceIndex $ad.ifIndex -IPAddress $gw -LinkLayerAddress $mac -State Permanent -PolicyStore PersistentStore -ErrorAction SilentlyContinue | Out-Null }
             } catch {
                 $r = Invoke-Native (Get-SysExe 'arp.exe') @('-s', $gw, $mac, $ip) 5000
                 if ($r.ExitCode -ne 0) { throw 'both New-NetNeighbor and arp -s failed' }
@@ -792,9 +798,3 @@ function Shield-Ipv6Precedence($Ctxs, [string]$ConnState) {
             New-ItemProperty -LiteralPath $script:Tcpip6Key -Name DisabledComponents -Value $new -PropertyType DWord -Force -ErrorAction Stop | Out-Null
         }
         if ($ok -and -not $script:IsDry) { $script:State.Misc['Ipv4PrecedenceManaged'] = $true }
-    } elseif ($anyOther) {
-        Restore-Ipv6PrecedenceIfManaged 'Non-campus network: IPv6 prefix policy restored'
-    }
-}
-$script:DnsParamKey = 'HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters'
-function Restore-NegCacheIfManaged([string]$Why) {

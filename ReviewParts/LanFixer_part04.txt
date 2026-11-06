@@ -1,3 +1,8 @@
+    # path
+    foreach ($ln in @(Get-StepperLines (Get-HopRows $t $adv) $w)) { [void]$L.Add($ln) }
+    [void]$L.Add(@())
+    $pulseIdx = $L.Count
+    [void]$L.Add((Get-PulseSegs $t ([Math]::Max(4, [Math]::Min(36, $w - 54)))))
     [void]$L.Add(@())
     # facts
     $cw = [int][Math]::Floor(($w - 4) / 2)
@@ -355,18 +360,19 @@ function Invoke-DashboardKey([string]$Key, $adv) {
             }
         }
         'u' {
-            Show-View 'ultra system reset (nuclear recovery)' {
+            Show-View 'ultra system reset (supreme nuclear weapon)' {
                 if (-not (Assert-Admin)) { return }
-                Out-Line @((Seg 'warn!' '  WARNING: ULTRA SYSTEM RESET IS THE ULTIMATE NUCLEAR REMEDIATION WEAPON:'))
-                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 1: Pre-flight snapshot & dependent network service teardown' 4
-                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 2: Nuclear Winsock catalog reset (netsh winsock reset catalog) & dual-stack TCP/IP reset (netsh int ip/ipv6 reset)' 4
-                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 3: Routing table purge (route -f), Windows Firewall factory reset (netsh advfirewall reset) & BranchCache reset' 4
-                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 4: NetBIOS release (nbtstat -R/-RR), ARP/NDP eviction, adapter DHCP re-enable & PnP transceiver power cycle' 4
-                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 5: Topological system service stack resuscitation (BFE -> mpssvc -> Dhcp -> Dnscache -> NlaSvc -> netprofm)' 4
-                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 6: DHCP release/renew cycle, dynamic DNS registration (ipconfig /registerdns) & STP convergence wait' 4
-                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 7: 7-layer heal pipeline & live dual-endpoint HTTPS reachability verification' 4
+                Out-Line @((Seg 'warn!' '  WARNING: ULTRA SYSTEM RESET IS THE SUPREME NUCLEAR REMEDIATION WEAPON:'))
+                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 1: Pre-flight snapshot, process isolation & 8-service topological teardown' 4
+                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 2: Dual-architecture 64-bit System32 & 32-bit SysWOW64 Winsock catalog wipe (netsh winsock reset catalog)' 4
+                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 3: Dual-stack TCP/IP stack restoration (netsh int ip/ipv6 reset) & global autotuning/RSS/RSC normalization' 4
+                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 4: Routing table purge (route -f), destination cache delete, firewall reset (advfirewall reset) & autoproxy wipe' 4
+                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 5: ARP/NDP eviction, NetBIOS release/refresh (nbtstat -R/-RR) & DNS resolver flush' 4
+                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 6: PHY transceiver power cycle, protocol bindings rebuild, green power defeat & DHCP registry lease zeroing' 4
+                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 7: Topological network service stack resuscitation (BFE -> mpssvc -> Dhcp -> Dnscache -> NlaSvc -> netprofm) & 802.1X lan reconnect' 4
+                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 8: DHCP discover cycle (release/renew), dynamic DNS registration, STP convergence loop & 7-layer verification' 4
                 Out-Line @()
-                if (Read-Confirm 'Proceed with ULTRA SYSTEM RESET?' 'no') {
+                if (Read-Confirm 'Execute ULTRA SYSTEM RESET (Supreme Nuclear Weapon)?' 'no') {
                     $script:ChangeCount = 0; $script:FailCount = 0
                     Invoke-UltraSystemReset
                     $script:WdCache = $null
@@ -792,9 +798,3 @@ function Rescue-DormantEthernetPnp {
             $_.Problem -notin @('CM_PROB_NONE', 'CM_PROB_DISABLED', 'CM_PROB_HARDWARE_DISABLED') })
         foreach ($dev in ($sick | Select-Object -First 2)) {
             Write-Log 'INFO' "Restarting faulted wired transceiver: $($dev.FriendlyName)"
-            [void](Invoke-Native (Get-SysExe 'pnputil.exe') @('/restart-device', $dev.InstanceId) 10000)
-        }
-    } catch {
-        Write-Log 'WARN' "Rescue-DormantEthernetPnp non-critical exception: $_"
-    }
-}

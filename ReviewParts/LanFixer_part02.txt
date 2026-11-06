@@ -1,3 +1,8 @@
+            $memEnv = if ($script:State -is [hashtable] -and $script:State.Env -is [hashtable]) { $script:State.Env.Clone() } else { @{} }
+            $script:State = Get-State
+            if ($memMisc['LearnedDhcp'] -and -not $script:State.Misc['LearnedDhcp']) { $script:State.Misc['LearnedDhcp'] = $memMisc['LearnedDhcp'] }
+            if ($memMisc['DiscoveryTime'] -and ([string]$memMisc['DiscoveryTime'] -ge [string]$script:State.Misc['DiscoveryTime'])) {
+                foreach ($mk in @('DiscoveredDomain','DiscoveredPortalUrl','DiscoveredPortalIp','DiscoveryTime')) {
                     if ($memMisc.ContainsKey($mk)) { $script:State.Misc[$mk] = $memMisc[$mk] }
                 }
             }
@@ -793,8 +798,3 @@ function Invoke-TlsHttp {
             try { $sock.Close() } catch {}
             $r.Error = 'ConnectTimeout'; return $r
         }
-        try { $sock.EndConnect($iar) } catch { $r.Error = 'ConnectFailure'; return $r }
-        $ns = New-Object System.Net.Sockets.NetworkStream($sock, $false)
-        $ns.ReadTimeout = $TimeoutMs; $ns.WriteTimeout = $TimeoutMs
-        $cb = New-CertCallback $Pin $Capture
-        $ssl = New-Object System.Net.Security.SslStream($ns, $false, $cb)
