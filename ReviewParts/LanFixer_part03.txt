@@ -677,6 +677,7 @@ function New-Telemetry {
         Conn = '-'; Env = ''; EnvScore = 0; Sticky = $false; DnsPrimary = ''; DnsProfile = ''; Mtu = ''; Routing = 'automatic'
         Watchdog = $false; Vault = $false; Pin = $false; Paused = $false; ArpPending = $false; RouteProfile = 'Adaptive'; LastFull = $null
         UplinkActive = $false; UplinkName = ''; UplinkProfile = ''; UplinkIsPrimary = $false
+        SubnetPrefix = $null; SubnetMask = ''; SubnetHosts = $null; IpV6 = ''; DhcpServer = ''; GwLocked = $false; Domain = ''
     }
 }
 
@@ -687,7 +688,7 @@ function Get-HopRows($t, $adv) {
     $gw = 'None'
     if ($t.GwIp) { $gw = $t.GwIp; if ($null -ne $curRtt) { $gw += (' {0}ms' -f $curRtt) } elseif ($t.GwAlive) { $gw += ' arp' } }
     $link = 'Down'; if ($t.LinkUp) { $link = $t.Speed }
-    $ip = 'None'; if ($t.Ip) { $ip = $t.Ip }
+    $ip = 'None'; if ($t.Ip) { $ip = if ($t.SubnetPrefix) { "$($t.Ip)/$($t.SubnetPrefix)" } else { $t.Ip } }
     $dns = '-'; if ($t.DnsPrimary) { $dns = $t.DnsPrimary }
     $net = '-'
     switch ($t.Problem) {
@@ -797,4 +798,3 @@ function Get-DashboardModel($t, $adv, [int]$Width = 0) {
     $heroL = @((Seg 'faint' '  ['), (Seg ($adv.Role + '!') (' ' + $script:G.dot + ' ' + $adv.Word.ToUpper() + ' ')), (Seg 'faint' ']'))
     $maxRightLen = [Math]::Max(10, ($w + 2) - (Get-SegsLength $heroL) - 2)
     if ($right.Length -gt $maxRightLen) {
-        if ($t.UplinkActive -and $t.UplinkName) {

@@ -1,3 +1,42 @@
+            try {
+                $brOut = Invoke-Native (Get-SysExe 'netsh.exe') @('bridge', 'list') 5000
+                if ($brOut.Output -match '([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})') {
+                    foreach ($brMatch in [regex]::Matches($brOut.Output, '([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})')) {
+                        $brGuid = $brMatch.Groups[1].Value
+                        Write-Log 'WARN' "Destroying orphaned network bridge $brGuid..."
+                        [void](Invoke-Native (Get-SysExe 'netsh.exe') @('bridge', 'destroy', $brGuid) 5000)
+                    }
+                }
+            } catch {}
+
+            # Backup custom firewall rules before reset for 100% reversible rollback
+            try {
+                $fwBackup = Join-Path $script:StoreDir 'firewall_pre_reset.wfw'
+                if (-not (Test-Path -LiteralPath $fwBackup)) {
+                    [void](Invoke-Native (Get-SysExe 'netsh.exe') @('advfirewall', 'export', $fwBackup) 5000)
+                }
+            } catch {}
+
+            # Windows Defender Firewall factory state restoration
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('advfirewall', 'reset') 8000)
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('advfirewall', 'set', 'allprofiles', 'state', 'on') 5000)
+        }
+
+        # ----------------------------------------------------------------------
+        # STAGE 5/10: ENCRYPTED DNS (DOH/DOT/DDR) WIPE, WPAD AUTOPROXY & BITS JOB PURGE
+        # ----------------------------------------------------------------------
+        Write-Log 'STEP' 'STAGE 5/10  Resetting global/interface DoH, WinHTTP autoproxy, BITS transfers & WFP filters'
+        if ($script:IsDry) {
+            Write-Log 'DRY' 'Would execute: netsh dnsclient delete global all & netsh dnsclient delete interface name=$ea.Name setting=all'
+            Write-Log 'DRY' 'Would execute: netsh winhttp reset proxy, reset autoproxy & tracing'
+            Write-Log 'DRY' 'Would cancel all active BITS transfer jobs via Get-BitsTransfer'
+            Write-Log 'DRY' 'Would sanitize WinINet user/machine proxies and flush SSL session cache'
+        } else {
+            # Reset Windows 11 encrypted DNS (DoH, DoT, DDR) globally to factory defaults
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('dnsclient', 'delete', 'global', 'all') 5000)
+
+            # Reset per-interface DNS encryption and DDR settings across physical adapters
+            foreach ($ea in @(Get-EthernetAdapters)) {
                 try {
                     [void](Invoke-Native (Get-SysExe 'netsh.exe') @('dnsclient', 'delete', 'interface', "name=$($ea.Name)", 'setting=all') 5000)
                 } catch {}
@@ -759,42 +798,3 @@ function Invoke-DoomsdayReset {
 # ARMAGEDDON SYSTEM RESET - KERNEL PROTOCOL & NETWORK ADAPTER REINSTALL WEAPON
 # ==============================================================================
 function Invoke-ArmageddonReset([switch]$RebootNow) {
-    if (-not (Assert-Admin)) { return }
-    $swArm = [System.Diagnostics.Stopwatch]::StartNew()
-    Write-Section 'ARMAGEDDON SYSTEM RESET (KERNEL PROTOCOL & NETWORK ADAPTER REINSTALL)'
-    Write-Log 'WARN' 'ARMAGEDDON RESET is Microsoft Windows native nuclear reset (netcfg.exe -d).'
-    Write-Log 'WARN' 'This uninstalls ALL network adapters, removes virtual switches/filters, purges the TCP/IP stack registry, and requires a reboot to reinstall clean drivers.'
-
-    if ($script:IsDry) {
-        Write-Log 'DRY' 'Would capture global pre-flight snapshot across all adapters'
-        Write-Log 'DRY' 'Would execute: netcfg.exe -d (deep kernel device cleanup & protocol reinstallation)'
-        Write-Log 'DRY' 'Would execute post-cleanup: netsh winsock reset, netsh advfirewall reset, and reset RadioManagement'
-        Write-Log 'DRY' 'Would prompt or execute scheduled reboot'
-        return
-    }
-
-    # Pre-flight ACID snapshot
-    Write-Log 'STEP' 'STAGE 1/4 Capturing global pre-flight snapshot across all network adapters'
-    foreach ($a in @(Get-NetAdapter -ErrorAction SilentlyContinue)) {
-        try {
-            $snap = Capture-PreflightSnapshot $a
-            if ($snap -and $snap.Guid) { $script:State.Snapshot[$snap.Guid] = $snap }
-        } catch {}
-    }
-    if (-not $script:IsDry) { Save-State }
-
-    # Execute netcfg -d
-    Write-Log 'STEP' 'STAGE 2/4 Executing netcfg.exe -d (wiping network devices, virtual switches & protocol stacks)...'
-    $netcfgRes = Invoke-Native (Get-SysExe 'netcfg.exe') @('-d') 30000
-    if ($netcfgRes.Output) {
-        Write-Log 'INFO' ("netcfg output: {0}" -f $netcfgRes.Output.Trim())
-    }
-
-    # Post-cleanup pass
-    Write-Log 'STEP' 'STAGE 3/4 Running post-cleanup: resetting Winsock, Firewall & RadioManagement...'
-    [void](Invoke-Native (Get-SysExe 'netsh.exe') @('winsock', 'reset') 5000)
-    [void](Invoke-Native (Get-SysExe 'netsh.exe') @('advfirewall', 'reset') 5000)
-    try {
-        $rmKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\RadioManagement'
-        if (Test-Path -LiteralPath $rmKey) {
-            Set-ItemProperty -LiteralPath $rmKey -Name 'SystemRadioState' -Value 0 -Type DWord -ErrorAction SilentlyContinue

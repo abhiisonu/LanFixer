@@ -1,3 +1,4 @@
+        if ($t.UplinkActive -and $t.UplinkName) {
             $tag = if ($t.UplinkIsPrimary) { '(Standby)' } else { '(Primary)' }
             $right = ('Eth ' + $t.Speed + ' ' + $tag + ' ' + $script:G.mid + ' ' + $t.UplinkName)
         }
@@ -13,10 +14,27 @@
     $pulseIdx = $L.Count
     [void]$L.Add((Get-PulseSegs $t ([Math]::Max(4, [Math]::Min(36, $w - 54)))))
     [void]$L.Add(@())
-    # facts
+    # facts (dynamically auto-discovered and responsive)
     $cw = [int][Math]::Floor(($w - 4) / 2)
-    $net = '-'; if ($t.Env) { $net = ($t.Env + ' ' + $script:G.mid + ' Score ' + $t.EnvScore); if ($t.Sticky) { $net += ' (Remembered)' } }
-    $dnsv = '-'; if ($t.DnsProfile) { $dnsv = $t.DnsProfile; if ($t.DnsPrimary) { $dnsv += (' ' + $script:G.mid + ' ' + $t.DnsPrimary) } }
+    $nicLabel = $t.Nic
+    if ($t.Mtu -and $w -ge 76) { $nicLabel = Fit ($t.Nic + ' ' + $script:G.mid + ' MTU ' + $t.Mtu) ($cw - 10) }
+    $net = '-'
+    if ($t.Env) {
+        $net = if ($t.Domain -and $w -ge 76) { ($t.Env + ' (' + $t.Domain + ') ' + $script:G.mid + ' Score ' + $t.EnvScore) } else { ($t.Env + ' ' + $script:G.mid + ' Score ' + $t.EnvScore) }
+        if ($t.Sticky) { $net += ' (Remembered)' }
+    }
+    $leaseVal = $t.Ip
+    if ($t.SubnetPrefix) {
+        $leaseVal = if ($t.SubnetHosts -and $w -ge 76) { ("{0}/{1} ({2} hosts)" -f $t.Ip, $t.SubnetPrefix, $t.SubnetHosts) } else { ("{0}/{1}" -f $t.Ip, $t.SubnetPrefix) }
+    }
+    $dnsv = '-'
+    if ($t.DnsProfile) {
+        $dnsv = $t.DnsProfile
+        if ($t.DnsPrimary) {
+            $dnsServers = if ($t.DnsSecondary -and $w -ge 76) { "$($t.DnsPrimary), $($t.DnsSecondary)" } else { $t.DnsPrimary }
+            $dnsv += (' ' + $script:G.mid + ' ' + $dnsServers)
+        }
+    }
     $rout = if ($t.Routing) {
         switch ($t.Routing.ToLower()) {
             'ethernet first'   { if ($t.UplinkActive) { 'Ethernet First (10 vs 40)' } else { 'Ethernet First' } }
@@ -36,11 +54,32 @@
         }
     } else { 'Automatic' }
     $curRtt = if ($null -ne $script:LiveGwRtt) { $script:LiveGwRtt } else { $t.GwRtt }
-    $gwVal = if ($t.GwIp) { if ($null -ne $curRtt) { '{0} ({1} ms)' -f $t.GwIp, $curRtt } elseif ($t.GwAlive) { '{0} (ARP)' -f $t.GwIp } else { $t.GwIp } } else { '-' }
+    $gwVal = if ($t.GwIp) {
+        $baseGw = if ($null -ne $curRtt) { '{0} ({1} ms)' -f $t.GwIp, $curRtt } elseif ($t.GwAlive) { '{0} (ARP)' -f $t.GwIp } else { $t.GwIp }
+        if ($t.GwLocked -and $w -ge 76) { $baseGw + ' ' + $script:G.mid + ' Locked' } else { $baseGw }
+    } else { '-' }
+
     $facts = @(
-        @(@('Adapter', $t.Nic), @('Network', $net)),
-        @(@('Lease', $t.Ip), @('DNS', $dnsv)),
+        @(@('Adapter', $nicLabel), @('Network', $net)),
+        @(@('Lease', $leaseVal), @('DNS', $dnsv)),
         @(@('Gateway', $gwVal), @('Routing', $rout)))
+
+    # Dynamically discover and display Dual-Stack IPv6 / DHCP / Secondary Uplink
+    if ($t.IpV6 -or $t.DhcpServer -or $t.UplinkActive) {
+        $cellL = if ($t.IpV6) { @('IPv6', $t.IpV6) } elseif ($t.DhcpServer) { @('DHCP Svr', $t.DhcpServer) } else { @('Subnet', "$($t.SubnetMask) (/$($t.SubnetPrefix))") }
+        $cellR = if ($t.UplinkActive -and $t.UplinkName) {
+            $upStr = if ($t.UplinkProfile) { "$($t.UplinkName) ($($t.UplinkProfile))" } else { $t.UplinkName }
+            @('Uplink', $upStr)
+        } elseif ($t.DhcpServer -and $t.IpV6) {
+            @('DHCP Svr', $t.DhcpServer)
+        } elseif ($t.SubnetMask) {
+            @('Subnet', "$($t.SubnetMask) (/$($t.SubnetPrefix))")
+        } else {
+            @('Status', 'Auto-Discovered')
+        }
+        $facts += , @($cellL, $cellR)
+    }
+
     foreach ($row in $facts) {
         $segs = @((Seg 'text' '  '))
         foreach ($cell in $row) {
@@ -759,42 +798,3 @@ function Get-InternetState {
                 $lu = [uri]$loc
                 if ($lu.IsAbsoluteUri -and ($lu.Scheme -eq 'http' -or $lu.Scheme -eq 'https')) {
                     $script:State.Misc['DiscoveredPortalUrl'] = [string]$lu.AbsoluteUri
-                    $script:State.Misc['DiscoveryTime'] = (Get-Date).ToString('o')
-                    $tmpIp = $null
-                    if ([System.Net.IPAddress]::TryParse($lu.Host, [ref]$tmpIp) -and (Test-AllowedPortalIp $lu.Host)) {
-                        $script:State.Misc['DiscoveredPortalIp'] = $lu.Host
-                    }
-                }
-            } catch {}
-        }
-    }
-    $res = @{ State = $state; Location = $loc; Via = $via }
-    $script:ConnCache = @{ Time = (Get-Date); Result = $res; Key = $ckey }
-    return $res
-}
-# "Gateway alive" no longer depends on ICMP alone: many campus gateways drop ping but still answer ARP.
-# Fresh evidence only: a cached neighbour entry proves nothing. 'Stale'/'Delay'/'Probe' are exactly what a DEAD gateway's
-# leftover entry looks like, and 'Permanent' is our own lock. Force a fresh ARP exchange and accept only a freshly
-# 'Reachable' entry (checked a few times, because the entry appears a moment after the probe).
-function Test-GatewayAlive($Ad, [string]$Gw) {
-    $rtt = Test-Ping $Gw 700
-    if ($null -ne $rtt) { return @{ Alive = $true; Rtt = $rtt; Via = 'icmp' } }
-    $ex = Get-NetNeighbor -InterfaceIndex $Ad.ifIndex -IPAddress $Gw -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($ex -and [string]$ex.State -eq 'Permanent' -and $ex.LinkLayerAddress -and $ex.LinkLayerAddress -notmatch '^(00-)+00$') {
-        $homeAd = $true
-        try { $eh = Get-AdapterEnvironment $Ad -UseCache; if ($null -ne $eh.Home) { $homeAd = [bool]$eh.Home } } catch {}
-        $gwSrc = [string](Get-ValidIPv4 $Ad)
-        if ((Test-TcpPort $Gw 80 400 $gwSrc) -or (Test-TcpPort $Gw 443 400 $gwSrc) -or (Test-TcpPort $Gw 53 400 $gwSrc)) {
-            return @{ Alive = $true; Rtt = $null; Via = 'arp' }
-        }
-        $freshArp = @(Get-GatewayMacs $Ad $Gw 1)
-        if ($freshArp.Count -gt 0 -and $freshArp[0] -eq [string]$ex.LinkLayerAddress) {
-            return @{ Alive = $true; Rtt = $null; Via = 'arp' }
-        }
-        return @{ Alive = $false; Rtt = $null; Via = '' }
-    }
-    if ($script:IsAdmin -and -not $script:IsDry -and $ex -and [string]$ex.State -ne 'Permanent') {
-        Remove-NetNeighbor -InterfaceIndex $Ad.ifIndex -IPAddress $Gw -Confirm:$false -ErrorAction SilentlyContinue
-    }
-    [void](Test-Ping $Gw 700)
-    for ($i = 0; $i -lt 4; $i++) {

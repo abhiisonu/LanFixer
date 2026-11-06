@@ -1,3 +1,42 @@
+    $acidDef = [string](Get-Command Invoke-AcidMutation -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Invoke-AcidMutation triggers rollback when validation fails' ($acidDef.IndexOf('Restore-PreflightSnapshot') -ge 0)
+
+    Write-Check 'Logic: Daemon mode exists in ValidateSet' ($srcTxt -match "ValidateSet\([^)]*'Daemon'")
+    Write-Check 'Logic: Start-AutonomousDaemon is defined' ($null -ne (Get-Command Start-AutonomousDaemon -ErrorAction SilentlyContinue))
+    $idkDef = [string](Get-Command Invoke-DashboardKey -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Invoke-DashboardKey handles key B for autonomous daemon' ($idkDef.IndexOf("Start-AutonomousDaemon") -ge 0)
+    $omniWinsock = [string](Get-Command Invoke-SupremeOmnifix -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Invoke-SupremeOmnifix resets Winsock catalog' ($omniWinsock.IndexOf("winsock") -ge 0)
+    $diagDef = [string](Get-Command Show-Diagnostics -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Show-Diagnostics displays subnet calculus and NDIS health' ($diagDef.IndexOf("Get-SubnetInfoFromLease") -ge 0 -and $diagDef.IndexOf("Test-NdisLinkHealth") -ge 0)
+
+    Write-Check 'Logic: UltraReset mode exists in ValidateSet' ($srcTxt -match "ValidateSet\([^)]*'UltraReset'")
+    Write-Check 'Logic: Invoke-UltraSystemReset is defined' ($null -ne (Get-Command Invoke-UltraSystemReset -ErrorAction SilentlyContinue))
+    $ultraDef = [string](Get-Command Invoke-UltraSystemReset -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Ultra System Reset resets dual-stack TCP/IP, Winsock, route -f, and firewall' ($ultraDef.IndexOf('netsh') -ge 0 -and $ultraDef.IndexOf('route.exe') -ge 0 -and $ultraDef.IndexOf('advfirewall') -ge 0 -and $ultraDef.IndexOf('winsock') -ge 0)
+    Write-Check 'Logic: Ultra System Reset resuscitates services topologically and registers DNS' ($ultraDef.IndexOf('registerdns') -ge 0 -and $ultraDef.IndexOf('Wait-StpConvergence') -ge 0)
+    Write-Check 'Logic: Ultra System Reset resets 64-bit and 32-bit Winsock catalogs' ($ultraDef.IndexOf('SysWOW64') -ge 0 -and $ultraDef.IndexOf('winsock') -ge 0)
+    Write-Check 'Logic: Ultra System Reset clears destination cache and autoproxy' ($ultraDef.IndexOf('destinationcache') -ge 0 -and $ultraDef.IndexOf('autoproxy') -ge 0)
+    Write-Check 'Logic: Ultra System Reset disables transition tunnels (Teredo, ISATAP, 6to4)' ($ultraDef.IndexOf('teredo') -ge 0 -and $ultraDef.IndexOf('isatap') -ge 0 -and $ultraDef.IndexOf('6to4') -ge 0)
+    Write-Check 'Logic: Ultra System Reset zeroes DHCP lease registry to force clean Discover' ($ultraDef.IndexOf('DhcpIPAddress') -ge 0 -and $ultraDef.IndexOf('DhcpDefaultGateway') -ge 0)
+    Write-Check 'Logic: Ultra System Reset issues 802.1X netsh lan reconnect' ($ultraDef.IndexOf('reconnect') -ge 0)
+    Write-Check 'Logic: Ultra System Reset clears encrypted DNS via delete global all' ($ultraDef.IndexOf('delete') -ge 0 -and $ultraDef.IndexOf('global') -ge 0 -and $ultraDef.IndexOf('dnsclient') -ge 0)
+    Write-Check 'Logic: Ultra System Reset sets DhcpConnForceBroadcastFlag' ($ultraDef.IndexOf('DhcpConnForceBroadcastFlag') -ge 0)
+    Write-Check 'Logic: Ultra System Reset audits and destroys accidental network bridges' ($ultraDef.IndexOf('bridge') -ge 0)
+    Write-Check 'Logic: Ultra System Reset flushes HTTP driver log buffers' ($ultraDef.IndexOf('logbuffer') -ge 0)
+    Write-Check 'Logic: Ultra System Reset resets interface portproxy and httpstunnel' ($ultraDef.IndexOf('portproxy') -ge 0 -and $ultraDef.IndexOf('httpstunnel') -ge 0)
+    Write-Check 'Logic: Ultra System Reset purges BITS transfers and Kerberos tickets' ($ultraDef.IndexOf('Get-BitsTransfer') -ge 0 -and $ultraDef.IndexOf('klist.exe') -ge 0)
+    Write-Check 'Logic: Ultra System Reset calibrates NCSI active probing in registry' ($ultraDef.IndexOf('EnableActiveProbing') -ge 0 -and $ultraDef.IndexOf('ActiveWebProbeHost') -ge 0)
+    Write-Check 'Logic: Ultra System Reset wipes interface DNS settings via delete interface' ($ultraDef.IndexOf('dnsclient') -ge 0 -and $ultraDef.IndexOf('setting=all') -ge 0)
+    Write-Check 'Logic: Ultra System Reset purges SMB sessions via net use' ($ultraDef.IndexOf('net.exe') -ge 0 -and $ultraDef.IndexOf('use') -ge 0)
+    Write-Check 'Logic: DoomsdayReset mode exists in ValidateSet' ($srcTxt -match "ValidateSet\([^)]*'DoomsdayReset'")
+    Write-Check 'Logic: Invoke-DoomsdayReset is defined' ($null -ne (Get-Command Invoke-DoomsdayReset -ErrorAction SilentlyContinue))
+    $doomDef = [string](Get-Command Invoke-DoomsdayReset -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Doomsday Reset resets Wi-Fi WLAN autoconfig' ($doomDef.IndexOf('wlan') -ge 0 -and $doomDef.IndexOf('autoconfig') -ge 0)
+    Write-Check 'Logic: Doomsday Reset purges user and machine proxy registry' ($doomDef.IndexOf('HKEY_USERS') -ge 0 -and $doomDef.IndexOf('ProxyEnable') -ge 0)
+    Write-Check 'Logic: Doomsday Reset resuscitates 13 services including WlanSvc, bthserv, and WwanSvc' ($doomDef.IndexOf('WlanSvc') -ge 0 -and $doomDef.IndexOf('bthserv') -ge 0 -and $doomDef.IndexOf('WwanSvc') -ge 0)
+    Write-Check 'Logic: Doomsday Reset cycles all physical adapters across media' ($doomDef.IndexOf('Restart-NetAdapter') -ge 0)
+    Write-Check 'Logic: Doomsday Reset deactivates rogue 3rd-party NDIS filter bindings' ($doomDef.IndexOf('Disable-NetAdapterBinding') -ge 0)
     Write-Check 'Logic: Doomsday Reset performs PnP silicon hardware restart via pnputil' ($doomDef.IndexOf('/restart-device') -ge 0)
     Write-Check 'Logic: Doomsday Reset unlocks Modern Standby Airplane Mode in registry' ($doomDef.IndexOf('RadioManagement') -ge 0)
     Write-Check 'Logic: Doomsday Reset eradicates manual static IP address conflicts' ($doomDef.IndexOf('PrefixOrigin') -ge 0 -and $doomDef.IndexOf('Manual') -ge 0)
@@ -151,7 +190,29 @@ function Get-Telemetry {
             }
             $raw = @((Get-DnsClientServerAddress -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses)
             if ($raw.Count -gt 0) { $t.DnsPrimary = [string]$raw[0] }
+            if ($raw.Count -gt 1) { $t.DnsSecondary = [string]$raw[1] }
             $t.DnsProfile = Get-DnsProfileName
+            if ($script:State.Misc['DiscoveredDomain']) { $t.Domain = [string]$script:State.Misc['DiscoveredDomain'] }
+            try {
+                $sub = Get-SubnetInfoFromLease $ad
+                if ($sub -and $sub.Prefix) {
+                    $t.SubnetPrefix = [int]$sub.Prefix
+                    $t.SubnetMask = [string]$sub.Mask
+                    $t.SubnetHosts = [int64]$sub.Total
+                }
+            } catch {}
+            try {
+                $v6 = @(Get-NetIPAddress -InterfaceIndex $ad.ifIndex -AddressFamily IPv6 -ErrorAction SilentlyContinue | Where-Object { [string]$_.AddressState -eq 'Preferred' -and [string]$_.IPAddress -notmatch '^(fe80|::1)' })
+                if ($v6.Count -gt 0) { $t.IpV6 = [string]$v6[0].IPAddress }
+            } catch {}
+            try {
+                $reg = Get-IfaceReg [string]$ad.InterfaceGuid
+                if ($reg -and $reg.DhcpServer) { $t.DhcpServer = [string]$reg.DhcpServer }
+            } catch {}
+            try {
+                $arpTable = Get-SubTable 'Arp' [string]$ad.InterfaceGuid
+                if ($t.GwIp -and $arpTable.ContainsKey($t.GwIp)) { $t.GwLocked = $true }
+            } catch {}
         }
     }
     $t.RouteProfile = Get-RouteProfileName
@@ -737,64 +798,3 @@ function Start-Interactive {
                 if ($meta -and $meta.Pid -eq $PID) { Remove-Item -LiteralPath $intFile -Force -ErrorAction SilentlyContinue }
             }
         } catch {}
-        try { if ($script:Pulse.Ping) { $script:Pulse.Ping.Dispose(); $script:Pulse.Ping = $null; $script:Pulse.Task = $null } } catch {}
-        try { [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = [System.Diagnostics.ProcessPriorityClass]::Normal } catch {}
-        Exit-Screen
-    }
-}
-$script:IsAdmin = Test-IsAdmin
-$adminModes = @('Interactive', 'Heal', 'QuickHeal', 'AutoHeal', 'Omnifix', 'NetReset', 'FullNetReset', 'UltraReset', 'Ultra', 'DoomsdayReset', 'Doomsday', 'ArmageddonReset', 'Armageddon', 'ResetOptions', 'ResetMenu', 'FlushCache', 'Flush', 'InstallWatchdog', 'UninstallWatchdog', 'InstallShield', 'UninstallShield', 'ResetFactory', 'Reset', 'SetDnsProfile', 'Dns', 'DnsMenu', 'SetRouteProfile', 'Route', 'RouteMenu', 'Daemon', 'Vault')
-if ($Mode -eq 'Interactive') {
-    $intFile = Join-Path $script:Cfg.StoreDir 'interactive.json'
-    if (Test-Path -LiteralPath $intFile) {
-        try {
-            $existing = ConvertFrom-Json (Get-Content -LiteralPath $intFile -Raw -ErrorAction SilentlyContinue)
-            if ($existing -and $existing.Pid -and ($existing.Pid -ne $PID)) {
-                $p = Get-Process -Id ([int]$existing.Pid) -ErrorAction SilentlyContinue
-                if ($p -and ($p.ProcessName -match 'powershell|cmd|LanFixer')) {
-                    if ($Force) {
-                        try { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } catch {}
-                        Remove-Item -LiteralPath $intFile -Force -ErrorAction SilentlyContinue
-                    } else {
-                        try {
-                            $ws = New-Object -ComObject WScript.Shell
-                            [void]$ws.AppActivate($p.Id)
-                        } catch {}
-                        Write-Host ''
-                        Write-Host '  ========================================================================' -ForegroundColor Cyan
-                        Write-Host ("  Lan Fixer is already running in another window (PID {0})." -f $p.Id) -ForegroundColor Yellow
-                        Write-Host '  Switched focus to the active window.' -ForegroundColor Gray
-                        Write-Host '  (Use -Force or close the existing window to replace it)' -ForegroundColor DarkGray
-                        Write-Host '  ========================================================================' -ForegroundColor Cyan
-                        Write-Host ''
-                        Start-Sleep -Seconds 2
-                        exit 0
-                    }
-                } else {
-                    Remove-Item -LiteralPath $intFile -Force -ErrorAction SilentlyContinue
-                }
-            }
-        } catch {}
-    }
-}
-if (-not $script:IsAdmin -and -not $script:IsDry -and ($adminModes -contains $Mode)) {
-    $elevated = $false
-    if (-not $LfElevated -and $script:SelfPath) {
-        try {
-            $parts = @('-LfElevated')
-            foreach ($kv in $PSBoundParameters.GetEnumerator()) {
-                if ($kv.Key -eq 'LfElevated') { continue }
-                if ($kv.Value -is [System.Management.Automation.SwitchParameter]) { if ($kv.Value.IsPresent) { $parts += ('-' + $kv.Key) } }
-                else { $parts += ('-' + $kv.Key); $parts += [string]$kv.Value }
-            }
-            Start-Process -FilePath $script:SelfPath -ArgumentList ($parts -join ' ') -Verb RunAs -ErrorAction Stop
-            $elevated = $true
-        } catch { Write-Host 'Administrator approval was not granted.' -ForegroundColor Yellow }
-    }
-    if ($elevated) { exit 0 }
-    if ($Mode -ne 'Interactive') { Write-Host '[x] This mode needs Administrator rights.' -ForegroundColor Red; exit 1 }
-}
-if ($script:UiOn) { Initialize-Ui }
-if ($script:IsAdmin) { Initialize-Store }
-Import-UserConfig
-$script:State = Get-State

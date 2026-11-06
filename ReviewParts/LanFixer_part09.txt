@@ -1,3 +1,42 @@
+    if (-not (Assert-Admin)) { return }
+    $swArm = [System.Diagnostics.Stopwatch]::StartNew()
+    Write-Section 'ARMAGEDDON SYSTEM RESET (KERNEL PROTOCOL & NETWORK ADAPTER REINSTALL)'
+    Write-Log 'WARN' 'ARMAGEDDON RESET is Microsoft Windows native nuclear reset (netcfg.exe -d).'
+    Write-Log 'WARN' 'This uninstalls ALL network adapters, removes virtual switches/filters, purges the TCP/IP stack registry, and requires a reboot to reinstall clean drivers.'
+
+    if ($script:IsDry) {
+        Write-Log 'DRY' 'Would capture global pre-flight snapshot across all adapters'
+        Write-Log 'DRY' 'Would execute: netcfg.exe -d (deep kernel device cleanup & protocol reinstallation)'
+        Write-Log 'DRY' 'Would execute post-cleanup: netsh winsock reset, netsh advfirewall reset, and reset RadioManagement'
+        Write-Log 'DRY' 'Would prompt or execute scheduled reboot'
+        return
+    }
+
+    # Pre-flight ACID snapshot
+    Write-Log 'STEP' 'STAGE 1/4 Capturing global pre-flight snapshot across all network adapters'
+    foreach ($a in @(Get-NetAdapter -ErrorAction SilentlyContinue)) {
+        try {
+            $snap = Capture-PreflightSnapshot $a
+            if ($snap -and $snap.Guid) { $script:State.Snapshot[$snap.Guid] = $snap }
+        } catch {}
+    }
+    if (-not $script:IsDry) { Save-State }
+
+    # Execute netcfg -d
+    Write-Log 'STEP' 'STAGE 2/4 Executing netcfg.exe -d (wiping network devices, virtual switches & protocol stacks)...'
+    $netcfgRes = Invoke-Native (Get-SysExe 'netcfg.exe') @('-d') 30000
+    if ($netcfgRes.Output) {
+        Write-Log 'INFO' ("netcfg output: {0}" -f $netcfgRes.Output.Trim())
+    }
+
+    # Post-cleanup pass
+    Write-Log 'STEP' 'STAGE 3/4 Running post-cleanup: resetting Winsock, Firewall & RadioManagement...'
+    [void](Invoke-Native (Get-SysExe 'netsh.exe') @('winsock', 'reset') 5000)
+    [void](Invoke-Native (Get-SysExe 'netsh.exe') @('advfirewall', 'reset') 5000)
+    try {
+        $rmKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\RadioManagement'
+        if (Test-Path -LiteralPath $rmKey) {
+            Set-ItemProperty -LiteralPath $rmKey -Name 'SystemRadioState' -Value 0 -Type DWord -ErrorAction SilentlyContinue
         }
     } catch {}
 
@@ -759,42 +798,3 @@ function New-WatchdogXml([string]$CmdArgs, [string]$Start) {
     </IdleSettings>
     <AllowStartOnDemand>true</AllowStartOnDemand>
     <Enabled>true</Enabled>
-    <Hidden>false</Hidden>
-    <RunOnlyIfIdle>false</RunOnlyIfIdle>
-    <WakeToRun>false</WakeToRun>
-    <ExecutionTimeLimit>PT20M</ExecutionTimeLimit>
-    <Priority>5</Priority>
-  </Settings>
-  <Actions Context="Author">
-    <Exec>
-      <Command>%SystemRoot%\System32\cmd.exe</Command>
-      <Arguments>$([System.Security.SecurityElement]::Escape($CmdArgs))</Arguments>
-    </Exec>
-  </Actions>
-</Task>
-"@
-}
-function New-NotifyTaskXml([string]$Title = 'Lan Fixer', [string]$Message = '') {
-    $titleXml = [System.Security.SecurityElement]::Escape($Title)
-    $msgXml   = [System.Security.SecurityElement]::Escape($Message)
-    $script = @"
-[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
-[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null
-`$ip = (Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { `$_.InterfaceAlias -match 'Ethernet|LAN' -and `$_.IPAddress -notlike '169.254.*' } | Select-Object -First 1).IPAddress
-`$m = if ('$msgXml') { '$msgXml' } elseif (`$ip) { "Ethernet is back online (`$ip)! You can turn off a mobile hotspot." } else { "Ethernet is back online! You can turn off a mobile hotspot." }
-`$xml = New-Object Windows.Data.Xml.Dom.XmlDocument
-`$xml.LoadXml('<toast><visual><binding template=""ToastGeneric""><text>$titleXml</text><text>' + [System.Security.SecurityElement]::Escape(`$m) + '</text></binding></visual></toast>')
-`$toast = New-Object Windows.UI.Notifications.ToastNotification `$xml
-`$appId = '{1AC14E77-02E7-4E60-B746-AC6A9D31BDE8}\WindowsPowerShell\v1.0\powershell.exe'
-try { [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier(`$appId).Show(`$toast) } catch {}
-"@
-    $b64 = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($script))
-    $args = "-NoProfile -ExecutionPolicy Bypass -EncodedCommand $b64"
-    return @"
-<?xml version="1.0" encoding="UTF-16"?>
-<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
-  <RegistrationInfo>
-    <Description>Displays LAN Fixer recovery notifications in the active user desktop session.</Description>
-    <Author>Lan Fixer</Author>
-  </RegistrationInfo>
-  <Triggers />

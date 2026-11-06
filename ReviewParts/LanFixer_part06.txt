@@ -1,3 +1,42 @@
+        $gw = @(Get-GatewaysV4 $ad) | Select-Object -First 1
+        if ($gw) { $script:State.Misc['LastCampusLease'] = @{ Ip = [string]$validIp; Gateway = [string]$gw; Time = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss') } }
+    }
+}
+
+# ==============================================================================
+# LAYER 3 - GATEWAY ARP INTEGRITY (verify, then lock; auto-release if it hurts)
+# ==============================================================================
+function Get-GatewayMacs($Ad, [string]$Gw, [int]$Samples = 3) {
+    $macs = @()
+    for ($i = 0; $i -lt $Samples; $i++) {
+        if (-not $script:IsDry) {
+            Remove-NetNeighbor -InterfaceIndex $Ad.ifIndex -IPAddress $Gw -Confirm:$false -ErrorAction SilentlyContinue
+        } else {
+            Write-Log 'DRY' "Would refresh neighbour entry for $Gw on $($Ad.Name)"
+        }
+        [void](Test-Ping $Gw 700)
+        Start-Sleep -Milliseconds 200
+        $n = Get-NetNeighbor -InterfaceIndex $Ad.ifIndex -IPAddress $Gw -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+             Where-Object { $_.LinkLayerAddress -and $_.LinkLayerAddress -notmatch '^(00-)+00$' -and @('Unreachable','Incomplete') -notcontains [string]$_.State } | Select-Object -First 1
+        if ($n) { $macs += ([string]$n.LinkLayerAddress).ToUpper() }
+    }
+    return $macs
+}
+function Remove-GatewayLock($Ad, [string]$Gw) {
+    if ($script:IsDry) { Write-Log 'DRY' "Would release ARP lock for $Gw on $($Ad.Name)"; return }
+    Remove-NetNeighbor -InterfaceIndex $Ad.ifIndex -IPAddress $Gw -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue
+    Remove-NetNeighbor -InterfaceIndex $Ad.ifIndex -IPAddress $Gw -PolicyStore PersistentStore -Confirm:$false -ErrorAction SilentlyContinue
+    Remove-NetNeighbor -InterfaceIndex $Ad.ifIndex -IPAddress $Gw -Confirm:$false -ErrorAction SilentlyContinue
+    [void](Invoke-Native (Get-SysExe 'arp.exe') @('-d', $Gw) 5000)
+    # Retain the recorded MAC in $script:State.Arp so Get-ArpDecision can continue
+    # to compare against $Prev and detect rogue spoofed MAC candidates!
+    $t = Get-SubTable 'Arp' ([string]$Ad.InterfaceGuid)
+}
+function Release-ArpLocks($Ad) {
+    $t = Get-SubTable 'Arp' ([string]$Ad.InterfaceGuid)
+    foreach ($gw in @($t.Keys)) {
+        [void](Invoke-Change "Gateway ARP lock released: $gw" { Remove-GatewayLock $Ad $gw })
+    }
 }
 function Shield-GatewayArp($Ctx, [string]$ConnState) {
     if (-not $script:Cfg.ArpLock) { return }
@@ -759,42 +798,3 @@ function Restore-NeutralizedInterceptors([string]$Why = 'Non-campus network') {
         foreach ($tn in @($script:State.Misc['NeutralizedTasks'].Keys)) {
             $tp = [string]$script:State.Misc['NeutralizedTasks'][$tn]
             [void](Invoke-Change "$($Why): re-enabled task $tn" {
-                Enable-ScheduledTask -TaskName $tn -TaskPath $tp -ErrorAction SilentlyContinue | Out-Null
-            })
-        }
-        if (-not $script:IsDry) { $script:State.Misc.Remove('NeutralizedTasks') }
-    }
-    if ($script:State.Misc['NeutralizedServices'] -is [hashtable]) {
-        foreach ($sn in @($script:State.Misc['NeutralizedServices'].Keys)) {
-            $rec = $script:State.Misc['NeutralizedServices'][$sn]
-            $origStart = if ($rec -is [hashtable]) { [string]$rec.StartType } else { [string]$rec }
-            if ($origStart -and $origStart -ne 'Disabled') {
-                [void](Invoke-Change "$($Why): restored service $sn to $origStart" {
-                    Set-Service -Name $sn -StartupType $origStart -ErrorAction SilentlyContinue
-                    if ($rec -is [hashtable] -and $rec.DelayedAuto) {
-                        Set-ItemProperty -LiteralPath "HKLM:\SYSTEM\CurrentControlSet\Services\$sn" -Name DelayedAutostart -Value 1 -Type DWord -ErrorAction SilentlyContinue
-                    }
-                    if ($rec -is [hashtable] -and $rec.WasRunning) {
-                        Start-Service -Name $sn -ErrorAction SilentlyContinue
-                    }
-                })
-            }
-        }
-        if (-not $script:IsDry) { $script:State.Misc.Remove('NeutralizedServices') }
-    }
-}
-$script:LlmnrKey = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient'
-function Restore-Llmnr($Orig) {
-    if ($null -eq $Orig) { Remove-ItemProperty -LiteralPath $script:LlmnrKey -Name EnableMulticast -ErrorAction SilentlyContinue }
-    else { New-ItemProperty -LiteralPath $script:LlmnrKey -Name EnableMulticast -Value ([int]$Orig) -PropertyType DWord -Force -ErrorAction Stop | Out-Null }
-}
-# LLMNR (like NetBIOS) lets any host on the hostel LAN answer "who is X?" and harvest credentials. Off on campus.
-function Shield-Llmnr($Ctxs) {
-    if (-not $script:Cfg.DisableLlmnr) { return }
-    $anyCampus = (@($Ctxs | Where-Object { $_.Env.Env -eq 'Campus' })).Count -gt 0
-    $anyOther  = (@($Ctxs | Where-Object { $_.Env.Env -eq 'Other' })).Count -gt 0
-    $cur = $null
-    try { $cur = (Get-ItemProperty -LiteralPath $script:LlmnrKey -Name EnableMulticast -ErrorAction Stop).EnableMulticast } catch {}
-    if ($anyCampus) {
-        if ($null -ne $cur -and [int]$cur -eq 0) { return }
-        Save-Original 'Global' 'Llmnr' $cur

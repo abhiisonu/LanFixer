@@ -2277,6 +2277,7 @@ function New-Telemetry {
         Conn = '-'; Env = ''; EnvScore = 0; Sticky = $false; DnsPrimary = ''; DnsProfile = ''; Mtu = ''; Routing = 'automatic'
         Watchdog = $false; Vault = $false; Pin = $false; Paused = $false; ArpPending = $false; RouteProfile = 'Adaptive'; LastFull = $null
         UplinkActive = $false; UplinkName = ''; UplinkProfile = ''; UplinkIsPrimary = $false
+        SubnetPrefix = $null; SubnetMask = ''; SubnetHosts = $null; IpV6 = ''; DhcpServer = ''; GwLocked = $false; Domain = ''
     }
 }
 
@@ -2287,7 +2288,7 @@ function Get-HopRows($t, $adv) {
     $gw = 'None'
     if ($t.GwIp) { $gw = $t.GwIp; if ($null -ne $curRtt) { $gw += (' {0}ms' -f $curRtt) } elseif ($t.GwAlive) { $gw += ' arp' } }
     $link = 'Down'; if ($t.LinkUp) { $link = $t.Speed }
-    $ip = 'None'; if ($t.Ip) { $ip = $t.Ip }
+    $ip = 'None'; if ($t.Ip) { $ip = if ($t.SubnetPrefix) { "$($t.Ip)/$($t.SubnetPrefix)" } else { $t.Ip } }
     $dns = '-'; if ($t.DnsPrimary) { $dns = $t.DnsPrimary }
     $net = '-'
     switch ($t.Problem) {
@@ -2413,10 +2414,27 @@ function Get-DashboardModel($t, $adv, [int]$Width = 0) {
     $pulseIdx = $L.Count
     [void]$L.Add((Get-PulseSegs $t ([Math]::Max(4, [Math]::Min(36, $w - 54)))))
     [void]$L.Add(@())
-    # facts
+    # facts (dynamically auto-discovered and responsive)
     $cw = [int][Math]::Floor(($w - 4) / 2)
-    $net = '-'; if ($t.Env) { $net = ($t.Env + ' ' + $script:G.mid + ' Score ' + $t.EnvScore); if ($t.Sticky) { $net += ' (Remembered)' } }
-    $dnsv = '-'; if ($t.DnsProfile) { $dnsv = $t.DnsProfile; if ($t.DnsPrimary) { $dnsv += (' ' + $script:G.mid + ' ' + $t.DnsPrimary) } }
+    $nicLabel = $t.Nic
+    if ($t.Mtu -and $w -ge 76) { $nicLabel = Fit ($t.Nic + ' ' + $script:G.mid + ' MTU ' + $t.Mtu) ($cw - 10) }
+    $net = '-'
+    if ($t.Env) {
+        $net = if ($t.Domain -and $w -ge 76) { ($t.Env + ' (' + $t.Domain + ') ' + $script:G.mid + ' Score ' + $t.EnvScore) } else { ($t.Env + ' ' + $script:G.mid + ' Score ' + $t.EnvScore) }
+        if ($t.Sticky) { $net += ' (Remembered)' }
+    }
+    $leaseVal = $t.Ip
+    if ($t.SubnetPrefix) {
+        $leaseVal = if ($t.SubnetHosts -and $w -ge 76) { ("{0}/{1} ({2} hosts)" -f $t.Ip, $t.SubnetPrefix, $t.SubnetHosts) } else { ("{0}/{1}" -f $t.Ip, $t.SubnetPrefix) }
+    }
+    $dnsv = '-'
+    if ($t.DnsProfile) {
+        $dnsv = $t.DnsProfile
+        if ($t.DnsPrimary) {
+            $dnsServers = if ($t.DnsSecondary -and $w -ge 76) { "$($t.DnsPrimary), $($t.DnsSecondary)" } else { $t.DnsPrimary }
+            $dnsv += (' ' + $script:G.mid + ' ' + $dnsServers)
+        }
+    }
     $rout = if ($t.Routing) {
         switch ($t.Routing.ToLower()) {
             'ethernet first'   { if ($t.UplinkActive) { 'Ethernet First (10 vs 40)' } else { 'Ethernet First' } }
@@ -2436,11 +2454,32 @@ function Get-DashboardModel($t, $adv, [int]$Width = 0) {
         }
     } else { 'Automatic' }
     $curRtt = if ($null -ne $script:LiveGwRtt) { $script:LiveGwRtt } else { $t.GwRtt }
-    $gwVal = if ($t.GwIp) { if ($null -ne $curRtt) { '{0} ({1} ms)' -f $t.GwIp, $curRtt } elseif ($t.GwAlive) { '{0} (ARP)' -f $t.GwIp } else { $t.GwIp } } else { '-' }
+    $gwVal = if ($t.GwIp) {
+        $baseGw = if ($null -ne $curRtt) { '{0} ({1} ms)' -f $t.GwIp, $curRtt } elseif ($t.GwAlive) { '{0} (ARP)' -f $t.GwIp } else { $t.GwIp }
+        if ($t.GwLocked -and $w -ge 76) { $baseGw + ' ' + $script:G.mid + ' Locked' } else { $baseGw }
+    } else { '-' }
+
     $facts = @(
-        @(@('Adapter', $t.Nic), @('Network', $net)),
-        @(@('Lease', $t.Ip), @('DNS', $dnsv)),
+        @(@('Adapter', $nicLabel), @('Network', $net)),
+        @(@('Lease', $leaseVal), @('DNS', $dnsv)),
         @(@('Gateway', $gwVal), @('Routing', $rout)))
+
+    # Dynamically discover and display Dual-Stack IPv6 / DHCP / Secondary Uplink
+    if ($t.IpV6 -or $t.DhcpServer -or $t.UplinkActive) {
+        $cellL = if ($t.IpV6) { @('IPv6', $t.IpV6) } elseif ($t.DhcpServer) { @('DHCP Svr', $t.DhcpServer) } else { @('Subnet', "$($t.SubnetMask) (/$($t.SubnetPrefix))") }
+        $cellR = if ($t.UplinkActive -and $t.UplinkName) {
+            $upStr = if ($t.UplinkProfile) { "$($t.UplinkName) ($($t.UplinkProfile))" } else { $t.UplinkName }
+            @('Uplink', $upStr)
+        } elseif ($t.DhcpServer -and $t.IpV6) {
+            @('DHCP Svr', $t.DhcpServer)
+        } elseif ($t.SubnetMask) {
+            @('Subnet', "$($t.SubnetMask) (/$($t.SubnetPrefix))")
+        } else {
+            @('Status', 'Auto-Discovered')
+        }
+        $facts += , @($cellL, $cellR)
+    }
+
     foreach ($row in $facts) {
         $segs = @((Seg 'text' '  '))
         foreach ($cell in $row) {
@@ -8951,7 +8990,29 @@ function Get-Telemetry {
             }
             $raw = @((Get-DnsClientServerAddress -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses)
             if ($raw.Count -gt 0) { $t.DnsPrimary = [string]$raw[0] }
+            if ($raw.Count -gt 1) { $t.DnsSecondary = [string]$raw[1] }
             $t.DnsProfile = Get-DnsProfileName
+            if ($script:State.Misc['DiscoveredDomain']) { $t.Domain = [string]$script:State.Misc['DiscoveredDomain'] }
+            try {
+                $sub = Get-SubnetInfoFromLease $ad
+                if ($sub -and $sub.Prefix) {
+                    $t.SubnetPrefix = [int]$sub.Prefix
+                    $t.SubnetMask = [string]$sub.Mask
+                    $t.SubnetHosts = [int64]$sub.Total
+                }
+            } catch {}
+            try {
+                $v6 = @(Get-NetIPAddress -InterfaceIndex $ad.ifIndex -AddressFamily IPv6 -ErrorAction SilentlyContinue | Where-Object { [string]$_.AddressState -eq 'Preferred' -and [string]$_.IPAddress -notmatch '^(fe80|::1)' })
+                if ($v6.Count -gt 0) { $t.IpV6 = [string]$v6[0].IPAddress }
+            } catch {}
+            try {
+                $reg = Get-IfaceReg [string]$ad.InterfaceGuid
+                if ($reg -and $reg.DhcpServer) { $t.DhcpServer = [string]$reg.DhcpServer }
+            } catch {}
+            try {
+                $arpTable = Get-SubTable 'Arp' [string]$ad.InterfaceGuid
+                if ($t.GwIp -and $arpTable.ContainsKey($t.GwIp)) { $t.GwLocked = $true }
+            } catch {}
         }
     }
     $t.RouteProfile = Get-RouteProfileName

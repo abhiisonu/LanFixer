@@ -1,3 +1,64 @@
+        try { if ($script:Pulse.Ping) { $script:Pulse.Ping.Dispose(); $script:Pulse.Ping = $null; $script:Pulse.Task = $null } } catch {}
+        try { [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = [System.Diagnostics.ProcessPriorityClass]::Normal } catch {}
+        Exit-Screen
+    }
+}
+$script:IsAdmin = Test-IsAdmin
+$adminModes = @('Interactive', 'Heal', 'QuickHeal', 'AutoHeal', 'Omnifix', 'NetReset', 'FullNetReset', 'UltraReset', 'Ultra', 'DoomsdayReset', 'Doomsday', 'ArmageddonReset', 'Armageddon', 'ResetOptions', 'ResetMenu', 'FlushCache', 'Flush', 'InstallWatchdog', 'UninstallWatchdog', 'InstallShield', 'UninstallShield', 'ResetFactory', 'Reset', 'SetDnsProfile', 'Dns', 'DnsMenu', 'SetRouteProfile', 'Route', 'RouteMenu', 'Daemon', 'Vault')
+if ($Mode -eq 'Interactive') {
+    $intFile = Join-Path $script:Cfg.StoreDir 'interactive.json'
+    if (Test-Path -LiteralPath $intFile) {
+        try {
+            $existing = ConvertFrom-Json (Get-Content -LiteralPath $intFile -Raw -ErrorAction SilentlyContinue)
+            if ($existing -and $existing.Pid -and ($existing.Pid -ne $PID)) {
+                $p = Get-Process -Id ([int]$existing.Pid) -ErrorAction SilentlyContinue
+                if ($p -and ($p.ProcessName -match 'powershell|cmd|LanFixer')) {
+                    if ($Force) {
+                        try { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } catch {}
+                        Remove-Item -LiteralPath $intFile -Force -ErrorAction SilentlyContinue
+                    } else {
+                        try {
+                            $ws = New-Object -ComObject WScript.Shell
+                            [void]$ws.AppActivate($p.Id)
+                        } catch {}
+                        Write-Host ''
+                        Write-Host '  ========================================================================' -ForegroundColor Cyan
+                        Write-Host ("  Lan Fixer is already running in another window (PID {0})." -f $p.Id) -ForegroundColor Yellow
+                        Write-Host '  Switched focus to the active window.' -ForegroundColor Gray
+                        Write-Host '  (Use -Force or close the existing window to replace it)' -ForegroundColor DarkGray
+                        Write-Host '  ========================================================================' -ForegroundColor Cyan
+                        Write-Host ''
+                        Start-Sleep -Seconds 2
+                        exit 0
+                    }
+                } else {
+                    Remove-Item -LiteralPath $intFile -Force -ErrorAction SilentlyContinue
+                }
+            }
+        } catch {}
+    }
+}
+if (-not $script:IsAdmin -and -not $script:IsDry -and ($adminModes -contains $Mode)) {
+    $elevated = $false
+    if (-not $LfElevated -and $script:SelfPath) {
+        try {
+            $parts = @('-LfElevated')
+            foreach ($kv in $PSBoundParameters.GetEnumerator()) {
+                if ($kv.Key -eq 'LfElevated') { continue }
+                if ($kv.Value -is [System.Management.Automation.SwitchParameter]) { if ($kv.Value.IsPresent) { $parts += ('-' + $kv.Key) } }
+                else { $parts += ('-' + $kv.Key); $parts += [string]$kv.Value }
+            }
+            Start-Process -FilePath $script:SelfPath -ArgumentList ($parts -join ' ') -Verb RunAs -ErrorAction Stop
+            $elevated = $true
+        } catch { Write-Host 'Administrator approval was not granted.' -ForegroundColor Yellow }
+    }
+    if ($elevated) { exit 0 }
+    if ($Mode -ne 'Interactive') { Write-Host '[x] This mode needs Administrator rights.' -ForegroundColor Red; exit 1 }
+}
+if ($script:UiOn) { Initialize-Ui }
+if ($script:IsAdmin) { Initialize-Store }
+Import-UserConfig
+$script:State = Get-State
 $exitCode = 0
 try {
     if ($script:UiOn -and $Mode -ne 'Interactive') { Write-Banner ("{0}{1}" -f $Mode, $(if ($script:IsDry) { ' (dry run)' } else { '' })) }
