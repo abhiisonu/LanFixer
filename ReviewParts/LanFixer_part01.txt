@@ -18,7 +18,10 @@ exit /b %errorlevel%
     Add -DryRun to see exactly what would change without changing anything.
     Every change is snapshotted first, so ResetFactory restores YOUR original values.
 .NOTES
-    6.5.0 (Omniscient Layer 1-7 Healer & Sovereign Hyper-Nuclear Antimatter Weapon Reset Engine):
+    6.5.0 (Omniscient Layer 1-7 Healer, Hyper-Nuclear & Universal Doomsday Reset Engine):
+      - Invoke-DoomsdayReset: 12-stage universal doomsday network stack annihilation engine for total connectivity death across ALL media (Wi-Fi, Bluetooth, USB Tethering, Ethernet, Cellular).
+      - Universal Multi-Adapter Hardening: restarts all physical adapters, resets WLAN AutoConfig (netsh wlan set autoconfig enabled=yes interface=*), and binds core NDIS protocols.
+      - Dead VPN Killswitch & Universal Proxy Eradication: sweeps ProxyEnable, ProxyServer, AutoConfigURL across HKCU, HKLM, HKU\.DEFAULT, and all active user profiles.
       - Invoke-UltraSystemReset: 10-stage hyper-nuclear stack resuscitation engine implementing non-destructive full-spectrum low-level eradication.
       - Dual-Architecture Winsock LSP & NSP Annihilation: wipes 64-bit System32 and 32-bit SysWOW64 Winsock catalogs (netsh winsock reset catalog & reset), zeroes AutodialFlags.
       - Dual-Stack TCP/IP & Heuristics Normalization: netsh int ip/ipv6 reset, netsh int tcp reset, autotuninglevel=normal, RSS/RSC enabled, ECN/timestamps disabled, initialrto=3000.
@@ -30,10 +33,10 @@ exit /b %errorlevel%
       - Cache & NetBIOS Eviction: netsh interface ip delete arpcache, netsh int ip/ipv6 delete neighbors, arp -d *, nbtstat -R & -RR, Clear-DnsClientCache, ipconfig /flushdns.
       - Hardware Transceiver Cycle & Driver Power Lock: pnputil /restart-device, re-binds ms_tcpip/ms_tcpip6/ms_rspndr/ms_lltdio/ms_pacer, defeats PHY EEE/green power & selective suspend.
       - DHCP Broadcast Flag Enforcement & Registry Zeroing: enforces DhcpConnForceBroadcastFlag=1 (RFC 2131), zeroes cached DhcpIPAddress/DhcpServer keys to force pure Discover.
-      - Topological 10-Service Stack Resuscitation: cleanly halts 10 dependent services before reset and restarts them in strict topological order (BFE -> mpssvc -> CryptSvc -> Dhcp -> Dnscache -> iphlpsvc -> dot3svc -> WlanSvc -> NlaSvc -> netprofm -> BITS).
+      - Topological 12-Service Stack Resuscitation: cleanly halts 12 dependent services before reset and restarts them in strict topological order (BFE -> mpssvc -> CryptSvc -> WlanSvc -> dot3svc -> bthserv -> WwanSvc -> Dhcp -> Dnscache -> iphlpsvc -> NlaSvc -> netprofm -> BITS).
       - 802.1X Wired AutoConfig Reconnection: issues netsh lan reconnect across wired LAN interfaces.
       - Full DHCP Stack Cycle & Dynamic DNS: ipconfig /release & /renew (IPv4/IPv6), ipconfig /registerdns, and 802.1D Spanning Tree Protocol (STP) convergence loop.
-      - Interactive TUI & CLI Integration: Key [U] on dashboard, dual-tier selector on [X], -Mode UltraReset / FullNetReset CLI dispatch.
+      - Interactive TUI & CLI Integration: Key [D] for Doomsday, Key [U] for Ultra, 3-tier selector on [X], -Mode DoomsdayReset / UltraReset / FullNetReset CLI dispatch.
     6.4.2 (Sovereign Grand Master Final Hardening & PnP Optimization):
       - PnP Rescan Rate-Limit & Narrowing: Rescue-DormantEthernetPnp stamps limiter before query, checks only present faulted physical wired NICs, and ignores disabled/ghost devices.
       - Interactive Session Timestamp Validation: Start-Interactive writes process StartTime in round-trippable ISO-8601 UTC format, eliminating false-positive session purges.
@@ -187,7 +190,7 @@ exit /b %errorlevel%
 
 [CmdletBinding()]
 param(
-    [ValidateSet('Interactive','Heal','AutoHeal','Omnifix','FullNetReset','UltraReset','Diagnose','QuickProbe','FlushCache','InstallWatchdog','UninstallWatchdog','InstallShield','UninstallShield','ResetFactory','LaunchPortal','SetDnsProfile','SetRouteProfile','SelfTest','Report','Daemon')]
+    [ValidateSet('Interactive','Heal','AutoHeal','Omnifix','FullNetReset','UltraReset','DoomsdayReset','Doomsday','Diagnose','QuickProbe','FlushCache','InstallWatchdog','UninstallWatchdog','InstallShield','UninstallShield','ResetFactory','LaunchPortal','SetDnsProfile','SetRouteProfile','SelfTest','Report','Daemon')]
     [string]$Mode = 'Interactive',
     [ValidateSet('Adaptive','DHCP','Hybrid','Cloudflare','ResetDHCP')]
     [string]$DnsProfile = 'Adaptive',
@@ -795,6 +798,3 @@ function Enter-Lock([int]$TimeoutMs = 1000) {
                 $meta = @{ Pid = $PID; Mode = ([string]$Mode); Time = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss'); User = [string]$env:USERNAME }
                 [System.IO.File]::WriteAllText($lf, (ConvertTo-Json -InputObject $meta -Compress))
             } catch {}
-            $memMisc = @{}
-            if ($script:State -is [hashtable] -and $script:State.Misc -is [hashtable]) {
-                foreach ($mk in @('LearnedDhcp','DiscoveredDomain','DiscoveredPortalUrl','DiscoveredPortalIp','DiscoveryTime','InjectedHostRoutes')) {

@@ -1,3 +1,465 @@
+                $r.Action = 'Connect Ethernet cable, or press [ENTER] / [X] to run Full Net Reset.'
+                $r.Key = 'x'; $r.KeyLabel = 'run Full Net Reset'
+            } else {
+                $r.Action = 'Connect Ethernet cable, then arm watchdog (or press 2).'
+                $r.Key = '2'; $r.KeyLabel = 'arm the watchdog'
+            }
+        }
+        'NoAdapter' {
+            $r.Status = 'No physical Ethernet network adapter found.'
+            $r.Action = 'Press [ENTER] or [X] to rescan PnP hardware bus & heal Wi-Fi/system stack.'
+            $r.Key = 'x'; $r.KeyLabel = 'run Full Net Reset'
+        }
+        default {
+            $r.Status = 'Reading network state and adapters...'
+            $r.Action = 'Please wait while telemetry is collected.'
+        }
+    }
+    $r.Text = ($r.Status + ' ' + $r.Action).Trim()
+    return $r
+}
+function Get-Sig($t) { return ('{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}|{8}|{9}|{10}|{11}|{12}|{13}|{14}|{15}' -f $t.Problem, $t.Ip, $t.Conn, $t.Speed, $t.Watchdog, $t.DnsPrimary, $t.Admin, $t.Vault, $t.Paused, $t.Routing, $t.GwIp, $t.Env, $t.DnsProfile, $t.GwAlive, $t.ArpPending, $t.RouteProfile) }
+
+
+$script:Frame = $null
+function Show-Dashboard($t, $adv) {
+    $m = Get-DashboardModel $t $adv
+    Write-Frame $m.Lines
+    Out-Line @((Seg 'accent!' ('  ' + $script:G.prompt + ' '))) -NoNewline
+    Show-Cursor $true
+    $script:Frame = @{ Model = $m; Rows = $m.Lines.Count; WinW = (Get-UiWidth) }
+}
+function Show-DnsMenu {
+    $cur = Get-DnsProfileName
+    $items = @(
+        @('1', 'Adaptive',   'Adaptive',   'Automatic: Campus DNS before login, public DNS after (Recommended)'),
+        @('2', 'Campus',     'DHCP',       'Campus DHCP: Direct resolvers for campus ERP and intranet'),
+        @('3', 'Hybrid',     'Hybrid',     'Dual Resolver: Quad9 & Google primary, campus fallback'),
+        @('4', 'Cloudflare', 'Cloudflare', 'Public Secure: Cloudflare 1.1.1.1 primary, campus fallback'),
+        @('5', 'Reset DHCP', 'ResetDHCP',  'Restore Defaults: Clear custom DNS and restore automatic DHCP'))
+    foreach ($it in $items) {
+        $on = ($it[2] -eq $cur)
+        Out-Line @(
+            (Seg $(if ($on) { 'ok!' } else { 'faint' }) ('  ' + $(if ($on) { $script:G.dot } else { $script:G.ring }) + ' ')),
+            (Seg 'faint' '['),
+            (Seg $(if ($on) { 'ok!' } else { 'accent!' }) $it[0]),
+            (Seg 'faint' '] '),
+            (Seg $(if ($on) { 'text!' } else { 'text' }) (' ' + $it[1].PadRight(12))),
+            (Seg $(if ($on) { 'ok' } else { 'dim' }) $it[3])
+        )
+    }
+    Out-Line @()
+    Out-Line @((Seg 'dim' '  Select profile [1-5], or press any other key to cancel '), (Seg 'accent!' $script:G.prompt)) -NoNewline
+    $k = Read-Choice
+    Out-Line @()
+    $map = @{ '1' = 'Adaptive'; '2' = 'DHCP'; '3' = 'Hybrid'; '4' = 'Cloudflare'; '5' = 'ResetDHCP' }
+    $c = [string]$k.KeyChar
+    if ($map.ContainsKey($c)) {
+        Set-DnsProfileMode $map[$c]
+        Out-Line @()
+        Out-Line @((Seg 'dim' '  press any key to return'))
+        Wait-AnyKey
+    }
+}
+function Show-RouteMenu {
+    $cur = Get-RouteProfileName
+    Out-Line @((Seg 'text' '  Choose how Windows balances traffic between Gigabit Ethernet and Wi-Fi / Hotspot:'))
+    Out-Line @()
+    $items = @(
+        @('1', 'Adaptive', 'Adaptive', 'Auto-select: Ethernet when online, Wi-Fi when captive (Recommended)'),
+        @('2', 'Ethernet', 'Ethernet', 'Ethernet priority: Prefer wired LAN (Metric 10 vs 40)'),
+        @('3', 'Wi-Fi',    'Wifi',     'Wi-Fi priority: Hotspot primary, LAN portal preserved'),
+        @('4', 'Windows',  'Windows',  'Windows default: Automatic interface metric balancing'))
+    foreach ($it in $items) {
+        $on = ($it[2] -eq $cur)
+        Out-Line @(
+            (Seg $(if ($on) { 'ok!' } else { 'faint' }) ('  ' + $(if ($on) { $script:G.dot } else { $script:G.ring }) + ' ')),
+            (Seg 'faint' '['),
+            (Seg $(if ($on) { 'ok!' } else { 'accent!' }) $it[0]),
+            (Seg 'faint' '] '),
+            (Seg $(if ($on) { 'text!' } else { 'text' }) (' ' + $it[1].PadRight(12))),
+            (Seg $(if ($on) { 'ok' } else { 'dim' }) $it[3])
+        )
+    }
+    Out-Line @()
+    Out-Line @((Seg 'dim' '  Select profile [1-4], or press any other key to cancel '), (Seg 'accent!' $script:G.prompt)) -NoNewline
+    $k = Read-Choice
+    Out-Line @()
+    $map = @{ '1' = 'Adaptive'; '2' = 'Ethernet'; '3' = 'Wifi'; '4' = 'Windows' }
+    $c = [string]$k.KeyChar
+    if ($map.ContainsKey($c)) {
+        Set-RouteProfileMode $map[$c]
+        Out-Line @()
+        Out-Line @((Seg 'dim' '  press any key to return'))
+        Wait-AnyKey
+    }
+}
+function Write-HealSummary($r, $sw) {
+    $w = Get-UiWidth
+    $info = Get-StateInfo ([string]$(if ($r) { $r.Problem } else { 'Offline' }))
+    Out-Line @()
+    Out-Rule $w
+    Out-Line @((Seg $info.Role ('  ' + $script:G.dot + '  ')), (Seg ($info.Role + '!') $info.Word), (Seg 'dim' ('   {0} {1} changed {0} {2} failed {0} {3:N1} s' -f $script:G.mid, $script:ChangeCount, $script:FailCount, $sw.Elapsed.TotalSeconds)))
+}
+# ==============================================================================
+# ACID STATE TRANSITIONS & AUTONOMOUS SENTINEL DAEMON
+# ==============================================================================
+function Capture-PreflightSnapshot($Ad) {
+    if (-not $Ad) { return $null }
+    $guid = [string]$Ad.InterfaceGuid
+    $snap = @{
+        Guid      = $guid
+        Name      = [string]$Ad.Name
+        ifIndex   = [int]$Ad.ifIndex
+        Timestamp = [DateTime]::UtcNow
+        Ip4       = @()
+        Gateways  = @()
+        Dns       = @()
+        Metric    = $null
+        Mtu       = $null
+        Routes    = @()
+    }
+    try {
+        $ips = @(Get-NetIPAddress -InterfaceIndex $Ad.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue)
+        foreach ($ip in $ips) {
+            $snap.Ip4 += @{ IPAddress = [string]$ip.IPAddress; PrefixLength = [int]$ip.PrefixLength }
+        }
+    } catch {}
+    try { $snap.Gateways = @(Get-GatewaysV4 $Ad) } catch {}
+    try {
+        $dns = Get-DnsClientServerAddress -InterfaceIndex $Ad.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue
+        if ($dns) { $snap.Dns = @($dns.ServerAddresses) }
+    } catch {}
+    try {
+        $ipif = Get-IPv4Interface $Ad
+        if ($ipif) {
+            $snap.Metric = [int]$ipif.InterfaceMetric
+            $snap.Mtu    = [int]$ipif.NlMtu
+        }
+    } catch {}
+    try {
+        $routes = @(Get-NetRoute -InterfaceIndex $Ad.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue)
+        foreach ($rt in $routes) {
+            $snap.Routes += @{
+                DestinationPrefix = [string]$rt.DestinationPrefix
+                NextHop           = [string]$rt.NextHop
+                RouteMetric       = [int]$rt.RouteMetric
+            }
+        }
+    } catch {}
+    return $snap
+}
+
+function Restore-PreflightSnapshot($Snapshot) {
+    if (-not $Snapshot -or -not $Snapshot.ifIndex) { return $false }
+    $ifIdx = [int]$Snapshot.ifIndex
+    $adName = [string]$Snapshot.Name
+    Write-Log 'WARN' ("Rolling back configuration on {0} to pre-flight snapshot..." -f $adName)
+    $restored = $true
+    try {
+        if ($null -ne $Snapshot.Metric) {
+            Set-NetIPInterface -InterfaceIndex $ifIdx -AddressFamily IPv4 -InterfaceMetric ([int]$Snapshot.Metric) -ErrorAction SilentlyContinue
+        }
+        if ($null -ne $Snapshot.Mtu) {
+            Set-NetIPInterface -InterfaceIndex $ifIdx -AddressFamily IPv4 -NlMtuBytes ([int]$Snapshot.Mtu) -ErrorAction SilentlyContinue
+        }
+        if ($Snapshot.Dns.Count -gt 0) {
+            Set-DnsClientServerAddress -InterfaceIndex $ifIdx -ServerAddresses $Snapshot.Dns -ErrorAction SilentlyContinue
+        } else {
+            Set-DnsClientServerAddress -InterfaceIndex $ifIdx -ResetServerAddresses -ErrorAction SilentlyContinue
+        }
+    } catch {
+        $restored = $false
+        Write-Log 'FAIL' ("Error during pre-flight rollback on {0}: {1}" -f $adName, $_.Exception.Message)
+    }
+    return $restored
+}
+
+function Invoke-AcidMutation([string]$Description, [scriptblock]$Mutation, [scriptblock]$Validation, [int]$TimeoutMs = 3500) {
+    if ($script:IsDry) {
+        Write-Log 'DRY' ("Would execute ACID mutation: {0}" -f $Description)
+        return $true
+    }
+    $ads = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })
+    $ad = if ($ads.Count -gt 0) { $ads[0] } else { $null }
+    $snapshot = if ($ad) { Capture-PreflightSnapshot $ad } else { $null }
+
+    Write-Log 'INFO' ("ACID Executing: {0}" -f $Description)
+    $execOk = $false
+    try {
+        & $Mutation
+        $execOk = $true
+    } catch {
+        Write-Log 'FAIL' ("Mutation threw exception: {0}" -f $_.Exception.Message)
+    }
+
+    if ($execOk -and $Validation) {
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        $valid = $false
+        while ($sw.ElapsedMilliseconds -lt $TimeoutMs) {
+            try {
+                if (& $Validation) { $valid = $true; break }
+            } catch {}
+            Start-Sleep -Milliseconds 250
+        }
+        $sw.Stop()
+        if (-not $valid) {
+            Write-Log 'WARN' ("ACID Validation failed after {0} ms: rolling back {1}" -f $sw.ElapsedMilliseconds, $Description)
+            if ($snapshot) { [void](Restore-PreflightSnapshot $snapshot) }
+            return $false
+        }
+    } elseif (-not $execOk) {
+        if ($snapshot) { [void](Restore-PreflightSnapshot $snapshot) }
+        return $false
+    }
+
+    Write-Log 'OK' ("ACID Committed: {0}" -f $Description)
+    return $true
+}
+
+function Start-AutonomousDaemon([int]$IntervalSec = 10) {
+    if (-not (Assert-Admin)) { return }
+    Write-Banner "Daemon Mode (Autonomous Sentinel)"
+    Write-Log 'OK' ("Autonomous LAN Remediation Daemon activated (Interval: {0}s, Breaker: {1})." -f $IntervalSec, $script:Cfg.BreakerFails)
+    Write-Log 'INFO' "Press Ctrl+C to terminate sentinel daemon safely."
+
+    $consecutiveFails = 0
+    $lastHwCheck = [DateTime]::MinValue
+
+    try {
+        while ($true) {
+            $locked = Invoke-WithLock -WaitMs 3000 -Block {
+                $ads = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })
+                if ($ads.Count -eq 0) {
+                    if ((Get-Date) - $lastHwCheck -gt [TimeSpan]::FromSeconds(60)) {
+                        Rescue-DormantEthernetPnp
+                        $lastHwCheck = Get-Date
+                    }
+                    return 'NoLink'
+                }
+
+                $ad = $ads[0]
+                $linkHealth = Test-NdisLinkHealth $ad
+                $state = Get-InternetState -NoCache
+                if ($state.State -eq 'Online' -and $linkHealth.Healthy) {
+                    if ($consecutiveFails -gt 0) {
+                        Write-Log 'OK' "Daemon: Link confirmed healthy and Online. Resetting circuit breaker."
+                        $consecutiveFails = 0
+                    }
+                    return 'Online'
+                }
+
+                if ($consecutiveFails -ge $script:Cfg.BreakerFails) {
+                    Write-Log 'WARN' ("Circuit breaker tripped ({0} consecutive failures). Throttling daemon to prevent port-flap/DHCP ban." -f $consecutiveFails)
+                    Start-Sleep -Seconds 60
+                    return 'Throttled'
+                }
+
+                Write-Log 'WARN' ("Daemon detected degradation: State={0}, LinkReason={1}. Escalating remediation ladder..." -f $state.State, $linkHealth.Reason)
+                $consecutiveFails++
+
+                if ($state.State -eq 'NoDns') {
+                    Flush-NetworkCache
+                    Shield-Dns @{ Ad = $ad; Env = (Get-AdapterEnvironment $ad) } $state.State
+                    $st1 = (Get-InternetState -NoCache).State
+                    if ($st1 -eq 'Online') { return 'RecoveredTier1' }
+                }
+
+                $ip = Get-ValidIPv4 $ad
+                if (-not $ip -or $ip -like '169.254*') {
+                    [void](Repair-Dhcp $ad)
+                    [void](Wait-StpConvergence $ad ([int]$script:Cfg.StpMaxSec))
+                    $st2 = (Get-InternetState -NoCache).State
+                    if ($st2 -eq 'Online') { return 'RecoveredTier2' }
+                }
+
+                Shield-Hardware $ad
+                [void](Shield-TcpOffloads $ad)
+                if (-not $linkHealth.Healthy) {
+                    [void](Resolve-DuplexFlap $ad)
+                    [void](Optimize-PhySiliconBuffers $ad)
+                }
+                $st3 = (Get-InternetState -NoCache).State
+                if ($st3 -eq 'Online') { return 'RecoveredTier3' }
+
+                [void](Reset-PhysicalAdapterHardware $ad)
+                [void](Wait-StpConvergence $ad ([int]$script:Cfg.StpMaxSec))
+                Shield-SystemStack
+                $st4 = (Get-InternetState -NoCache).State
+                if ($st4 -eq 'Online') { return 'RecoveredTier4' }
+
+                return 'Degraded'
+            }
+
+            Start-Sleep -Seconds $IntervalSec
+        }
+    } finally {
+        Write-Log 'INFO' "Autonomous Sentinel Daemon shutdown cleanly."
+    }
+}
+
+function Start-Interactive {
+    if (Test-InputRedirected) {
+        Write-Host 'The control center needs an interactive console. Use -Mode Heal, Diagnose, QuickProbe, SelfTest ... for scripted runs.' -ForegroundColor Yellow
+        if (-not $NoPause -and $Host.Name -eq 'ConsoleHost') {
+            Write-Host ''
+            Write-Host 'Press any key to close...' -ForegroundColor Gray
+            try { [void][Console]::ReadKey($true) } catch { Start-Sleep -Seconds 4 }
+        }
+        return
+    }
+    if ($script:IsAdmin) {
+        $script:WatchdogOn = Test-WatchdogInstalled
+        try { Update-WatchdogIfStale } catch {}
+    }
+    try {
+        $intFile = Join-Path $script:StoreDir 'interactive.json'
+        $self = [System.Diagnostics.Process]::GetCurrentProcess()
+        $meta = @{ Pid = $PID; StartTime = $self.StartTime.ToUniversalTime().ToString('o'); User = [string]$env:USERNAME }
+        [System.IO.File]::WriteAllText($intFile, (ConvertTo-Json -InputObject $meta -Compress))
+    } catch {}
+    try { [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = [System.Diagnostics.ProcessPriorityClass]::AboveNormal } catch {}
+    Enter-Screen
+    try {
+        $t = New-Telemetry
+        $adv = Get-Advice $t
+        Show-Dashboard $t $adv          # instant skeleton, then the real reading
+        $t = Get-Telemetry; $adv = Get-Advice $t
+        if ($script:IsAdmin -and -not $script:IsDry -and ($t.Problem -eq 'Healthy' -or $t.Problem -eq 'Online')) {
+            if (($t.RouteProfile -eq 'Adaptive' -and $t.Routing -eq 'Wi-Fi Protected' -and -not $t.UplinkActive) -or ($t.RouteProfile -eq 'Ethernet' -and $t.Routing -ne 'Ethernet First') -or ($t.RouteProfile -eq 'Wifi' -and ($t.Routing -ne 'Wi-Fi First' -and $t.UplinkActive))) {
+                [void](Invoke-WithLock -WaitMs 2000 -Block { Complete-Authentication })
+                $t = Get-Telemetry; $adv = Get-Advice $t
+            }
+        }
+        $draw = $true
+        $lastTel = Get-Date
+        $lastW = Get-UiWidth
+        $lastH = Get-UiHeight
+        $autoLoginTried = $false
+        $script:InDashboard = $true
+        while ($true) {
+            if ($draw) { Show-Dashboard $t $adv; $draw = $false; $lastW = Get-UiWidth; $lastH = Get-UiHeight; $script:InDashboard = $true }
+            $key = $null
+            while ($null -eq $key) {
+                if (Test-KeyAvailable) { $key = Read-KeyNow; break }
+                if ($t.GwIp -and (Update-Pulse $t.GwIp)) {
+                    if ($null -ne $script:LiveGwRtt) { $t.GwRtt = $script:LiveGwRtt }
+                    if ($script:Ui.Vt) { [void](Update-PulseRow $t) }
+                }   # ping a silent gateway too: the lost replies ARE the picture
+                if ((Get-UiWidth) -ne $lastW -or (Get-UiHeight) -ne $lastH) { $draw = $true; break }
+                $ivl = 2; if ($t.Problem -ne 'Healthy' -and $t.Problem -ne 'Online') { $ivl = 4 }   # quickest refresh: 2s healthy, 4s offline/degraded
+                if (((Get-Date) - $lastTel).TotalSeconds -ge $ivl) {
+                    $t2 = Get-Telemetry; $lastTel = Get-Date
+                    if ($script:IsAdmin -and -not $script:IsDry) {
+                        $needsPrioritySync = ((Test-Elapsed 'DashPrioritySync' 30) -and ($t2.Problem -eq 'Healthy' -or $t2.Problem -eq 'Online') -and (
+                            ($t.Problem -eq 'Captive') -or
+                            ($t2.RouteProfile -eq 'Adaptive' -and $t2.Routing -eq 'Wi-Fi Protected' -and -not $t2.UplinkActive) -or
+                            ($t2.RouteProfile -eq 'Ethernet' -and $t2.Routing -ne 'Ethernet First') -or
+                            ($t2.RouteProfile -eq 'Wifi' -and ($t2.Routing -ne 'Wi-Fi First' -and $t2.UplinkActive))
+                        ))
+                        if ($needsPrioritySync) {
+                            Set-StateTime 'DashPrioritySync'
+                            [void](Invoke-WithLock -WaitMs 2000 -Block { Complete-Authentication })
+                            $t2 = Get-Telemetry
+                        } elseif ($t2.Problem -eq 'Captive' -and ($t.Problem -ne 'Captive' -or -not $autoLoginTried) -and $t2.Vault -and -not $t2.Paused -and $script:Cfg.AutoPortalLogin) {
+                            $autoLoginTried = $true
+                            [void](Invoke-WithLock -WaitMs 2000 -Block {
+                                if (Invoke-HeadlessPortalLogin (Get-InternetState -NoCache)) { Save-State }
+                            })
+                            $t2 = Get-Telemetry
+                        }
+                    }
+                    if ($null -ne $script:LiveGwRtt) { $t2.GwRtt = $script:LiveGwRtt }
+                    if ((Get-Sig $t2) -ne (Get-Sig $t)) { $t = $t2; $adv = Get-Advice $t; $draw = $true; break }
+                    $t = $t2
+                }
+                Start-Sleep -Milliseconds 15
+            }
+            if ($draw -and $null -eq $key) { continue }
+            if ($null -eq $key) { continue }
+            $ch = ([string]$key.KeyChar).ToLowerInvariant()
+            if ($key.Key -eq 'Enter') { $ch = [string]$adv.Key }
+            if ($key.Key -eq 'Spacebar' -or $key.KeyChar -eq ' ' -or $key.Key -eq 'F5') { $ch = '' }
+            if ($key.Key -eq 'Escape') { $ch = '' }
+            if ($ch -eq 'q') { break }
+            Clear-InputBuffer
+            if (-not $ch) {
+                $script:ConnCache = $null
+                $t = Get-Telemetry
+                if ($null -ne $script:LiveGwRtt) { $t.GwRtt = $script:LiveGwRtt }
+                $adv = Get-Advice $t
+                $lastTel = Get-Date
+                $draw = $true
+                continue
+            }
+            $script:InDashboard = $false
+            $handled = Invoke-DashboardKey $ch $adv
+            Clear-InputBuffer
+            if ($handled) {
+                Clear-Screen
+                $script:LiveGwRtt = $null
+                $t = Get-Telemetry; $adv = Get-Advice $t; $lastTel = Get-Date; $draw = $true
+            } else {
+                $script:InDashboard = $true
+            }
+        }
+    } finally {
+        $script:InDashboard = $false
+        try {
+            $intFile = Join-Path $script:StoreDir 'interactive.json'
+            if (Test-Path -LiteralPath $intFile) {
+                $meta = ConvertFrom-Json (Get-Content -LiteralPath $intFile -Raw -ErrorAction SilentlyContinue)
+                if ($meta -and $meta.Pid -eq $PID) { Remove-Item -LiteralPath $intFile -Force -ErrorAction SilentlyContinue }
+            }
+        } catch {}
+        try { if ($script:Pulse.Ping) { $script:Pulse.Ping.Dispose(); $script:Pulse.Ping = $null; $script:Pulse.Task = $null } } catch {}
+        try { [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = [System.Diagnostics.ProcessPriorityClass]::Normal } catch {}
+        Exit-Screen
+    }
+}
+$script:IsAdmin = Test-IsAdmin
+$adminModes = @('Interactive', 'Heal', 'AutoHeal', 'Omnifix', 'FullNetReset', 'UltraReset', 'DoomsdayReset', 'Doomsday', 'FlushCache', 'InstallWatchdog', 'UninstallWatchdog', 'InstallShield', 'UninstallShield', 'ResetFactory', 'SetDnsProfile', 'SetRouteProfile', 'Daemon')
+if ($Mode -eq 'Interactive') {
+    $intFile = Join-Path $script:Cfg.StoreDir 'interactive.json'
+    if (Test-Path -LiteralPath $intFile) {
+        try {
+            $existing = ConvertFrom-Json (Get-Content -LiteralPath $intFile -Raw -ErrorAction SilentlyContinue)
+            if ($existing -and $existing.Pid -and ($existing.Pid -ne $PID)) {
+                $p = Get-Process -Id ([int]$existing.Pid) -ErrorAction SilentlyContinue
+                if ($p -and ($p.ProcessName -match 'powershell|cmd|LanFixer')) {
+                    if ($Force) {
+                        try { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } catch {}
+                        Remove-Item -LiteralPath $intFile -Force -ErrorAction SilentlyContinue
+                    } else {
+                        try {
+                            $ws = New-Object -ComObject WScript.Shell
+                            [void]$ws.AppActivate($p.Id)
+                        } catch {}
+                        Write-Host ''
+                        Write-Host '  ========================================================================' -ForegroundColor Cyan
+                        Write-Host ("  Lan Fixer is already running in another window (PID {0})." -f $p.Id) -ForegroundColor Yellow
+                        Write-Host '  Switched focus to the active window.' -ForegroundColor Gray
+                        Write-Host '  (Use -Force or close the existing window to replace it)' -ForegroundColor DarkGray
+                        Write-Host '  ========================================================================' -ForegroundColor Cyan
+                        Write-Host ''
+                        Start-Sleep -Seconds 2
+                        exit 0
+                    }
+                } else {
+                    Remove-Item -LiteralPath $intFile -Force -ErrorAction SilentlyContinue
+                }
+            }
+        } catch {}
+    }
+}
+if (-not $script:IsAdmin -and -not $script:IsDry -and ($adminModes -contains $Mode)) {
+    $elevated = $false
+    if (-not $LfElevated -and $script:SelfPath) {
+        try {
+            $parts = @('-LfElevated')
+            foreach ($kv in $PSBoundParameters.GetEnumerator()) {
+                if ($kv.Key -eq 'LfElevated') { continue }
+                if ($kv.Value -is [System.Management.Automation.SwitchParameter]) { if ($kv.Value.IsPresent) { $parts += ('-' + $kv.Key) } }
                 else { $parts += ('-' + $kv.Key); $parts += [string]$kv.Value }
             }
             Start-Process -FilePath $script:SelfPath -ArgumentList ($parts -join ' ') -Verb RunAs -ErrorAction Stop
@@ -17,8 +479,10 @@ try {
     switch ($Mode) {
         'AutoHeal' { [void](Invoke-AutoHeal) }
         'Omnifix'      { Invoke-SupremeOmnifix }
-        'FullNetReset' { Invoke-UltraSystemReset }
-        'UltraReset'   { Invoke-UltraSystemReset }
+        'FullNetReset'  { Invoke-UltraSystemReset }
+        'UltraReset'    { Invoke-UltraSystemReset }
+        'DoomsdayReset' { Invoke-DoomsdayReset }
+        'Doomsday'      { Invoke-DoomsdayReset }
         'SetRouteProfile' { Set-RouteProfileMode $RouteProfile }
         'Heal' {
             $sw = [System.Diagnostics.Stopwatch]::StartNew()

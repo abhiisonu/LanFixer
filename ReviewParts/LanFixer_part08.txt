@@ -1,3 +1,44 @@
+            # WinHTTP proxy and autoproxy (WPAD) complete reset
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('winhttp', 'reset', 'proxy') 5000)
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('winhttp', 'reset', 'autoproxy') 5000)
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('winhttp', 'reset', 'tracing') 5000)
+
+            # Purge hung background BITS jobs holding TCP sockets open
+            try {
+                Get-BitsTransfer -AllUsers -ErrorAction SilentlyContinue | Remove-BitsTransfer -Confirm:$false -ErrorAction SilentlyContinue
+            } catch {}
+        }
+        # WinINet proxy sanitization across machine and user hives
+        Shield-Proxies
+        # Remove campus NRPT, legacy hosts entries, and static campus routes
+        Remove-CampusNrpt
+        Remove-LegacyHostsEntries
+        Remove-CampusHostRoutes
+        # Aggressively neutralize rogue WFP DNS interceptors
+        Shield-SystemStack -Aggressive
+
+        # ----------------------------------------------------------------------
+        # STAGE 6/10: NCSI CALIBRATION, KERBEROS PURGE & SMB SESSION SWEEP
+        # ----------------------------------------------------------------------
+        Write-Log 'STEP' 'STAGE 6/10  Calibrating NCSI active probes, purging Kerberos tickets & clearing SMB sessions'
+        if ($script:IsDry) {
+            Write-Log 'DRY' 'Would calibrate NCSI active probing parameters in registry to Microsoft defaults'
+            Write-Log 'DRY' 'Would execute: klist purge & net use * /delete /y'
+            Write-Log 'DRY' 'Would purge orphaned unmanaged NLM network signatures'
+        } else {
+            # Calibrate NCSI active web and DNS probing parameters to Microsoft standard endpoints
+            try {
+                $ncsiKey = 'HKLM:\SYSTEM\CurrentControlSet\Services\NlaSvc\Parameters\Internet'
+                if (Test-Path -LiteralPath $ncsiKey) {
+                    Set-ItemProperty -LiteralPath $ncsiKey -Name 'EnableActiveProbing' -Value 1 -Type DWord -ErrorAction SilentlyContinue
+                    Set-ItemProperty -LiteralPath $ncsiKey -Name 'ActiveWebProbeHost' -Value 'www.msftconnecttest.com' -ErrorAction SilentlyContinue
+                    Set-ItemProperty -LiteralPath $ncsiKey -Name 'ActiveWebProbePath' -Value 'connecttest.txt' -ErrorAction SilentlyContinue
+                    Set-ItemProperty -LiteralPath $ncsiKey -Name 'ActiveWebProbeContent' -Value 'Microsoft Connect Test' -ErrorAction SilentlyContinue
+                    Set-ItemProperty -LiteralPath $ncsiKey -Name 'ActiveDnsProbeHost' -Value 'dns.msftncsi.com' -ErrorAction SilentlyContinue
+                    Set-ItemProperty -LiteralPath $ncsiKey -Name 'ActiveDnsProbeContent' -Value '131.107.0.89' -ErrorAction SilentlyContinue
+                }
+            } catch {}
+
             # Purge Kerberos ticket cache to clear expired campus realm authentication tickets
             [void](Invoke-Native (Get-SysExe 'klist.exe') @('purge') 5000)
 
@@ -189,6 +230,419 @@
         }
     }
 }
+# ==============================================================================
+# DOOMSDAY SYSTEM RESET - THE SUPREME UNIVERSAL NETWORK RESCUE WEAPON
+# ==============================================================================
+function Invoke-DoomsdayReset {
+    if (-not (Assert-Admin)) { return }
+    $swDoom = [System.Diagnostics.Stopwatch]::StartNew()
+    Write-Section 'DOOMSDAY SYSTEM RESET (12-STAGE UNIVERSAL STACK ERADICATION)'
+    $r = Pick-Hash (Invoke-WithLock {
+        # ----------------------------------------------------------------------
+        # STAGE 1/12: PRE-FLIGHT ACID GLOBAL SNAPSHOT & 12-SERVICE TOPOLOGICAL TEARDOWN
+        # ----------------------------------------------------------------------
+        Write-Log 'STEP' 'STAGE 1/12 Snapshotting global state & suspending 12 dependent network services'
+        $script:ConnCache = $null
+        $script:EnvCache = @{}
+        if ($script:IsDry) {
+            Write-Log 'DRY' 'Would capture pre-flight snapshots across all network adapters'
+            Write-Log 'DRY' 'Would stop: BITS, WwanSvc, bthserv, netprofm, NlaSvc, Dnscache, Dhcp, iphlpsvc, dot3svc, WlanSvc, CryptSvc, mpssvc'
+        } else {
+            foreach ($a in @(Get-NetAdapter -ErrorAction SilentlyContinue)) {
+                try { [void](Capture-PreflightSnapshot $a) } catch {}
+            }
+            $script:State.Misc['RouteProfile'] = 'Adaptive'
+            $script:State.Misc['DnsProfile'] = 'Adaptive'
+            $script:State.Misc['FailStreak'] = 0
+            $script:State.Misc.Remove('MtuCandidate')
+            $script:State.Misc.Remove('DiscoveredDomain')
+            $script:State.Misc.Remove('DiscoveredPortalIp')
+            $script:State.Misc.Remove('DiscoveredPortalUrl')
+
+            # Reverse topological teardown of all 12 core networking services
+            $downSvcs = @('BITS', 'WwanSvc', 'bthserv', 'netprofm', 'NlaSvc', 'Dnscache', 'Dhcp', 'iphlpsvc', 'dot3svc', 'WlanSvc', 'CryptSvc', 'mpssvc')
+            foreach ($s in $downSvcs) {
+                try { Stop-Service -Name $s -Force -ErrorAction SilentlyContinue } catch {}
+            }
+        }
+
+        # ----------------------------------------------------------------------
+        # STAGE 2/12: UNIVERSAL ADAPTER CYCLE (LAN, WI-FI, USB, BT, WWAN) & WLAN AUTOCONFIG
+        # ----------------------------------------------------------------------
+        Write-Log 'STEP' 'STAGE 2/12 Universal adapter transceiver cycle & re-enabling WLAN AutoConfig'
+        if ($script:IsDry) {
+            Write-Log 'DRY' 'Would cycle all physical adapters: Ethernet, Wi-Fi, USB Tethering, Bluetooth & Cellular'
+            Write-Log 'DRY' 'Would execute: netsh wlan set autoconfig enabled=yes interface=*'
+        } else {
+            # Re-enable Wi-Fi AutoConfig
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('wlan', 'set', 'autoconfig', 'enabled=yes', 'interface=*') 5000)
+
+            # Cycle all physical network adapters
+            $allPhys = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object {
+                ($_.HardwareInterface -or $_.ConnectorPresent) -and
+                $_.InterfaceDescription -notmatch 'Virtual|Hyper-V|WSL|Tailscale|ZeroTier|WireGuard|TAP|Loopback'
+            })
+            foreach ($ad in $allPhys) {
+                try {
+                    Restart-NetAdapter -Name $ad.Name -Confirm:$false -ErrorAction SilentlyContinue
+                } catch {}
+                # Re-bind core NDIS protocols
+                foreach ($comp in @('ms_tcpip', 'ms_tcpip6', 'ms_rspndr', 'ms_lltdio', 'ms_msclient', 'ms_server', 'ms_pacer')) {
+                    try { Enable-NetAdapterBinding -Name $ad.Name -ComponentID $comp -ErrorAction SilentlyContinue } catch {}
+                }
+            }
+        }
+
+        # ----------------------------------------------------------------------
+        # STAGE 3/12: DUAL-ARCHITECTURE WINSOCK CATALOG OBLITERATION (64-BIT & 32-BIT)
+        # ----------------------------------------------------------------------
+        Write-Log 'STEP' 'STAGE 3/12 Dual-architecture Winsock LSP/NSP catalog wipe (64-bit System32 & 32-bit SysWOW64)'
+        if ($script:IsDry) {
+            Write-Log 'DRY' 'Would execute 64-bit and 32-bit: netsh winsock reset catalog & netsh winsock reset'
+            Write-Log 'DRY' 'Would reset Winsock AutodialFlags to 0 in registry'
+        } else {
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('winsock', 'reset', 'catalog') 8000)
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('winsock', 'reset') 5000)
+            $wowNetsh = Join-Path $env:SystemRoot 'SysWOW64\netsh.exe'
+            if (Test-Path -LiteralPath $wowNetsh) {
+                [void](Invoke-Native $wowNetsh @('winsock', 'reset', 'catalog') 8000)
+                [void](Invoke-Native $wowNetsh @('winsock', 'reset') 5000)
+            }
+            try {
+                $ws2Key = 'HKLM:\SYSTEM\CurrentControlSet\Services\WinSock2\Parameters'
+                if (Test-Path -LiteralPath $ws2Key) {
+                    Set-ItemProperty -LiteralPath $ws2Key -Name 'AutodialFlags' -Value 0 -Type DWord -ErrorAction SilentlyContinue
+                }
+            } catch {}
+        }
+
+        # ----------------------------------------------------------------------
+        # STAGE 4/12: DUAL-STACK TCP/IP STACK REBUILD, HEURISTICS & TUNNEL DEFEAT
+        # ----------------------------------------------------------------------
+        Write-Log 'STEP' 'STAGE 4/12 Dual-stack TCP/IP stack restoration, global heuristics reset & HTTP flush'
+        if ($script:IsDry) {
+            Write-Log 'DRY' 'Would execute: netsh int ip reset & netsh int ipv6 reset'
+            Write-Log 'DRY' 'Would execute: netsh int tcp reset & normalize autotuning/RSS/RSC/timestamps'
+            Write-Log 'DRY' 'Would disable transition tunnels: Teredo, ISATAP, 6to4'
+        } else {
+            $ipLog = Join-Path $env:TEMP ('netsh_ip_reset_' + [Guid]::NewGuid().ToString('N').Substring(0,8) + '.log')
+            $ipv6Log = Join-Path $env:TEMP ('netsh_ipv6_reset_' + [Guid]::NewGuid().ToString('N').Substring(0,8) + '.log')
+            try {
+                [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'ip', 'reset', $ipLog) 10000)
+            } finally {
+                if (Test-Path -LiteralPath $ipLog) { Remove-Item -LiteralPath $ipLog -Force -ErrorAction SilentlyContinue }
+            }
+            try {
+                [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'ipv6', 'reset', $ipv6Log) 10000)
+            } finally {
+                if (Test-Path -LiteralPath $ipv6Log) { Remove-Item -LiteralPath $ipv6Log -Force -ErrorAction SilentlyContinue }
+            }
+
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'tcp', 'reset') 5000)
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'tcp', 'set', 'heuristics', 'disabled') 5000)
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'tcp', 'set', 'global', 'autotuninglevel=normal') 5000)
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'tcp', 'set', 'global', 'rss=enabled') 5000)
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'tcp', 'set', 'global', 'rsc=enabled') 5000)
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'tcp', 'set', 'global', 'ecncapability=disabled') 5000)
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'tcp', 'set', 'global', 'timestamps=disabled') 5000)
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'tcp', 'set', 'global', 'initialrto=3000') 5000)
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'tcp', 'set', 'global', 'nonsackrttresiliency=disabled') 5000)
+
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'teredo', 'set', 'state', 'disabled') 5000)
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'isatap', 'set', 'state', 'disabled') 5000)
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', '6to4', 'set', 'state', 'disabled') 5000)
+
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('http', 'flush', 'logbuffer') 5000)
+        }
+
+        # ----------------------------------------------------------------------
+        # STAGE 5/12: ROUTING TABLE PURGE, PORTPROXY RESET & ROGUE BRIDGE DESTRUCTION
+        # ----------------------------------------------------------------------
+        Write-Log 'STEP' 'STAGE 5/12 Purging routing table (route -f), portproxy, destination caches & rogue bridges'
+        if ($script:IsDry) {
+            Write-Log 'DRY' 'Would execute: route -f (purge all routes and gateways)'
+            Write-Log 'DRY' 'Would delete IPv4 & IPv6 destination caches'
+            Write-Log 'DRY' 'Would execute: netsh interface portproxy reset & netsh interface httpstunnel reset'
+            Write-Log 'DRY' 'Would destroy accidental network bridges via netsh bridge'
+            Write-Log 'DRY' 'Would execute: netsh advfirewall reset & enable all profiles'
+        } else {
+            [void](Invoke-Native (Get-SysExe 'route.exe') @('-f') 5000)
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'ip', 'delete', 'destinationcache') 5000)
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'ipv6', 'delete', 'destinationcache') 5000)
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('interface', 'portproxy', 'reset') 5000)
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('interface', 'httpstunnel', 'reset') 5000)
+
+            try {
+                $brOut = Invoke-Native (Get-SysExe 'netsh.exe') @('bridge', 'list') 5000
+                if ($brOut.Output -match '([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})') {
+                    foreach ($brMatch in [regex]::Matches($brOut.Output, '([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})')) {
+                        $brGuid = $brMatch.Groups[1].Value
+                        Write-Log 'WARN' "Destroying orphaned network bridge $brGuid..."
+                        [void](Invoke-Native (Get-SysExe 'netsh.exe') @('bridge', 'destroy', $brGuid) 5000)
+                    }
+                }
+            } catch {}
+
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('advfirewall', 'reset') 8000)
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('advfirewall', 'set', 'allprofiles', 'state', 'on') 5000)
+        }
+
+        # ----------------------------------------------------------------------
+        # STAGE 6/12: ENCRYPTED DNS (DOH/DOT/DDR) WIPE, WPAD AUTOPROXY & BITS JOB PURGE
+        # ----------------------------------------------------------------------
+        Write-Log 'STEP' 'STAGE 6/12 Resetting encrypted DNS across ALL interfaces, WPAD autoproxy & BITS jobs'
+        if ($script:IsDry) {
+            Write-Log 'DRY' 'Would execute: netsh dnsclient delete global all'
+            Write-Log 'DRY' 'Would reset per-interface encrypted DNS across ALL adapters'
+            Write-Log 'DRY' 'Would reset WinHTTP proxy/autoproxy/tracing'
+            Write-Log 'DRY' 'Would cancel all active BITS transfers'
+        } else {
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('dnsclient', 'delete', 'global', 'all') 5000)
+            foreach ($ad in @(Get-NetAdapter -ErrorAction SilentlyContinue)) {
+                try {
+                    [void](Invoke-Native (Get-SysExe 'netsh.exe') @('dnsclient', 'delete', 'interface', "name=$($ad.Name)", 'setting=all') 5000)
+                } catch {}
+            }
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('winhttp', 'reset', 'proxy') 5000)
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('winhttp', 'reset', 'autoproxy') 5000)
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('winhttp', 'reset', 'tracing') 5000)
+            try {
+                Get-BitsTransfer -AllUsers -ErrorAction SilentlyContinue | Remove-BitsTransfer -Confirm:$false -ErrorAction SilentlyContinue
+            } catch {}
+        }
+
+        # ----------------------------------------------------------------------
+        # STAGE 7/12: UNIVERSAL PROXY & DEAD VPN KILLSWITCH ANNIHILATION
+        # ----------------------------------------------------------------------
+        Write-Log 'STEP' 'STAGE 7/12 Obliterating system-wide proxies & dead VPN killswitch traps across all hives'
+        if ($script:IsDry) {
+            Write-Log 'DRY' 'Would purge ProxyEnable, ProxyServer, AutoConfigURL across HKCU, HKLM, and HKU'
+            Write-Log 'DRY' 'Would clear process, user, and system proxy environment variables'
+        } else {
+            Shield-Proxies
+            try {
+                $hkuProfiles = @(Get-ChildItem -LiteralPath 'Registry::HKEY_USERS' -ErrorAction SilentlyContinue | Where-Object { $_.PSChildName -notmatch '_Classes$' })
+                foreach ($hp in $hkuProfiles) {
+                    $isPath = "Registry::HKEY_USERS\$($hp.PSChildName)\Software\Microsoft\Windows\CurrentVersion\Internet Settings"
+                    if (Test-Path -LiteralPath $isPath) {
+                        try {
+                            Set-ItemProperty -LiteralPath $isPath -Name 'ProxyEnable' -Value 0 -Type DWord -ErrorAction SilentlyContinue
+                            Set-ItemProperty -LiteralPath $isPath -Name 'ProxyServer' -Value '' -ErrorAction SilentlyContinue
+                            Set-ItemProperty -LiteralPath $isPath -Name 'AutoConfigURL' -Value '' -ErrorAction SilentlyContinue
+                        } catch {}
+                    }
+                }
+            } catch {}
+            foreach ($vName in @('HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy')) {
+                [System.Environment]::SetEnvironmentVariable($vName, $null, [System.EnvironmentVariableTarget]::Process)
+                try { [System.Environment]::SetEnvironmentVariable($vName, $null, [System.EnvironmentVariableTarget]::User) } catch {}
+                try { [System.Environment]::SetEnvironmentVariable($vName, $null, [System.EnvironmentVariableTarget]::Machine) } catch {}
+            }
+        }
+
+        # ----------------------------------------------------------------------
+        # STAGE 8/12: HOSTS FILE SANITIZATION, NRPT WIPE & WFP FILTER DEFEAT
+        # ----------------------------------------------------------------------
+        Write-Log 'STEP' 'STAGE 8/12 Sanitizing hosts file, removing NRPT rules & neutralizing rogue WFP filters'
+        Remove-LegacyHostsEntries
+        Remove-CampusNrpt
+        Remove-CampusHostRoutes
+        Shield-SystemStack -Aggressive
+
+        # ----------------------------------------------------------------------
+        # STAGE 9/12: NCSI CALIBRATION, KERBEROS TICKET & SMB SESSION PURGE
+        # ----------------------------------------------------------------------
+        Write-Log 'STEP' 'STAGE 9/12 Calibrating NCSI active probes, purging Kerberos tickets & clearing SMB sessions'
+        if ($script:IsDry) {
+            Write-Log 'DRY' 'Would calibrate NCSI active probing parameters in registry'
+            Write-Log 'DRY' 'Would execute: klist purge & net use * /delete /y'
+            Write-Log 'DRY' 'Would purge unmanaged NLM signatures'
+        } else {
+            try {
+                $ncsiKey = 'HKLM:\SYSTEM\CurrentControlSet\Services\NlaSvc\Parameters\Internet'
+                if (Test-Path -LiteralPath $ncsiKey) {
+                    Set-ItemProperty -LiteralPath $ncsiKey -Name 'EnableActiveProbing' -Value 1 -Type DWord -ErrorAction SilentlyContinue
+                    Set-ItemProperty -LiteralPath $ncsiKey -Name 'ActiveWebProbeHost' -Value 'www.msftconnecttest.com' -ErrorAction SilentlyContinue
+                    Set-ItemProperty -LiteralPath $ncsiKey -Name 'ActiveWebProbePath' -Value 'connecttest.txt' -ErrorAction SilentlyContinue
+                    Set-ItemProperty -LiteralPath $ncsiKey -Name 'ActiveWebProbeContent' -Value 'Microsoft Connect Test' -ErrorAction SilentlyContinue
+                    Set-ItemProperty -LiteralPath $ncsiKey -Name 'ActiveDnsProbeHost' -Value 'dns.msftncsi.com' -ErrorAction SilentlyContinue
+                    Set-ItemProperty -LiteralPath $ncsiKey -Name 'ActiveDnsProbeContent' -Value '131.107.0.89' -ErrorAction SilentlyContinue
+                }
+            } catch {}
+
+            [void](Invoke-Native (Get-SysExe 'klist.exe') @('purge') 5000)
+            [void](Invoke-Native (Get-SysExe 'net.exe') @('use', '*', '/delete', '/y') 5000)
+
+            try {
+                $nlmSigKey = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\NetworkList\Signatures\Unmanaged'
+                if (Test-Path -LiteralPath $nlmSigKey) {
+                    Get-ChildItem -LiteralPath $nlmSigKey -ErrorAction SilentlyContinue | ForEach-Object {
+                        try { Remove-Item -LiteralPath $_.PSPath -Recurse -Force -ErrorAction SilentlyContinue } catch {}
+                    }
+                }
+            } catch {}
+        }
+
+        # ----------------------------------------------------------------------
+        # STAGE 10/12: LOW-LEVEL ARP/NDP EVICTION, NETBIOS RELEASE & DNS RESOLVER FLUSH
+        # ----------------------------------------------------------------------
+        Write-Log 'STEP' 'STAGE 10/12 Purging ARP/NDP/NetBIOS caches & flushing DNS resolver across all interfaces'
+        if ($script:IsDry) {
+            Write-Log 'DRY' 'Would execute: netsh interface ip delete arpcache, arp -d *, and delete neighbors'
+            Write-Log 'DRY' 'Would execute: nbtstat -R & nbtstat -RR'
+            Write-Log 'DRY' 'Would execute: ipconfig /flushdns, Clear-DnsClientCache, and clear suffix search list'
+        } else {
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('interface', 'ip', 'delete', 'arpcache') 5000)
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'ip', 'delete', 'neighbors') 5000)
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'ipv6', 'delete', 'neighbors') 5000)
+            [void](Invoke-Native (Get-SysExe 'arp.exe') @('-d', '*') 5000)
+            Get-NetNeighbor -AddressFamily IPv4 -ErrorAction SilentlyContinue | Remove-NetNeighbor -Confirm:$false -ErrorAction SilentlyContinue
+            Get-NetNeighbor -AddressFamily IPv6 -ErrorAction SilentlyContinue | Remove-NetNeighbor -Confirm:$false -ErrorAction SilentlyContinue
+
+            [void](Invoke-Native (Get-SysExe 'nbtstat.exe') @('-R') 5000)
+            [void](Invoke-Native (Get-SysExe 'nbtstat.exe') @('-RR') 5000)
+
+            Clear-DnsClientCache -ErrorAction SilentlyContinue
+            [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/flushdns') 5000)
+            try { Set-DnsClientGlobalSetting -SuffixSearchList @() -ErrorAction SilentlyContinue } catch {}
+        }
+
+        # ----------------------------------------------------------------------
+        # STAGE 11/12: UNIVERSAL DHCP RE-ENABLEMENT, MTU 1500, BROADCAST FLAG & LEASE ZEROING
+        # ----------------------------------------------------------------------
+        Write-Log 'STEP' 'STAGE 11/12 Enforcing DHCP, MTU 1500, RFC 2131 broadcast flag & lease zeroing on ALL media'
+        Shield-Aspm
+        Set-UsbSuspendOff
+        $allAdapters = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object {
+            $_.InterfaceDescription -notmatch 'Virtual|Hyper-V|WSL|Tailscale|ZeroTier|WireGuard|TAP|Loopback'
+        })
+        foreach ($ad in $allAdapters) {
+            if ($script:IsDry) {
+                Write-Log 'DRY' "Would zero DHCP lease, set broadcast flag, MTU 1500, and automatic metric on $($ad.Name)"
+            } else {
+                Release-ArpLocks $ad
+                try { Shield-Hardware $ad } catch {}
+                try { Shield-TcpOffloads $ad } catch {}
+
+                # Zero out cached DHCP lease keys in registry
+                $guid = [string]$ad.InterfaceGuid
+                if ($guid) {
+                    $ifKey = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$guid"
+                    if (Test-Path -LiteralPath $ifKey) {
+                        try {
+                            Set-ItemProperty -LiteralPath $ifKey -Name 'DhcpIPAddress' -Value '0.0.0.0' -ErrorAction SilentlyContinue
+                            Set-ItemProperty -LiteralPath $ifKey -Name 'DhcpDefaultGateway' -Value @() -ErrorAction SilentlyContinue
+                            Set-ItemProperty -LiteralPath $ifKey -Name 'DhcpServer' -Value '255.255.255.255' -ErrorAction SilentlyContinue
+                            Set-ItemProperty -LiteralPath $ifKey -Name 'DhcpSubnetMask' -Value '0.0.0.0' -ErrorAction SilentlyContinue
+                            Set-ItemProperty -LiteralPath $ifKey -Name 'DhcpNameServer' -Value '' -ErrorAction SilentlyContinue
+                            Set-ItemProperty -LiteralPath $ifKey -Name 'DhcpConnForceBroadcastFlag' -Value 1 -Type DWord -ErrorAction SilentlyContinue
+                        } catch {}
+                    }
+                }
+
+                # Enforce DHCP, MTU 1500, and automatic metric
+                try {
+                    Set-NetIPInterface -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -Dhcp Enabled -NlMtuBytes 1500 -AutomaticMetric Enabled -ErrorAction SilentlyContinue
+                    Set-NetIPInterface -InterfaceIndex $ad.ifIndex -AddressFamily IPv6 -Dhcp Enabled -ErrorAction SilentlyContinue
+                    Set-DnsClientServerAddress -InterfaceIndex $ad.ifIndex -ResetServerAddresses -ErrorAction SilentlyContinue
+                } catch {}
+
+                # Defeat energy-saving traps on the PHY
+                try {
+                    Set-NetAdapterAdvancedProperty -Name $ad.Name -RegistryKeyword '*EEE' -RegistryValue 0 -ErrorAction SilentlyContinue
+                    Set-NetAdapterAdvancedProperty -Name $ad.Name -RegistryKeyword '*EnergyEfficientEthernet' -RegistryValue 0 -ErrorAction SilentlyContinue
+                    Set-NetAdapterAdvancedProperty -Name $ad.Name -RegistryKeyword '*GreenEthernet' -RegistryValue 0 -ErrorAction SilentlyContinue
+                } catch {}
+            }
+        }
+        if (-not $script:IsDry) {
+            [void](Invoke-Native (Get-SysExe 'pnputil.exe') @('/scan-devices') 5000)
+        }
+        Restore-InterfaceMetrics 'Doomsday System Reset metrics restore'
+
+        # ----------------------------------------------------------------------
+        # STAGE 12/12: TOPOLOGICAL 12-SERVICE RESUSCITATION, 802.1X RECONNECT & DUAL VERIFY
+        # ----------------------------------------------------------------------
+        Write-Log 'STEP' 'STAGE 12/12 Resuscitating 12 core networking services, 802.1X, running DHCP & verifying reachability'
+        if ($script:IsDry) {
+            Write-Log 'DRY' 'Would start services in topological order: BFE -> mpssvc -> CryptSvc -> WlanSvc -> dot3svc -> bthserv -> WwanSvc -> Dhcp -> Dnscache -> iphlpsvc -> NlaSvc -> netprofm -> BITS'
+            Write-Log 'DRY' 'Would execute: netsh lan reconnect'
+            Write-Log 'DRY' 'Would execute: ipconfig /release *, /renew *, /registerdns'
+            Write-Log 'DRY' 'Would await STP convergence and execute 7-layer heal pipeline'
+        } else {
+            $upSvcs = @('BFE', 'mpssvc', 'CryptSvc', 'WlanSvc', 'dot3svc', 'bthserv', 'WwanSvc', 'Dhcp', 'Dnscache', 'iphlpsvc', 'NlaSvc', 'netprofm', 'BITS')
+            foreach ($s in $upSvcs) {
+                try { Start-Service -Name $s -ErrorAction SilentlyContinue } catch {}
+            }
+            Start-Sleep -Milliseconds 1500
+
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('lan', 'reconnect') 5000)
+
+            [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/release') 8000)
+            [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/release6') 8000)
+            Start-Sleep -Milliseconds 1000
+            [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/renew') 15000)
+            [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/renew6') 15000)
+            [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/registerdns') 5000)
+        }
+
+        foreach ($ea in @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })) {
+            [void](Wait-StpConvergence $ea 15)
+        }
+
+        # 7-Layer Ethernet & Multi-Homed Heal Pipeline
+        $resHeal = Pick-Hash (Invoke-HealPipeline -SkipSystemStack)
+        $anyVerifyFail = $false
+        $upAdapters = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' })
+        $primarySrc = ''
+        foreach ($ua in $upAdapters) {
+            $candidateIp = Get-ValidIPv4 $ua
+            if ($candidateIp) { $primarySrc = $candidateIp; break }
+        }
+
+        foreach ($testHost in @('github.com', 'accounts.google.com')) {
+            $ip = Resolve-HostBounded $testHost 3000 $primarySrc
+            if ($ip) {
+                $tcpOk = Test-TcpPort $ip 443 2500 $primarySrc
+                Write-Log ($(if ($tcpOk) { 'OK' } else { 'WARN' })) ("Verified {0} -> {1} (TCP/443: {2})" -f $testHost, $ip, $(if ($tcpOk) { 'OPEN' } else { 'BLOCKED' }))
+            } else {
+                $anyVerifyFail = $true
+                Write-Log 'FAIL' ("DNS resolution still failed for {0}" -f $testHost)
+            }
+        }
+        if ($anyVerifyFail -and -not $script:IsDry -and ($resHeal.Conn -ne 'Captive')) {
+            Write-Log 'WARN' 'DNS resolution failed for public endpoints. Deploying adaptive public DNS rescue...'
+            foreach ($ad in @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' })) {
+                $rescueDns = @(Get-BestDnsOrder ([string]$ad.InterfaceGuid) @())
+                if ($rescueDns.Count -gt 0) {
+                    Write-Log 'INFO' "Applying active public DNS rescue on $($ad.Name): $($rescueDns -join ', ')..."
+                    [void](Set-AdapterDns $ad $rescueDns)
+                }
+            }
+            Clear-DnsClientCache -ErrorAction SilentlyContinue
+            [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/flushdns') 5000)
+            foreach ($testHost in @('github.com', 'accounts.google.com')) {
+                $ip = Resolve-HostBounded $testHost 3000 $primarySrc
+                if ($ip) {
+                    $tcpOk = Test-TcpPort $ip 443 2500 $primarySrc
+                    Write-Log ($(if ($tcpOk) { 'OK' } else { 'WARN' })) ("Re-verified {0} -> {1} (TCP/443: {2})" -f $testHost, $ip, $(if ($tcpOk) { 'OPEN' } else { 'BLOCKED' }))
+                }
+            }
+        }
+        Save-State
+        $resHeal
+    })
+    $swDoom.Stop()
+    Write-HealSummary $r $swDoom
+    if ($r -and $r.Conn -eq 'Captive' -and -not $script:IsDry) {
+        [void](Invoke-WithLock { [void](Open-Portal); Save-State })
+        if ($script:UiOn -and (Get-InternetState -NoCache).State -eq 'Captive') {
+            Out-Line @((Seg 'dim' '  Sign in on the page that opened; the fast DNS path is applied for you afterwards.'))
+            if (Wait-ForAuthentication 180) { Complete-Authentication; Write-Log 'OK' 'Signed in. Post-login DNS applied.' }
+        }
+    }
+}
+
 function Shield-Services($Ctxs, [string]$ConnState) {
     if ((@($Ctxs | Where-Object { $_.Env.Env -eq 'Campus' })).Count -eq 0 -and (@($Ctxs | Where-Object { $_.Env.Env -eq 'Other' })).Count -gt 0) {
         Restore-NeutralizedInterceptors 'Non-campus Ethernet network'
@@ -344,457 +798,3 @@ function Invoke-HealPipeline([switch]$SkipSystemStack) {
         Save-State
         return $res
     }
-    $res.AnyUp = $true
-    if ($script:State.Misc -and $script:State.Misc['LinkDownSince']) { $script:State.Misc.Remove('LinkDownSince') }
-    $ctxs = @()
-    foreach ($a in $ups) { $ctxs += @{ Ad = $a; Env = (Get-AdapterEnvironment $a); Repaired = $false } }
-    foreach ($c in $ctxs) {
-        Write-Log 'INFO' ("{0}: {1} (score {2}{3}) {4}" -f $c.Ad.Name, $c.Env.Env.ToUpper(), $c.Env.Score, $(if ($c.Env.Sticky) { ', last known' } else { '' }), (($c.Env.Evidence) -join '; '))
-    }
-
-    Write-Log 'STEP' 'LAYER 2/7  Data link & DHCP lease renewal'
-    foreach ($c in $ctxs) { [void](Shield-Dot3Svc $c.Ad); Shield-DataLink $c }
-    $conn = (Get-InternetState -NoCache).State
-
-    Write-Log 'STEP' 'LAYER 3/7  Gateway ARP integrity & route metrics'
-    foreach ($c in $ctxs) { Shield-GatewayArp $c $conn; Shield-RouteMetrics $c $conn; Shield-PathMtu $c $conn; Shield-DefaultRoutes $c }
-
-    Write-Log 'STEP' 'LAYER 4/7  Adaptive DNS configuration & resolver health'
-    foreach ($c in $ctxs) { [void](Shield-TcpOffloads $c.Ad); Shield-Dns $c $conn }
-
-    $connAfterDns = (Get-InternetState -NoCache).State
-    if ($connAfterDns -eq 'Online' -and $conn -ne 'Online') {
-        $conn = 'Online'
-        foreach ($c in $ctxs) { Shield-RouteMetrics $c $conn; Shield-PathMtu $c $conn }
-    }
-
-    Write-Log 'STEP' 'LAYER 5/7  Captive portal routing & reachability'
-    Shield-Portal $ctxs
-
-    Write-Log 'STEP' 'LAYER 6/7  Network profile & firewall security'
-    foreach ($c in $ctxs) { Shield-Profile $c }
-
-    Write-Log 'STEP' 'LAYER 7/7  Network stack & service synchronization'
-    Shield-Services $ctxs $conn
-
-    foreach ($c in $ctxs) {
-        $h = Get-SubTable 'Env' ([string]$c.Ad.InterfaceGuid)
-        $h.Up = $true
-        $h.Ip = [string](Get-ValidIPv4 $c.Ad)
-        if ($c.Env.Env -eq 'Campus') { $res.Campus = $true }
-    }
-    if (-not $script:IsDry) { Set-StateTime 'LastFull'; $script:State.Misc['Version'] = $script:Version; Save-State }
-    $res.Conn = (Get-InternetState -NoCache).State
-    $res.Ip = if ($ups.Count -gt 0) { [string](Get-ValidIPv4 $ups[0]) } else { '' }
-    $res.Problem = (Get-AdapterHealth $ups[0]).Problem
-    if (Clear-FailStreakIfRecovered ([string]$res.Problem)) { Save-State }
-    return $res
-}
-
-# ==============================================================================
-# PORTAL OPENING / LOGIN WATCH
-# ==============================================================================
-function Test-TrustedPortalHost([string]$HostName) {
-    $h = ([string]$HostName).ToLower().TrimEnd('.')
-    if (-not $h) { return $false }
-    if ($h -eq ([string]$script:Cfg.PortalHost).ToLower() -or $h -eq [string]$script:Cfg.PortalIp) { return $true }
-    $tmpIp = $null
-    if ([System.Net.IPAddress]::TryParse($h, [ref]$tmpIp) -and (Test-AllowedPortalIp $h)) { return $true }
-    $doms = @(([string]$script:Cfg.CampusDomain).ToLower().Trim('.'))
-    $discDom = ([string]$script:State.Misc['DiscoveredDomain']).ToLower().Trim('.')
-    if ($discDom -and $doms -notcontains $discDom) { $doms += $discDom }
-    foreach ($dom in @($doms | Where-Object { $_ })) {
-        if ($h -eq $dom -or $h.EndsWith('.' + $dom)) { return $true }
-    }
-    return $false
-}
-# Returns the redirect URL only if it is an absolute http(s) URL on a campus-controlled host (no user-info tricks).
-# Anything else comes back empty: a rogue device on the LAN must not be able to steer your browser with a fake 302.
-function Get-SafePortalUrl([string]$Location) {
-    if (-not $Location) { return '' }
-    $u = $null
-    try { $u = [uri]$Location } catch { return '' }
-    if (-not $u.IsAbsoluteUri) { return '' }
-    if ($u.Scheme -ne 'http' -and $u.Scheme -ne 'https') { return '' }
-    if ($u.UserInfo) { return '' }
-    if (-not (Test-TrustedPortalHost $u.Host)) { return '' }
-    return [string]$u.AbsoluteUri
-}
-# Dynamic first (survives a changed port / zone / path), configured anchor otherwise (already logged in, probe dropped, untrusted host).
-function Resolve-PortalUrl($Inet) {
-    $anchor = Get-ActivePortalUrl
-    if ($Inet.State -ne 'Captive' -or -not $Inet.Location) { return $anchor }
-    $live = Get-SafePortalUrl ([string]$Inet.Location)
-    if ($live) {
-        if ($live -ne $anchor) { try { Write-Log 'INFO' ('Using the login page the network just redirected to: ' + ([uri]$live).GetLeftPart([System.UriPartial]::Path)) } catch {} }
-        return $live
-    }
-    $rh = ''
-    try { $rh = ([uri][string]$Inet.Location).Host } catch {}
-    Write-Log 'WARN' ("The captive redirect points to '{0}', which is not on the campus domain or the configured portal, so it was NOT opened automatically. Opening the configured portal instead." -f $rh)
-    return $anchor
-}
-# ==============================================================================
-# DPAPI SECURE CREDENTIAL VAULT (Machine + Hardware Entropy, AES/DPAPI)
-# ==============================================================================
-$script:VaultFile = Join-Path $script:StoreDir 'vault.bin'
-
-# CREDENTIAL trust: stricter than Test-TrustedPortalHost on purpose. The DNS suffix a network's own DHCP hands out is
-# attacker-controlled on a rogue LAN, so it must never decide where the saved password goes. Only the configured
-# PortalHost / PortalIp / CampusDomain qualify (set them in config.json for another institution), or an IP literal,
-# which Invoke-TlsHttp still only talks to with a Windows-valid or user-pinned certificate.
-function Test-CredentialPortalHost([string]$HostName) {
-    $h = ([string]$HostName).ToLowerInvariant().TrimEnd('.')
-    if (-not $h) { return $false }
-    if ($script:Cfg.PortalHost -and $h -eq ([string]$script:Cfg.PortalHost).ToLowerInvariant().TrimEnd('.')) { return $true }
-    if ($script:Cfg.PortalIp -and $h -eq [string]$script:Cfg.PortalIp) { return $true }
-    $tmpIp = $null
-    if ([System.Net.IPAddress]::TryParse($h, [ref]$tmpIp)) { return [bool](Test-AllowedPortalIp $h) }
-    $dom = ([string]$script:Cfg.CampusDomain).ToLowerInvariant().Trim('.')
-    return [bool]($dom -and ($h -eq $dom -or $h.EndsWith('.' + $dom)))
-}
-function Get-CredentialPortalUrl([string]$Location) {
-    if (-not $Location) { return '' }
-    $u = $null
-    try { $u = [uri]$Location } catch { return '' }
-    if (-not $u.IsAbsoluteUri) { return '' }
-    if ($u.Scheme -ne 'http' -and $u.Scheme -ne 'https') { return '' }
-    if ($u.UserInfo) { return '' }
-    if (-not (Test-CredentialPortalHost $u.Host)) { return '' }
-    return [string]$u.AbsoluteUri
-}
-function Get-VaultEntropy {
-    $guid = ''
-    try { $guid = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Cryptography' -Name MachineGuid -ErrorAction SilentlyContinue).MachineGuid } catch {}
-    if (-not $guid) {
-        try { $guid = (Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue).SerialNumber } catch {}
-    }
-    return [System.Text.Encoding]::UTF8.GetBytes("LanFixer_NITJSR_AS_SecureEntropy_2026_$guid")
-}
-
-function Save-PortalCredentials([string]$User, [string]$Pass) {
-    if (-not $User -or -not $Pass) { return $false }
-    if ($User -match '[\t\r\n]') { Write-Log 'FAIL' 'The username cannot contain tabs or line breaks.'; return $false }
-    $tmp = $script:VaultFile + '.new'
-    $moved = $false
-    try {
-        $bytes = [System.Text.Encoding]::UTF8.GetBytes($User + [string][char]9 + $Pass)
-        $enc = [System.Security.Cryptography.ProtectedData]::Protect($bytes, (Get-VaultEntropy), [System.Security.Cryptography.DataProtectionScope]::LocalMachine)
-        [Array]::Clear($bytes, 0, $bytes.Length)
-        # Lock an EMPTY file first, write second: the secret never exists under a looser ACL.
-        [System.IO.File]::WriteAllBytes($tmp, [byte[]]@())
-        if (-not (Protect-VaultFile $tmp) -or -not (Test-VaultAcl $tmp)) { throw 'could not restrict the vault file to Administrators/SYSTEM' }
-        [System.IO.File]::WriteAllBytes($tmp, $enc)
-        Move-Item -LiteralPath $tmp -Destination $script:VaultFile -Force -ErrorAction Stop
-        $moved = $true
-        if (-not (Test-VaultAcl $script:VaultFile)) { throw 'vault permissions did not survive the move' }
-        $script:State.Misc['PortalFails'] = 0; $script:State.Misc['PortalAmbiguous'] = 0
-        $script:State.Misc['PortalLoginSuspended'] = $false
-        return $true
-    } catch {
-        Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
-        if ($moved) {
-            Remove-Item -LiteralPath $script:VaultFile -Force -ErrorAction SilentlyContinue   # fail closed: never leave a half-protected secret
-        }
-        Write-Log 'FAIL' ('Credentials were NOT saved: ' + $_.Exception.Message)
-        return $false
-    }
-}
-function Get-PortalCredentials {
-    if (-not (Test-Path -LiteralPath $script:VaultFile)) { return $null }
-    if (-not (Test-VaultAcl $script:VaultFile)) {
-        if (Protect-VaultFile $script:VaultFile) { Write-Log 'WARN' 'The vault file had loose permissions; they were tightened to Administrators/SYSTEM only.' }
-        else { Write-Log 'ALERT' 'The vault file permissions could not be tightened: auto-login is disabled until that is fixed.'; return $null }
-    }
-    try {
-        $enc = [System.IO.File]::ReadAllBytes($script:VaultFile)
-        $bytes = $null
-        try { $bytes = [System.Security.Cryptography.ProtectedData]::Unprotect($enc, (Get-VaultEntropy), [System.Security.Cryptography.DataProtectionScope]::LocalMachine) } catch {}
-        if ($bytes) {
-            $plain = [System.Text.Encoding]::UTF8.GetString($bytes)
-            [Array]::Clear($bytes, 0, $bytes.Length)
-            return (ConvertFrom-VaultPlain $plain)
-        } else {
-            Write-Log 'WARN' 'The vault file exists on disk but could not be decrypted via DPAPI (machine key or entropy mismatch).'
-        }
-    } catch {}
-    return $null
-}
-function Remove-PortalCredentials {
-    foreach ($f in @($script:VaultFile, ($script:VaultFile + '.new'))) { if (Test-Path -LiteralPath $f) { Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue } }
-    $script:State.Misc['PortalFails'] = 0; $script:State.Misc['PortalAmbiguous'] = 0
-    $script:State.Misc['PortalLoginSuspended'] = $false
-}
-# Zero-touch login. Every guard below exists because a rogue device on a hostel LAN can answer for the portal.
-function Invoke-HeadlessPortalLogin {
-    param($Inet, [switch]$Manual, [int]$Attempt = 1)
-    if ($script:IsDry) { return $false }
-    if (-not $script:Cfg.AutoPortalLogin -and -not $Manual) { return $false }
-    $creds = Get-PortalCredentials
-    if (-not $creds) { if ($Manual) { Write-Log 'INFO' 'No credentials are saved yet.' }; return $false }
-    if (-not $Manual) {
-        if ($script:State.Misc['PortalLoginSuspended'] -eq $true) { Write-Log 'INFO' 'Auto-login is paused because the portal rejected the saved password. Re-save it in the vault to resume.'; return $false }
-        if (-not (Test-Elapsed 'LastPortalLogin' 45)) { return $false }
-    }
-    Ensure-CampusPortalPath
-    if ($null -eq $Inet) { $Inet = Get-InternetState -NoCache }
-    if ($Manual -and $Inet.State -eq 'NoDns' -and $script:IsAdmin) {
-        foreach ($a in @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })) {
-            $e = Get-AdapterEnvironment $a -UseCache
-            if ($e.Env -eq 'Campus' -and (Get-DnsProfileName) -eq 'Adaptive') { Shield-Dns @{ Ad = $a; Env = $e } 'Captive' }
-        }
-        $Inet = Get-InternetState -NoCache
-    }
-    if ($Manual -and $Inet.State -eq 'Offline' -and (Test-PortalOnlineSmart $script:Cfg.PortalIp ([int]$script:Cfg.PortalPort))) {
-        $Inet = @{ State = 'Captive'; Location = $script:Cfg.PortalUrl; Via = 'link' }
-    }
-    if ($Inet.State -ne 'Captive') { if ($Manual) { Write-Log 'INFO' 'This link is not behind the login page right now; nothing to do.' }; return $false }
-    if ($Inet.Location -and -not (Get-CredentialPortalUrl ([string]$Inet.Location))) {
-        if (Get-SafePortalUrl ([string]$Inet.Location)) { Write-Log 'INFO' 'This network login page is not the configured campus portal, so the saved password was NOT sent. Sign in in the browser (or set the portal up in config.json to allow auto sign-in here).' }
-        else { Write-Log 'ALERT' 'The login redirect does not point to the campus portal: password NOT sent. Treat this network with suspicion.' }
-        return $false
-    }
-    $url = Resolve-PortalUrl $Inet
-    $uri = $null
-    try { $uri = [uri]$url } catch { return $false }
-    if ($uri.Scheme -ne 'https') { Write-Log 'WARN' 'The portal is not served over HTTPS, so the password is not sent automatically. Use the browser login.'; return $false }
-    if (-not (Test-CredentialPortalHost $uri.Host)) { Write-Log 'ALERT' ("Portal host '{0}' is not on the campus domain: password NOT sent." -f $uri.Host); return $false }
-    # The URI is validated now: route exactly THIS destination over the campus cable, even if Wi-Fi holds metric 15.
-    Ensure-CampusPortalPath $uri
-    [void](Invoke-WithLock { Set-StateTime 'LastPortalLogin'; Save-State })   # the throttle must survive a crash mid-sign-in
-    $src = ''; if ($script:Cfg.ProbeSourceBind) { $src = Get-PrimarySourceIp }
-    $pin = [string]$script:State.Misc['PortalPin']
-    $jar = @{}
-    $cur = $uri
-    $page = $null
-    for ($hop = 0; $hop -lt 4; $hop++) {
-        $page = Invoke-TlsHttp -Uri $cur -SourceIp $src -Pin $pin -Jar $jar
-        if ($page.Error) { break }
-        if ($page.Code -ge 300 -and $page.Code -le 399 -and $page.Location) {
-            $next = $null
-            try { $next = New-Object System.Uri($cur, $page.Location) } catch { $page = @{ Error = 'BadRedirect' }; break }
-            if ($next.Scheme -ne 'https' -or -not (Test-CredentialPortalHost $next.Host)) { $page = @{ Error = 'UntrustedRedirect' }; break }
-            $cur = $next
-            continue
-        }
-        break
-    }
-    if ($page.Error -eq 'TlsRejected') {
-        if ($Manual) {
-            $ci = Get-PortalCertInfo $cur
-            if ($ci.Ok -and $ci.Sha256) {
-                Write-Log 'WARN' ("Portal certificate changed or unapproved (Fingerprint: {0})." -f (Format-Fingerprint $ci.Sha256))
-                if (Read-Confirm ("Approve updated certificate for {0}?" -f $cur.Host)) {
-                    $newPin = [string]$ci.Sha256
-                    # GUARD 1: pinning the very certificate that was just rejected cannot change the outcome; retrying
-                    # would prompt forever (and recurse until the interpreter overflows its call depth).
-                    if ($newPin -eq $pin) {
-                        Write-Log 'ALERT' 'The portal rejected a certificate whose fingerprint already matches the approved one. Not retrying: check the host name and the certificate chain before trusting this network.'
-                        return $false
-                    }
-                    # GUARD 2: a portal that keeps rotating certificates must not be able to drive an endless retry loop.
-                    if ($Attempt -ge 3) {
-                        Write-Log 'ALERT' 'The portal certificate changed again during sign-in. Stopped after 3 attempts so the password is not sent to a certificate that keeps changing.'
-                        return $false
-                    }
-                    [void](Invoke-WithLock { $script:State.Misc['PortalPin'] = $newPin; Save-State })
-                    Write-Log 'OK' 'Certificate approved! Retrying sign-in...'
-                    return (Invoke-HeadlessPortalLogin $Inet -Manual -Attempt ($Attempt + 1))
-                }
-            }
-        }
-        if ($pin) { Write-Log 'ALERT' 'The portal certificate CHANGED since you approved it: password NOT sent. If IT renewed it, re-approve it in the vault menu; if not, this network may be hostile.' }
-        else { Write-Log 'WARN' 'Windows does not trust the portal certificate and none is approved yet: password NOT sent. Review and approve it once in the vault menu.' }
-        return $false
-    }
-    if ($page.Error -eq 'UntrustedRedirect') { Write-Log 'ALERT' 'The portal tried to send you to another site: password NOT sent.'; return $false }
-    if ($page.Error) { Write-Log 'INFO' ('Could not reach the portal page (' + $page.Error + ').'); return $false }
-    $form = ConvertFrom-LoginForm ([string]$page.Body) $cur
-    if (-not $form) { Write-Log 'WARN' 'No login form was found on the portal page (the page layout may have changed).'; return $false }
-    $act = $form.Action
-    if ($act.Scheme -ne 'https' -or -not (Test-CredentialPortalHost $act.Host)) {
-        Write-Log 'ALERT' ("The login form posts to '{0}', which is not the campus portal: password NOT sent." -f $act.Host)
-        return $false
-    }
-    $f = [ordered]@{}
-    foreach ($k in $form.Fields.Keys) { $f[$k] = $form.Fields[$k] }
-    $f[$form.UserField] = $creds.User
-    $f[$form.PassField] = $creds.Pass
-    if (-not $f.Contains('accept') -and $f.Contains('zone')) { $f['accept'] = 'Sign In' }
-    $payload = (@($f.Keys | ForEach-Object { ('{0}={1}' -f [uri]::EscapeDataString([string]$_), [uri]::EscapeDataString([string]$f[$_])) }) -join '&')
-    $f[$form.PassField] = $null; $creds.Pass = $null
-    $post = Invoke-TlsHttp -Uri $act -Method 'POST' -Body $payload -SourceIp $src -Pin $pin -Jar $jar
-    $payload = $null
-    Clear-DnsClientCache -ErrorAction SilentlyContinue
-    $online = $false
-    for ($i = 0; $i -lt 6; $i++) {
-        Start-Sleep -Milliseconds 1000
-        if ((Get-InternetState -NoCache).State -eq 'Online') { $online = $true; break }
-    }
-    if ($online) {
-        # ONE transaction for the evidence that the login worked: the counters must be on disk before the (separately
-        # locked) post-login routing/DNS pass runs, or a watchdog save in between would resurrect "rejected" state.
-        [void](Invoke-WithLock {
-            $script:State.Misc['PortalFails'] = 0; $script:State.Misc['PortalAmbiguous'] = 0
-            $script:State.Misc['PortalLoginSuspended'] = $false
-            Save-State
-        })
-        Write-Log 'OK' 'Signed in to the campus portal automatically.'
-        Complete-Authentication
-        Invoke-RecoveryToast ([string]$src)
-        return $true
-    }
-    $isBadAuth = $false
-    if ($post.Code -eq 401 -or $post.Code -eq 403) { $isBadAuth = $true }
-    elseif ($post.Body -match '(?i)invalid\s+(credential|password|user|login)|incorrect\s+(password|user)|authentication\s+fail|login\s+fail|access\s+denied|wrong\s+(password|user)') { $isBadAuth = $true }
-    elseif ($post.Location -match '(?i)error|fail|invalid|denied') { $isBadAuth = $true }
-    elseif ($post.Body -match '(?i)<input\b[^>]*type\s*=\s*[\x22\x27]?password') { $isBadAuth = $true }   # the login form came back: rejected, whatever the wording or language
-    if ($isBadAuth) {
-        $n = [int]$script:State.Misc['PortalFails'] + 1
-        [void](Invoke-WithLock {
-            $script:State.Misc['PortalFails'] = $n
-            if ($n -ge 2) { $script:State.Misc['PortalLoginSuspended'] = $true }
-            Save-State
-        })
-        if ($n -ge 2) { Write-Log 'ALERT' 'The portal rejected the saved password twice. Auto-login is paused so your account does not get locked: re-save the password in the vault.' }
-        else { Write-Log 'WARN' 'The portal did not accept the login (wrong password, or the session limit was reached).' }
-    } elseif ($post.Code -gt 0) {
-        # answered without an error and without the login form, yet still no internet: allow ONE more try, then pause
-        $a2 = [int]$script:State.Misc['PortalAmbiguous'] + 1
-        [void](Invoke-WithLock {
-            $script:State.Misc['PortalAmbiguous'] = $a2
-            if ($a2 -ge 2) { $script:State.Misc['PortalLoginSuspended'] = $true }
-            Save-State
-        })
-        if ($a2 -ge 2) { Write-Log 'ALERT' 'The portal answered twice but never gave access. Auto-login is paused so your account does not get locked: check the saved login in the vault.' }
-        else { Write-Log 'INFO' 'The portal answered without an error but internet is not up yet; one more attempt is allowed.' }
-    } else {
-        Write-Log 'INFO' ('The login request did not complete (' + $post.Error + '); not counted as a wrong password.')
-    }
-    return $false
-}
-function Open-Portal {
-    param([switch]$Force)
-    $inet = Get-InternetState -NoCache
-    $st = $inet.State
-    $url = Resolve-PortalUrl $inet
-    if (-not $Force -and $st -eq 'Online') { Write-Log 'OK' 'Internet is already authenticated; no login needed.'; return $false }
-    if (-not $Force -and (Invoke-HeadlessPortalLogin $inet)) { return $true }
-    if (Test-IsSystem) {
-        $u = $null
-        try { $u = (Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).UserName } catch {}
-        if (-not $u) { Write-Log 'INFO' 'Nobody is signed in; portal not opened.'; return $false }
-        $known = [string]$script:State.Misc['PortalTaskUrl']
-        if (-not $known) { $known = [string]$script:Cfg.PortalUrl }
-        if ($url -ne $known) {
-            # The helper task opens a fixed URL: point it at the verified live one first.
-            $reg = Register-LfTask $script:Cfg.TaskPortal (New-PortalTaskXml $url) 'LanFixer_Portal.xml'
-            if ($reg -and -not $script:IsDry) { $script:State.Misc['PortalTaskUrl'] = $url }
-        }
-        $ok = Invoke-Change 'Asking the signed-in user session to open the campus login page' {
-            $r = Invoke-Native (Get-SysExe 'schtasks.exe') @('/run', '/tn', $script:Cfg.TaskPortal) 8000
-            if ($r.ExitCode -ne 0) { throw 'portal task missing (run Install Watchdog again)' }
-        }
-    } else {
-        $ok = Invoke-Change "Opening campus login page: $url" { Start-Process -FilePath (Join-Path $script:Sys32 'rundll32.exe') -ArgumentList ('url.dll,FileProtocolHandler "' + $url + '"') -ErrorAction Stop }
-    }
-    if ($ok -and -not $script:IsDry) { Set-StateTime 'LastPortal'; Save-State }
-    return $ok
-}
-function Complete-Authentication {
-    # Post-login reconfiguration (metrics + DNS + state) is ONE transaction. Save-State refuses to write without the
-    # cross-process mutex, so without this lock a call from an as-yet-unlocked path would silently persist nothing --
-    # and a concurrent SYSTEM watchdog pass would save its older copy over ours. Enter-Lock is reentrant, so a caller
-    # that already holds the lock simply nests instead of blocking.
-    [void](Invoke-WithLock {
-        Clear-DnsClientCache -ErrorAction SilentlyContinue
-        foreach ($a in @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })) {
-            $script:EnvCache.Remove([string]$a.InterfaceGuid)
-            $ctx = @{ Ad = $a; Env = (Get-AdapterEnvironment $a) }
-            $srcIp = Get-ValidIPv4 $a
-            $st = if ($srcIp) { (Get-InternetState -NoCache -SourceIp $srcIp).State } else { 'Offline' }
-            Shield-RouteMetrics $ctx $st
-            Shield-Dns $ctx $st
-        }
-        Clear-DnsClientCache -ErrorAction SilentlyContinue
-        if (-not $script:IsDry) { Save-State }
-    })
-}
-function Wait-ForAuthentication([int]$TimeoutSec = 180) {
-    $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    $i = 0
-    while ($sw.Elapsed.TotalSeconds -lt $TimeoutSec) {
-        if ((Get-InternetState -NoCache).State -eq 'Online') { Out-Line @(); return $true }
-        $t = Get-Date
-        while (((Get-Date) - $t).TotalSeconds -lt 3) {
-            $sp = $script:G.spin[$i % $script:G.spin.Count]; $i++
-            if ($script:Ui.Vt) { [Console]::Write("`r" + $script:Esc + '[2K') } else { Write-Host "`r" -NoNewline }
-            Out-Line @((Seg 'warn' ('    ' + $sp + ' ')), (Seg 'text' 'waiting for the campus login'), (Seg 'dim' ('  ' + $script:G.mid + '  {0} s left  ' -f [int]($TimeoutSec - $sw.Elapsed.TotalSeconds))), (Seg 'faint' 'any key stops')) -NoNewline
-            try { if (Test-KeyAvailable) { [void](Read-KeyNow); Out-Line @(); return $false } } catch {}
-            Start-Sleep -Milliseconds 120
-        }
-    }
-    Out-Line @()
-    return $false
-}
-function Invoke-AuthWatch {
-    $maxSec = if ($Mode -eq 'AutoHeal') { 60 } else { [int]$script:Cfg.AuthWatchSec }
-    $deadline = (Get-Date).AddSeconds($maxSec)
-    Write-Log 'INFO' 'Auth watch: waiting for portal login to switch DNS to the fast path.'
-    while ((Get-Date) -lt $deadline) {
-        Start-Sleep -Seconds 4
-        if (@(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' }).Count -eq 0) { Write-Log 'INFO' 'Auth watch: link dropped; cleaning up.'; if (Enter-Lock 10000) { try { Invoke-RoamingCleanup; Save-State } finally { Exit-Lock } }; return }
-        if ((Get-InternetState -NoCache).State -eq 'Online') {
-            if (Enter-Lock 15000) {
-                try { Complete-Authentication; Write-Log 'OK' 'Auth watch: login detected, DNS switched to post-login profile.' } finally { Exit-Lock }
-            }
-            return
-        }
-    }
-    Write-Log 'INFO' 'Auth watch: timed out without a login.'
-}
-
-# ==============================================================================
-# AUTONOMOUS RUN (called by the SYSTEM watchdog)
-# ==============================================================================
-function Test-HardFailure([string]$Problem) { return (@('NoIp', 'GwUnreachable', 'Offline', 'NoDns') -contains $Problem) }
-# A working connection ends the breaker no matter who repaired it (manual option 1, watchdog, or the cable just got better).
-function Clear-FailStreakIfRecovered([string]$Problem) {
-    if ($script:IsDry -or (Test-HardFailure $Problem)) { return $false }
-    if ([int]$script:State.Misc['FailStreak'] -eq 0) { return $false }
-    $script:State.Misc['FailStreak'] = 0
-    Write-Log 'INFO' 'Repair breaker reset: the connection works again.'
-    return $true
-}
-function Invoke-AutoHeal {
-    if (Test-InteractiveSessionActive) {
-        Write-Log 'INFO' 'AutoHeal pass skipped: interactive control center session is active.'
-        return 0
-    }
-    if (-not (Enter-Lock 3000)) { return 0 }
-    $curUpCount = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' }).Count
-    $prevUpCount = if ($null -ne $script:State.Misc['LastAutoHealUpCount']) { [int]$script:State.Misc['LastAutoHealUpCount'] } else { -1 }
-    if (($curUpCount -eq $prevUpCount) -and (-not (Test-Elapsed 'LastAutoHealRun' 20))) {
-        Write-Log 'INFO' 'AutoHeal pass debounced: a heal pass completed less than 20 seconds ago with identical link state.'
-        Exit-Lock
-        return 0
-    }
-    $script:State.Misc['LastAutoHealUpCount'] = $curUpCount
-    Set-StateTime 'LastAutoHealRun'; Save-State
-    $watch = $false
-    try {
-        $ups = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })
-        if ($ups.Count -eq 0) { Wait-LinkSettling 6000; $ups = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' }) }
-        if ($ups.Count -eq 0) {
-            foreach ($a in @(Get-EthernetAdapters)) { (Get-SubTable 'Env' ([string]$a.InterfaceGuid)).Up = $false }
-            Invoke-RoamingCleanup
-            Shield-SystemStack
-            Set-StateTime 'LastAutoHealRun'; Save-State
-            return 0
-        }
-        Shield-SystemStack
-        $primary = $ups[0]
-        $health = Get-AdapterHealth $primary
-        $needFull = ($script:State.Misc['Version'] -ne $script:Version) -or (Test-Elapsed 'LastFull' 7200)
-        $newConn = $false
-        $mismatch = $false

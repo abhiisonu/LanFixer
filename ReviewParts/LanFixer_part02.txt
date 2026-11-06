@@ -1,3 +1,6 @@
+            $memMisc = @{}
+            if ($script:State -is [hashtable] -and $script:State.Misc -is [hashtable]) {
+                foreach ($mk in @('LearnedDhcp','DiscoveredDomain','DiscoveredPortalUrl','DiscoveredPortalIp','DiscoveryTime','InjectedHostRoutes')) {
                     if ($script:State.Misc.ContainsKey($mk)) { $memMisc[$mk] = $script:State.Misc[$mk] }
                 }
             }
@@ -795,6 +798,3 @@ function Invoke-TlsHttp {
         if ($SourceIp) {
             try { $sock.Bind((New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Parse($SourceIp), 0))) } catch { $r.Error = 'BindFailure'; return $r }
         }
-        $iar = $sock.BeginConnect([System.Net.IPAddress]::Parse($ip), [int]$Uri.Port, $null, $null)
-        $connected = $iar.AsyncWaitHandle.WaitOne($TimeoutMs, $false)
-        if (-not $connected) {

@@ -1,3 +1,44 @@
+    $anyCampus = (@($Ctxs | Where-Object { $_.Env.Env -eq 'Campus' })).Count -gt 0
+    $anyOther  = (@($Ctxs | Where-Object { $_.Env.Env -eq 'Other' })).Count -gt 0
+    $cur = $null
+    try { $cur = (Get-ItemProperty -LiteralPath $script:LlmnrKey -Name EnableMulticast -ErrorAction Stop).EnableMulticast } catch {}
+    if ($anyCampus) {
+        if ($null -ne $cur -and [int]$cur -eq 0) { return }
+        Save-Original 'Global' 'Llmnr' $cur
+        $ok = Invoke-Change 'LLMNR off (blocks name-poisoning attacks on the shared hostel LAN)' {
+            if (-not (Test-Path -LiteralPath $script:LlmnrKey)) { New-Item -Path $script:LlmnrKey -Force -ErrorAction Stop | Out-Null }
+            New-ItemProperty -LiteralPath $script:LlmnrKey -Name EnableMulticast -Value 0 -PropertyType DWord -Force -ErrorAction Stop
+        }
+        if ($ok -and -not $script:IsDry) { $script:State.Misc['LlmnrManaged'] = $true }
+    } elseif ($anyOther) {
+        Restore-LlmnrIfManaged 'Non-campus network: LLMNR setting restored'
+    }
+}
+$script:Tcpip6Key = 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters'
+function Restore-Ipv6PrecedenceIfManaged([string]$Why) {
+    if ($script:State.Misc['Ipv4PrecedenceManaged'] -ne $true) { return }
+    $snap = Get-SubTable 'Snapshot' 'Global'
+    $orig = $null
+    if ($snap.ContainsKey('DisabledComponents')) { $orig = $snap['DisabledComponents'] }
+    $ok = Invoke-Change $Why {
+        if ($null -eq $orig) { Remove-ItemProperty -LiteralPath $script:Tcpip6Key -Name DisabledComponents -ErrorAction SilentlyContinue }
+        else { New-ItemProperty -LiteralPath $script:Tcpip6Key -Name DisabledComponents -Value ([int]$orig) -PropertyType DWord -Force -ErrorAction Stop | Out-Null }
+    }
+    if ($ok -and -not $script:IsDry) { $script:State.Misc['Ipv4PrecedenceManaged'] = $false }
+}
+function Shield-Ipv6Precedence($Ctxs, [string]$ConnState) {
+    if (-not $script:Cfg.PreferIpv4) { return }
+    $camp = @($Ctxs | Where-Object { $_.Env.Env -eq 'Campus' }) | Select-Object -First 1
+    $anyOther = (@($Ctxs | Where-Object { $_.Env.Env -eq 'Other' })).Count -gt 0
+    $cur = $null
+    try { $cur = (Get-ItemProperty -LiteralPath $script:Tcpip6Key -Name DisabledComponents -ErrorAction Stop).DisabledComponents } catch {}
+    if ($camp) {
+        if ($null -ne $cur -and (([int]$cur -band 32) -ne 0)) { return }
+        if ($ConnState -ne 'Online') { return }          # the evidence needs a working IPv4 path
+        $v6 = Get-Ipv6State $camp.Ad $ConnState
+        if ($v6.Verdict -ne 'Blackhole') { return }
+        Save-Original 'Global' 'DisabledComponents' $cur
+        $new = Get-PreferIpv4Value $cur
         $ok = Invoke-Change 'IPv4 preferred over IPv6 (IPv6 is advertised on this LAN but unreachable); applies after the next restart' {
             if (-not (Test-Path -LiteralPath $script:Tcpip6Key)) { New-Item -Path $script:Tcpip6Key -Force -ErrorAction Stop | Out-Null }
             New-ItemProperty -LiteralPath $script:Tcpip6Key -Name DisabledComponents -Value $new -PropertyType DWord -Force -ErrorAction Stop | Out-Null
@@ -756,45 +797,4 @@ function Invoke-UltraSystemReset {
                     [void](Invoke-Native (Get-SysExe 'netsh.exe') @('dnsclient', 'delete', 'interface', "name=$($ea.Name)", 'setting=all') 5000)
                 } catch {}
             }
-
-            # WinHTTP proxy and autoproxy (WPAD) complete reset
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('winhttp', 'reset', 'proxy') 5000)
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('winhttp', 'reset', 'autoproxy') 5000)
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('winhttp', 'reset', 'tracing') 5000)
-
-            # Purge hung background BITS jobs holding TCP sockets open
-            try {
-                Get-BitsTransfer -AllUsers -ErrorAction SilentlyContinue | Remove-BitsTransfer -Confirm:$false -ErrorAction SilentlyContinue
-            } catch {}
-        }
-        # WinINet proxy sanitization across machine and user hives
-        Shield-Proxies
-        # Remove campus NRPT, legacy hosts entries, and static campus routes
-        Remove-CampusNrpt
-        Remove-LegacyHostsEntries
-        Remove-CampusHostRoutes
-        # Aggressively neutralize rogue WFP DNS interceptors
-        Shield-SystemStack -Aggressive
-
-        # ----------------------------------------------------------------------
-        # STAGE 6/10: NCSI CALIBRATION, KERBEROS PURGE & SMB SESSION SWEEP
-        # ----------------------------------------------------------------------
-        Write-Log 'STEP' 'STAGE 6/10  Calibrating NCSI active probes, purging Kerberos tickets & clearing SMB sessions'
-        if ($script:IsDry) {
-            Write-Log 'DRY' 'Would calibrate NCSI active probing parameters in registry to Microsoft defaults'
-            Write-Log 'DRY' 'Would execute: klist purge & net use * /delete /y'
-            Write-Log 'DRY' 'Would purge orphaned unmanaged NLM network signatures'
-        } else {
-            # Calibrate NCSI active web and DNS probing parameters to Microsoft standard endpoints
-            try {
-                $ncsiKey = 'HKLM:\SYSTEM\CurrentControlSet\Services\NlaSvc\Parameters\Internet'
-                if (Test-Path -LiteralPath $ncsiKey) {
-                    Set-ItemProperty -LiteralPath $ncsiKey -Name 'EnableActiveProbing' -Value 1 -Type DWord -ErrorAction SilentlyContinue
-                    Set-ItemProperty -LiteralPath $ncsiKey -Name 'ActiveWebProbeHost' -Value 'www.msftconnecttest.com' -ErrorAction SilentlyContinue
-                    Set-ItemProperty -LiteralPath $ncsiKey -Name 'ActiveWebProbePath' -Value 'connecttest.txt' -ErrorAction SilentlyContinue
-                    Set-ItemProperty -LiteralPath $ncsiKey -Name 'ActiveWebProbeContent' -Value 'Microsoft Connect Test' -ErrorAction SilentlyContinue
-                    Set-ItemProperty -LiteralPath $ncsiKey -Name 'ActiveDnsProbeHost' -Value 'dns.msftncsi.com' -ErrorAction SilentlyContinue
-                    Set-ItemProperty -LiteralPath $ncsiKey -Name 'ActiveDnsProbeContent' -Value '131.107.0.89' -ErrorAction SilentlyContinue
-                }
-            } catch {}
 

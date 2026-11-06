@@ -1,3 +1,6 @@
+        $iar = $sock.BeginConnect([System.Net.IPAddress]::Parse($ip), [int]$Uri.Port, $null, $null)
+        $connected = $iar.AsyncWaitHandle.WaitOne($TimeoutMs, $false)
+        if (-not $connected) {
             try { $sock.Close() } catch {}
             $r.Error = 'ConnectTimeout'; return $r
         }
@@ -794,7 +797,4 @@ function Get-DashboardModel($t, $adv, [int]$Width = 0) {
         if ($t.UplinkActive -and $t.UplinkName) {
             $tag = if ($t.UplinkIsPrimary) { '(Standby)' } else { '(Primary)' }
             $right = ('Eth ' + $t.Speed + ' ' + $tag + ' ' + $script:G.mid + ' ' + $t.UplinkName)
-        }
-        if ($right.Length -gt $maxRightLen) {
-            $right = Fit $right $maxRightLen
         }

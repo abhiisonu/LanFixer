@@ -1,3 +1,44 @@
+    Remove-NetNeighbor -InterfaceIndex $Ad.ifIndex -IPAddress $Gw -Confirm:$false -ErrorAction SilentlyContinue
+    [void](Invoke-Native (Get-SysExe 'arp.exe') @('-d', $Gw) 5000)
+    $t = Get-SubTable 'Arp' ([string]$Ad.InterfaceGuid)
+    $t.Remove($Gw)
+}
+function Release-ArpLocks($Ad) {
+    $t = Get-SubTable 'Arp' ([string]$Ad.InterfaceGuid)
+    foreach ($gw in @($t.Keys)) {
+        [void](Invoke-Change "Gateway ARP lock released: $gw" { Remove-GatewayLock $Ad $gw })
+    }
+}
+function Shield-GatewayArp($Ctx, [string]$ConnState) {
+    if (-not $script:Cfg.ArpLock) { return }
+    $ad = $Ctx.Ad
+    if ($Ctx.Env.Env -eq 'Other') { Release-ArpLocks $ad; return }
+    if ($Ctx.Env.Env -ne 'Campus') { return }
+    if ($script:IsDry) { Write-Log 'DRY' 'Would verify gateway ARP stability (3 samples), compare it with the MAC seen before, and lock it if consistent.'; return }
+    foreach ($gw in @(Get-GatewaysV4 $ad)) {
+        $existing = Get-NetNeighbor -InterfaceIndex $ad.ifIndex -IPAddress $gw -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($existing -and $existing.State -eq 'Permanent') {
+            $gwTest = Test-GatewayAlive $ad $gw
+            $lockAlive = [bool]($gwTest.Alive)
+            if ($lockAlive) {
+                Write-Log 'INFO' "Gateway ARP lock for $gw verified ($(if ($ConnState -eq 'Online') { 'online' } else { 'gateway reachable; WAN offline' }))."
+                continue
+            }
+            Write-Log 'WARN' "Gateway $gw unreachable while ARP-locked: re-learning gateway $gw (the MAC may have changed)."
+            Remove-GatewayLock $ad $gw
+        }
+        $macs = @(Get-GatewayMacs $ad $gw 3)
+        if ($macs.Count -lt 3) { Write-Log 'INFO' "Gateway $gw did not answer ARP consistently; not locking."; continue }
+        if (@($macs | Select-Object -Unique).Count -ne 1) {
+            Write-Log 'ALERT' ("ARP SPOOFING SUSPECTED: gateway {0} answered from several MACs ({1}). Not locking; avoid sensitive logins on this LAN." -f $gw, (($macs | Select-Object -Unique) -join ', '))
+            continue
+        }
+        $mac = $macs[0]
+        $mem = Get-SubTable 'Arp' ([string]$ad.InterfaceGuid)
+        if ($script:State.Misc['ArpCand'] -isnot [hashtable]) { $script:State.Misc['ArpCand'] = @{} }
+        $dec = Get-ArpDecision ([string]$mem[$gw]) $mac $script:State.Misc['ArpCand'][$gw] (Get-Date)
+        if ($dec -eq 'candidate') {
+            $script:State.Misc['ArpCand'][$gw] = @{ Mac = $mac; Since = (Get-Date).ToString('o') }
             Write-Log 'ALERT' ("Gateway {0} now answers from {1}, but it used to answer from {2}. Not locking it. If IT did not replace the router, treat this network with suspicion." -f $gw, $mac, [string]$mem[$gw])
             continue
         }
@@ -757,44 +798,3 @@ function Restore-Llmnr($Orig) {
 # LLMNR (like NetBIOS) lets any host on the hostel LAN answer "who is X?" and harvest credentials. Off on campus.
 function Shield-Llmnr($Ctxs) {
     if (-not $script:Cfg.DisableLlmnr) { return }
-    $anyCampus = (@($Ctxs | Where-Object { $_.Env.Env -eq 'Campus' })).Count -gt 0
-    $anyOther  = (@($Ctxs | Where-Object { $_.Env.Env -eq 'Other' })).Count -gt 0
-    $cur = $null
-    try { $cur = (Get-ItemProperty -LiteralPath $script:LlmnrKey -Name EnableMulticast -ErrorAction Stop).EnableMulticast } catch {}
-    if ($anyCampus) {
-        if ($null -ne $cur -and [int]$cur -eq 0) { return }
-        Save-Original 'Global' 'Llmnr' $cur
-        $ok = Invoke-Change 'LLMNR off (blocks name-poisoning attacks on the shared hostel LAN)' {
-            if (-not (Test-Path -LiteralPath $script:LlmnrKey)) { New-Item -Path $script:LlmnrKey -Force -ErrorAction Stop | Out-Null }
-            New-ItemProperty -LiteralPath $script:LlmnrKey -Name EnableMulticast -Value 0 -PropertyType DWord -Force -ErrorAction Stop
-        }
-        if ($ok -and -not $script:IsDry) { $script:State.Misc['LlmnrManaged'] = $true }
-    } elseif ($anyOther) {
-        Restore-LlmnrIfManaged 'Non-campus network: LLMNR setting restored'
-    }
-}
-$script:Tcpip6Key = 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters'
-function Restore-Ipv6PrecedenceIfManaged([string]$Why) {
-    if ($script:State.Misc['Ipv4PrecedenceManaged'] -ne $true) { return }
-    $snap = Get-SubTable 'Snapshot' 'Global'
-    $orig = $null
-    if ($snap.ContainsKey('DisabledComponents')) { $orig = $snap['DisabledComponents'] }
-    $ok = Invoke-Change $Why {
-        if ($null -eq $orig) { Remove-ItemProperty -LiteralPath $script:Tcpip6Key -Name DisabledComponents -ErrorAction SilentlyContinue }
-        else { New-ItemProperty -LiteralPath $script:Tcpip6Key -Name DisabledComponents -Value ([int]$orig) -PropertyType DWord -Force -ErrorAction Stop | Out-Null }
-    }
-    if ($ok -and -not $script:IsDry) { $script:State.Misc['Ipv4PrecedenceManaged'] = $false }
-}
-function Shield-Ipv6Precedence($Ctxs, [string]$ConnState) {
-    if (-not $script:Cfg.PreferIpv4) { return }
-    $camp = @($Ctxs | Where-Object { $_.Env.Env -eq 'Campus' }) | Select-Object -First 1
-    $anyOther = (@($Ctxs | Where-Object { $_.Env.Env -eq 'Other' })).Count -gt 0
-    $cur = $null
-    try { $cur = (Get-ItemProperty -LiteralPath $script:Tcpip6Key -Name DisabledComponents -ErrorAction Stop).DisabledComponents } catch {}
-    if ($camp) {
-        if ($null -ne $cur -and (([int]$cur -band 32) -ne 0)) { return }
-        if ($ConnState -ne 'Online') { return }          # the evidence needs a working IPv4 path
-        $v6 = Get-Ipv6State $camp.Ad $ConnState
-        if ($v6.Verdict -ne 'Blackhole') { return }
-        Save-Original 'Global' 'DisabledComponents' $cur
-        $new = Get-PreferIpv4Value $cur

@@ -1,3 +1,6 @@
+        if ($right.Length -gt $maxRightLen) {
+            $right = Fit $right $maxRightLen
+        }
     }
     $hp = ($w + 2) - (Get-SegsLength $heroL) - $right.Length
     [void]$L.Add(@($heroL + (Seg 'text' (' ' * [Math]::Max(2, $hp))) + (Seg 'dim' $right)))
@@ -78,10 +81,11 @@
         [void]$L.Add(@((Seg 'text' ('  [R] Export Support Report'.PadRight($col1W + 2))), (Seg 'text' '[9] Factory Reset')))
         [void]$L.Add(@((Seg 'text' ('  [S] Run Self-Test Suite'.PadRight($col1W + 2))), (Seg 'text' '[B] Autonomous Daemon')))
         [void]$L.Add(@((Seg $(if ($adv.Key -eq 'x') { 'ok!' } else { 'accent!' }) ('  [X] Full Net Reset'.PadRight($col1W + 2))), (Seg 'warn!' '[U] Ultra System Reset')))
-        [void]$L.Add(@((Seg 'text' ('  [0] Guide'.PadRight($col1W + 2))), (Seg 'dim' '[Q] Quit')))
+        [void]$L.Add(@((Seg 'warn!' ('  [D] Doomsday Reset'.PadRight($col1W + 2))), (Seg 'dim' '[Q] Quit')))
+        [void]$L.Add(@((Seg 'text' ('  [0] Guide'.PadRight($col1W + 2))), (Seg 'dim' ' ')))
         if ($t.ArpPending) { [void]$L.Add(@((Seg 'warn!' ('  [K] Approve Gateway MAC Change'.PadRight($col1W + 2))), (Seg 'warn' 'Router MAC changed; review to lock ARP'))) }
     } else {
-        $legend = @(@('1', 'QuickHeal'), @('X', 'NetReset'), @('U', 'UltraReset'), @('2', 'Guard'), @('A', 'Vault'), @('7', 'Portal'), @('G', 'Login'), @('3', 'DNS'), @('M', 'Route'), @('4', 'Probe'), @('5', 'Flush'), @('6', 'Audit'), @('B', 'Daemon'), @('T', 'Test'), @('R', 'Report'), @('S', 'Verify'), @('8', 'Disarm'), @('9', 'Reset'), @('0', 'Guide'), @('Q', 'Quit'))
+        $legend = @(@('1', 'QuickHeal'), @('X', 'NetReset'), @('U', 'UltraReset'), @('D', 'Doomsday'), @('2', 'Guard'), @('A', 'Vault'), @('7', 'Portal'), @('G', 'Login'), @('3', 'DNS'), @('M', 'Route'), @('4', 'Probe'), @('5', 'Flush'), @('6', 'Audit'), @('B', 'Daemon'), @('T', 'Test'), @('R', 'Report'), @('S', 'Verify'), @('8', 'Disarm'), @('9', 'Reset'), @('0', 'Guide'), @('Q', 'Quit'))
         # A gateway-MAC review is transient, so [K] is advertised only while a candidate is really waiting. The leading
         # comma appends the pair as ONE legend cell; a bare "+=" would append two loose strings and corrupt the legend.
         if ($t.ArpPending) { $legend += , @('K', 'MAC') }
@@ -162,6 +166,7 @@ function Show-Advisory {
         # 4. Safety & Rollback
         @('Instant background sign-in with saved login', 'G', 'Headless Portal Sign-In'),
         @('Total network down / no internet anywhere',   'X', 'Full Network Reset'),
+        @('Total connectivity dead (Wi-Fi/LAN/USB/BT)','D', 'Doomsday System Reset'),
         @('Hyper-nuclear stack purge & driver/LSP rebuild','U', 'Ultra System Reset'),
         @('Preview repairs safely without changes',      'T', 'Dry-Run Simulation'),
         @('Verify system cmdlets & security integrity',  'S', 'Run Self-Test Suite'),
@@ -335,13 +340,22 @@ function Invoke-DashboardKey([string]$Key, $adv) {
                 if (-not (Assert-Admin)) { return }
                 Out-Line @((Seg 'warn' '  NOTICE: Choose your recovery tier:'))
                 Out-Wrapped 'faint' $script:G.mid 'text' '[1] Standard Full Net Reset (5-Stage: Transceiver, metrics, MTU 1500, 7-layer heal, caches)' 4
-                Out-Wrapped 'warn!' $script:G.mid 'warn!' '[2] ULTRA System Reset (HYPER-NUCLEAR ANTIMATTER WEAPON: Dual Winsock, TCP/IP, route -f, PortProxy, DoH wipe, NCSI calibrate, klist purge, DHCP broadcast flag, STP loop)' 4
+                Out-Wrapped 'warn'  $script:G.mid 'warn'  '[2] ULTRA System Reset (10-Stage Nuclear: Dual Winsock, TCP/IP, route -f, PortProxy, DoH, NCSI)' 4
+                Out-Wrapped 'warn!' $script:G.mid 'warn!' '[3] DOOMSDAY System Reset (12-Stage UNIVERSAL WEAPON: All Media - Wi-Fi, Ethernet, USB Tethering, Bluetooth, VPN killswitches)' 4
                 Out-Line @()
-                Out-Line @((Seg 'dim' '  Select tier [1] Standard, [2] or [U] ULTRA Nuclear, or press any other key to cancel '), (Seg 'accent!' $script:G.prompt)) -NoNewline
+                Out-Line @((Seg 'dim' '  Select tier [1] Standard, [2] ULTRA, [3] or [D] DOOMSDAY, or press any other key to cancel '), (Seg 'accent!' $script:G.prompt)) -NoNewline
                 $k = Read-Choice
                 Out-Line @()
                 $choice = ([string]$k.KeyChar).ToLowerInvariant()
-                if ($choice -eq '2' -or $choice -eq 'u') {
+                if ($choice -eq '3' -or $choice -eq 'd') {
+                    if (Read-Confirm 'Execute DOOMSDAY SYSTEM RESET (Ultimate Universal Weapon)?' 'no') {
+                        $script:ChangeCount = 0; $script:FailCount = 0
+                        Invoke-DoomsdayReset
+                        $script:WdCache = $null
+                    } else {
+                        Out-Line @((Seg 'dim' '  Operation cancelled. No changes made.'))
+                    }
+                } elseif ($choice -eq '2' -or $choice -eq 'u') {
                     if (Read-Confirm 'Execute ULTRA SYSTEM RESET (Hyper-Nuclear Antimatter Weapon)?' 'no') {
                         $script:ChangeCount = 0; $script:FailCount = 0
                         Invoke-UltraSystemReset
@@ -357,6 +371,33 @@ function Invoke-DashboardKey([string]$Key, $adv) {
                     } else {
                         Out-Line @((Seg 'dim' '  Operation cancelled. No changes made.'))
                     }
+                } else {
+                    Out-Line @((Seg 'dim' '  Operation cancelled. No changes made.'))
+                }
+            }
+        }
+        'd' {
+            Show-View 'doomsday system reset (ultimate universal weapon)' {
+                if (-not (Assert-Admin)) { return }
+                Out-Line @((Seg 'warn!' '  CRITICAL: DOOMSDAY SYSTEM RESET IS THE ULTIMATE UNIVERSAL NETWORK WEAPON:'))
+                Out-Wrapped 'faint' $script:G.mid 'text' 'Universal recovery when NO internet works by ANY way: Wi-Fi, Bluetooth, USB Tethering, LAN, Cellular' 4
+                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 1: Pre-flight ACID global snapshot & 12-service reverse topological teardown' 4
+                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 2: Universal physical adapter cycle (LAN, Wi-Fi, USB, BT, WWAN) & WLAN autoconfig reset' 4
+                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 3: Dual-architecture 64-bit System32 & 32-bit SysWOW64 Winsock catalog wipe & autodial purge' 4
+                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 4: Dual-stack TCP/IP stack restoration, global heuristics reset, tunnel defeat & HTTP flush' 4
+                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 5: Routing table purge (route -f), portproxy reset, IP-HTTPS, bridge destruction & firewall reset' 4
+                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 6: Encrypted DNS (DoH/DoT/DDR) wipe (global & per-interface), WPAD reset & BITS purge' 4
+                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 7: Universal proxy & dead VPN killswitch annihilation across all user and machine hives' 4
+                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 8: Hosts file sanitization, NRPT wipe & WFP filter defeat' 4
+                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 9: NCSI active probing calibration, Kerberos ticket purge, SMB sweep & NLM cleanup' 4
+                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 10: Low-level ARP/NDP eviction, NetBIOS release/refresh (nbtstat -R/-RR) & DNS resolver flush' 4
+                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 11: Universal DHCP re-enablement, MTU 1500, RFC 2131 broadcast flag & lease zeroing across ALL media' 4
+                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 12: Topological 12-service resuscitation, 802.1X reconnect, STP convergence & multi-adapter verification' 4
+                Out-Line @()
+                if (Read-Confirm 'Execute DOOMSDAY SYSTEM RESET (Ultimate Universal Weapon)?' 'no') {
+                    $script:ChangeCount = 0; $script:FailCount = 0
+                    Invoke-DoomsdayReset
+                    $script:WdCache = $null
                 } else {
                     Out-Line @((Seg 'dim' '  Operation cancelled. No changes made.'))
                 }
@@ -757,44 +798,3 @@ function Test-GatewayAlive($Ad, [string]$Gw) {
     $rtt = Test-Ping $Gw 700
     if ($null -ne $rtt) { return @{ Alive = $true; Rtt = $rtt; Via = 'icmp' } }
     $ex = Get-NetNeighbor -InterfaceIndex $Ad.ifIndex -IPAddress $Gw -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($ex -and [string]$ex.State -eq 'Permanent' -and $ex.LinkLayerAddress -and $ex.LinkLayerAddress -notmatch '^(00-)+00$') {
-        $homeAd = $true
-        try { $eh = Get-AdapterEnvironment $Ad -UseCache; if ($null -ne $eh.Home) { $homeAd = [bool]$eh.Home } } catch {}
-        $gwSrc = [string](Get-ValidIPv4 $Ad)
-        if ((Test-TcpPort $Gw 80 400 $gwSrc) -or (Test-TcpPort $Gw 443 400 $gwSrc) -or (Test-TcpPort $Gw 53 400 $gwSrc)) {
-            return @{ Alive = $true; Rtt = $null; Via = 'arp' }
-        }
-        $freshArp = @(Get-GatewayMacs $Ad $Gw 1)
-        if ($freshArp.Count -gt 0 -and $freshArp[0] -eq [string]$ex.LinkLayerAddress) {
-            return @{ Alive = $true; Rtt = $null; Via = 'arp' }
-        }
-        return @{ Alive = $false; Rtt = $null; Via = '' }
-    }
-    if ($script:IsAdmin -and -not $script:IsDry -and $ex -and [string]$ex.State -ne 'Permanent') {
-        Remove-NetNeighbor -InterfaceIndex $Ad.ifIndex -IPAddress $Gw -Confirm:$false -ErrorAction SilentlyContinue
-    }
-    [void](Test-Ping $Gw 700)
-    for ($i = 0; $i -lt 4; $i++) {
-        Start-Sleep -Milliseconds 100
-        $n = Get-NetNeighbor -InterfaceIndex $Ad.ifIndex -IPAddress $Gw -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-             Where-Object { $_.LinkLayerAddress -and $_.LinkLayerAddress -notmatch '^(00-)+00$' -and ([string]$_.State -eq 'Reachable' -or [string]$_.State -eq 'Permanent') } | Select-Object -First 1
-        if ($n) { return @{ Alive = $true; Rtt = $null; Via = 'arp' } }
-    }
-    return @{ Alive = $false; Rtt = $null; Via = '' }
-}
-# ==============================================================================
-# ADAPTERS / ENVIRONMENT / HEALTH
-# ==============================================================================
-function Rescue-DormantEthernetPnp {
-    if (-not $script:IsAdmin -or $script:IsDry) { return }
-    if (-not (Test-Elapsed 'PnpRescan' 300)) { return }
-    Set-StateTime 'PnpRescan'
-    try {
-        $nics = @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object {
-            $_.MediaType -eq '802.3' -and $_.InterfaceDescription -notmatch $script:VirtRegex })
-        if ($nics.Count -eq 0) {
-            [void](Invoke-Native (Get-SysExe 'pnputil.exe') @('/scan-devices') 5000)
-            return
-        }
-        $sick = @(Get-PnpDevice -Class Net -PresentOnly -ErrorAction SilentlyContinue | Where-Object {
-            $_.FriendlyName -match 'Ethernet|GbE|Gigabit|ASIX|Realtek|USB' -and
