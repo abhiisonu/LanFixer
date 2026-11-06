@@ -3350,6 +3350,10 @@ function Shield-Hardware($Ad) {
                 Set-ItemProperty -LiteralPath $enumKey -Name 'DeviceSelectiveSuspended' -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
                 Set-ItemProperty -LiteralPath $enumKey -Name 'IdleInWorkingState' -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
                 Set-ItemProperty -LiteralPath $enumKey -Name 'SelectiveSuspendEnabled' -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+                Set-ItemProperty -LiteralPath $enumKey -Name 'AutoPowerSave' -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+                Set-ItemProperty -LiteralPath $enumKey -Name 'IdlePowerSave' -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+                Set-ItemProperty -LiteralPath $enumKey -Name 'ReduceSpeedOnPowerDown' -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+                Set-ItemProperty -LiteralPath $enumKey -Name 'UltraLowPowerMode' -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
             }
         } catch {}
     }
@@ -3409,6 +3413,15 @@ function Repair-Dhcp($Ad, [switch]$ForceRelease) {
     [void](Invoke-Change "DHCP stack unfreeze and release/renew on $($Ad.Name)" {
         Restart-Service -Name Dhcp -Force -ErrorAction SilentlyContinue
         Start-Sleep -Milliseconds 800
+        if ($guid) {
+            try {
+                $ifKey = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$guid"
+                if (Test-Path -LiteralPath $ifKey) {
+                    Set-ItemProperty -LiteralPath $ifKey -Name 'DhcpIPAddress' -Value '0.0.0.0' -ErrorAction SilentlyContinue
+                    Set-ItemProperty -LiteralPath $ifKey -Name 'DhcpDefaultGateway' -Value @() -ErrorAction SilentlyContinue
+                }
+            } catch {}
+        }
         [void](Invoke-Native $ipconfig @('/release', $Ad.Name) 10000)
         $r = Invoke-Native $ipconfig @('/renew', $Ad.Name) 25000
         if ($r.TimedOut) { throw 'ipconfig /renew timed out' }
