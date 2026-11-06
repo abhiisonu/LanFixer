@@ -1,0 +1,800 @@
+            'wi-fi first'      { 'Wi-Fi First (15 vs 50)' }
+            'wi-fi standby'    { 'Wi-Fi Priority (Wired Active, Wi-Fi Standby)' }
+            'wi-fi priority'   { 'Wi-Fi Priority (Wired Active, Wi-Fi Standby)' }
+            'wi-fi protected'  { if ($t.RouteProfile -eq 'Wifi') { 'Wi-Fi First (15 vs 50)' } else { 'Wi-Fi Protected (15 vs 50)' } }
+            'ethernet demoted' { 'Ethernet Demoted (Metric 50)' }
+            'windows default'  { 'Windows Default (Auto)' }
+            'automatic'        {
+                if ($t.RouteProfile -eq 'Wifi') { 'Wi-Fi Priority (Wired Active, Wi-Fi Standby)' }
+                elseif ($t.RouteProfile -eq 'Ethernet') { 'Ethernet Priority' }
+                elseif ($t.RouteProfile -eq 'Windows') { 'Windows Default (Auto)' }
+                else { 'Automatic' }
+            }
+            default            { $t.Routing }
+        }
+    } else { 'Automatic' }
+    $curRtt = if ($null -ne $script:LiveGwRtt) { $script:LiveGwRtt } else { $t.GwRtt }
+    $gwVal = if ($t.GwIp) { if ($null -ne $curRtt) { '{0} ({1} ms)' -f $t.GwIp, $curRtt } elseif ($t.GwAlive) { '{0} (ARP)' -f $t.GwIp } else { $t.GwIp } } else { '-' }
+    $facts = @(
+        @(@('Adapter', $t.Nic), @('Network', $net)),
+        @(@('Lease', $t.Ip), @('DNS', $dnsv)),
+        @(@('Gateway', $gwVal), @('Routing', $rout)))
+    foreach ($row in $facts) {
+        $segs = @((Seg 'text' '  '))
+        foreach ($cell in $row) {
+            $segs += (Seg 'dim' (Fit $cell[0] 9))
+            $v = [string]$cell[1]; if (-not $v) { $v = '-' }
+            $segs += (Seg 'text' (Fit $v ($cw - 10)))
+            $segs += (Seg 'text' ' ')
+        }
+        [void]$L.Add($segs)
+    }
+    [void]$L.Add(@((Seg 'text' '  '), (Seg 'faint' ($script:G.rule * $w))))
+    # co-pilot intelligence (status and action directly below telemetry facts and rule)
+    $stTxt = [string]$adv.Status; if (-not $stTxt) { $stTxt = [string]$adv.Text }
+    $actTxt = [string]$adv.Action; if (-not $actTxt) { if ($adv.Key) { $actTxt = ('Press [ENTER] to ' + $adv.KeyLabel + ' (or press ' + $adv.Key.ToUpper() + ').') } else { $actTxt = 'No action needed.' } }
+    
+    $stLines = @(Split-Words $stTxt ($w - 12) 2)
+    for ($i = 0; $i -lt $stLines.Count; $i++) {
+        if ($i -eq 0) { [void]$L.Add(@((Seg 'dim' '  STATUS  '), (Seg 'text' ([string]$stLines[$i])))) }
+        else { [void]$L.Add(@((Seg 'text' '          '), (Seg 'text' ([string]$stLines[$i])))) }
+    }
+    $actLines = @(Split-Words $actTxt ($w - 12) 2)
+    for ($i = 0; $i -lt $actLines.Count; $i++) {
+        if ($i -eq 0) { [void]$L.Add(@((Seg 'ok!' '  ACTION  '), (Seg 'text!' ([string]$actLines[$i])))) }
+        else { [void]$L.Add(@((Seg 'text' '          '), (Seg 'text!' ([string]$actLines[$i])))) }
+    }
+    [void]$L.Add(@())
+    
+    # categorized command dock (v3.9 inspired, minimal borderless)
+    $uiH = Get-UiHeight
+    if ($w -ge 74 -and ($uiH -eq 0 -or $uiH -ge 28)) {
+        $col1W = $cw
+        [void]$L.Add(@((Seg 'accent!' ('  REPAIR & CONNECTIVITY'.PadRight($col1W + 2))), (Seg 'accent!' 'DIAGNOSTICS & TOOLS')))
+        [void]$L.Add(@((Seg $(if ($adv.Key -eq '1') { 'ok!' } else { 'text' }) ('  [1] Quick Heal'.PadRight($col1W + 2))), (Seg 'text' '[3] DNS Profile Engine')))
+        [void]$L.Add(@((Seg $(if ($adv.Key -eq '2') { 'ok!' } else { 'text' }) ('  [2] Arm Watchdog Guard'.PadRight($col1W + 2))), (Seg 'text' '[M] Routing Priority Engine')))
+        [void]$L.Add(@((Seg $(if ($adv.Key -eq 'a') { 'ok!' } else { 'text' }) ('  [A] Portal Login Vault'.PadRight($col1W + 2))), (Seg 'text' '[4] Live Latency Probe')))
+        [void]$L.Add(@((Seg $(if ($adv.Key -eq '7') { 'ok!' } else { 'text' }) ('  [7] Open Portal Page'.PadRight($col1W + 2))), (Seg 'text' '[5] Flush DNS & ARP Caches')))
+        [void]$L.Add(@((Seg $(if ($adv.Key -eq 'g') { 'ok!' } else { 'text' }) ('  [G] Headless Auto-Login'.PadRight($col1W + 2))), (Seg 'text' '[6] System Diagnostics Audit')))
+        if ($uiH -eq 0 -or $uiH -ge 32) { [void]$L.Add(@()) }
+        [void]$L.Add(@((Seg 'accent!' ('  PREVIEW & REPORTS'.PadRight($col1W + 2))), (Seg 'accent!' 'SYSTEM & RECOVERY')))
+        [void]$L.Add(@((Seg 'text' ('  [T] Dry-Run Simulation'.PadRight($col1W + 2))), (Seg 'text' '[8] Disarm Watchdog')))
+        [void]$L.Add(@((Seg 'text' ('  [R] Export Support Report'.PadRight($col1W + 2))), (Seg 'text' '[9] Factory Reset')))
+        [void]$L.Add(@((Seg 'text' ('  [S] Run Self-Test Suite'.PadRight($col1W + 2))), (Seg 'text' '[0] Guide')))
+        [void]$L.Add(@((Seg $(if ($adv.Key -eq 'x') { 'ok!' } else { 'accent!' }) ('  [X] Full Net Reset'.PadRight($col1W + 2))), (Seg 'dim' '[Q] Quit')))
+        if ($t.ArpPending) { [void]$L.Add(@((Seg 'warn!' ('  [K] Approve Gateway MAC Change'.PadRight($col1W + 2))), (Seg 'warn' 'Router MAC changed; review to lock ARP'))) }
+    } else {
+        $legend = @(@('1', 'QuickHeal'), @('X', 'NetReset'), @('2', 'Guard'), @('A', 'Vault'), @('7', 'Portal'), @('G', 'Login'), @('3', 'DNS'), @('M', 'Route'), @('4', 'Probe'), @('5', 'Flush'), @('6', 'Audit'), @('T', 'Test'), @('R', 'Report'), @('S', 'Verify'), @('8', 'Disarm'), @('9', 'Reset'), @('0', 'Guide'), @('Q', 'Quit'))
+        # A gateway-MAC review is transient, so [K] is advertised only while a candidate is really waiting. The leading
+        # comma appends the pair as ONE legend cell; a bare "+=" would append two loose strings and corrupt the legend.
+        if ($t.ArpPending) { $legend += , @('K', 'MAC') }
+        foreach ($row in @(Get-LegendRows $legend $adv.Key $w)) { [void]$L.Add($row) }
+    }
+    return @{ Lines = $L.ToArray(); PulseIdx = $pulseIdx; Width = $w }
+}
+
+# Repaints only the pulse row (no flicker). VT consoles only, and only when the frame fits the window.
+function Update-PulseRow($t) {
+    $f = $script:Frame
+    if (-not $f -or -not $script:Ui.Vt -or $f.Model.PulseIdx -lt 0) { return $false }
+    $hgt = Get-UiHeight
+    if ($hgt -le 0 -or ($f.Rows + 1) -gt $hgt) { return $false }   # unknown or too small: skip the partial repaint
+    $sparkWidth = [Math]::Max(4, [Math]::Min(36, $f.Model.Width - 54))
+    $segs = Get-PulseSegs $t $sparkWidth
+    $targetRow = $f.Model.PulseIdx + 1
+    $promptRow = $f.Rows + 1
+    $e = $script:Esc
+    [Console]::Write($e + '[' + $targetRow + ';1H' + (ConvertTo-AnsiString $segs) + $e + '[K' + $e + '[' + $promptRow + ';5H' + $e + '[?25h')
+    return $true
+}
+
+# ==============================================================================
+# VIEWS AND MENUS
+# ==============================================================================
+function Show-View([string]$Title, [scriptblock]$Body, [switch]$NoWait) {
+    $prevInDash = $script:InDashboard
+    $script:InDashboard = $false
+    Clear-Screen
+    Show-Cursor $true
+    Write-Banner $Title
+    try { & $Body } catch { Write-Log 'FAIL' ('Operation failed: ' + $_.Exception.Message) }
+    if (-not $NoWait) {
+        Out-Line @()
+        Out-Line @((Seg 'dim' '  Press any key to return to dashboard...'))
+        Wait-AnyKey
+    }
+    $script:InDashboard = $prevInDash
+}
+
+function Read-Choice {
+    Clear-InputBuffer
+    try { return (Read-KeyNow) } catch { $s = [string](Read-Host); if ($s.Length -gt 0) { return [pscustomobject]@{ KeyChar = $s[0]; Key = 'Other' } }; return [pscustomobject]@{ KeyChar = [char]0; Key = 'Enter' } }
+}
+
+function Read-Confirm([string]$Prompt, [string]$Word = 'yes') {
+    Out-Line @((Seg 'warn' ('  ' + $Prompt + ' ')), (Seg 'dim' ('(type ' + $Word + ' to confirm): '))) -NoNewline
+    Show-Cursor $true
+    $a = ''
+    try { $a = [string](Read-Host) } catch {}
+    return ($a.Trim().ToLower() -eq $Word)
+}
+
+function Show-Advisory {
+    Clear-Screen; Show-Cursor $true
+    Write-Banner 'DECISION & PROBLEM-SOLVING GUIDE'
+    $w = Get-UiWidth
+    Out-Line @((Seg 'accent!' '  Recommendation'))
+    Out-Line @((Seg 'dim' '  * Plug in Ethernet cable  '), (Seg 'faint' '-> '), (Seg 'ok!' '[1] Quick Heal '), (Seg 'dim' '(repairs adapter, IP lease & routes)'))
+    Out-Line @()
+    Out-Line @((Seg 'accent!' '  COMMON SYMPTOMS & 1-TOUCH FIXES'.PadRight(50)), (Seg 'accent!' 'ACTION'))
+    Out-Line @((Seg 'faint' ('  ' + ($script:G.rule * $w))))
+    $matrix = @(
+        # 1. Connection & Initial Setup
+        @('Cable in, no IP / APIPA (169.254.x.x)',       '1', 'Quick Heal'),
+        @('Campus portal login required for internet',   'A', 'Portal Login Vault'),
+        @('Auto-repair on cable plug or system wake',    '2', 'Arm Background Watchdog'),
+        # 2. DNS & Everyday Browsing
+        @('University ERP or intranet unreachable',      '3', 'Campus DHCP DNS Profile'),
+        @('Balance traffic: Ethernet vs Wi-Fi',          'M', 'Routing Priority Engine'),
+        @('Websites fail to open / stale DNS cache',     '5', 'Flush DNS & ARP Caches'),
+        @('High ping, jitter or lag in games & calls',   '4', 'Latency & Loss Probe'),
+        # 3. Diagnostics & Audit Reports
+        @('Inspect hardware MAC, lease & gateway',       '6', 'System Diagnostics Audit'),
+        @('Save diagnostic audit report to file',        'R', 'Export Support Report'),
+        # 4. Safety & Rollback
+        @('Instant background sign-in with saved login', 'G', 'Headless Portal Sign-In'),
+        @('Total network down / no internet anywhere',   'X', 'Full Network Reset'),
+        @('Preview repairs safely without changes',      'T', 'Dry-Run Simulation'),
+        @('Verify system cmdlets & security integrity',  'S', 'Run Self-Test Suite'),
+        @('Restore default Windows network settings',    '9', 'Factory Reset Rollback')
+    )
+    foreach ($m in $matrix) {
+        Out-Line @(
+            (Seg 'text' ('  ' + $m[0].PadRight(44))),
+            (Seg 'faint' ' -> '),
+            (Seg 'faint' '['),
+            (Seg 'ok!' $m[1]),
+            (Seg 'faint' '] '),
+            (Seg 'dim' $m[2])
+        )
+    }
+    Out-Line @()
+    Out-Line @((Seg 'faint' ('  ' + ($script:G.rule * $w))))
+    Out-Line @((Seg 'dim' '  Press any key to return to dashboard...'))
+    Wait-AnyKey
+}
+
+function Show-VaultMenu {
+    while ($true) {
+        Clear-Screen; Show-Cursor $true
+        Write-Banner 'PORTAL LOGIN VAULT'
+        $cur = Get-PortalCredentials
+        $pin = [string]$script:State.Misc['PortalPin']
+        $paused = ($script:State.Misc['PortalLoginSuspended'] -eq $true)
+        Out-Line @((Seg 'text' '  Enables automated background authentication for captive portals without opening a browser.'))
+        Out-Line @()
+        Out-Line @((Seg 'dim' '  Security Architecture:'))
+        Out-Wrapped 'faint' $script:G.mid 'text' 'Encrypted with Windows DPAPI (LocalMachine scope); access restricted to SYSTEM and Administrators.' 2
+        Out-Wrapped 'faint' $script:G.mid 'text' 'Transmitted strictly over TLS to verified campus portal endpoints with certificate pinning.' 2
+        Out-Wrapped 'warn' $script:G.warn 'warn' 'Notice: Any account with local Administrator privileges can decrypt stored machine credentials.' 2
+        Out-Line @()
+        $credTxt = 'Not saved'; $credRole = 'dim'
+        if ($cur) { $credTxt = ('Saved for ' + $cur.User); $credRole = 'ok' }
+        $pinTxt = 'None'; $pinRole = 'dim'
+        if ($pin) { $fpShort = Format-Fingerprint $pin; if ($fpShort.Length -gt 23) { $fpShort = $fpShort.Substring(0, 23) + '...' }; $pinTxt = ('Approved  ' + $fpShort); $pinRole = 'ok' }
+        $autoTxt = 'Disabled (no credentials stored)'; $autoRole = 'dim'
+        if ($cur -and $paused) { $autoTxt = 'Suspended: Portal rejected stored password'; $autoRole = 'warn' }
+        elseif ($cur) { $autoTxt = 'Active'; $autoRole = 'ok' }
+        Out-Line @((Seg 'dim' '  Credentials   '), (Seg $credRole $credTxt))
+        Out-Line @((Seg 'dim' '  Certificate   '), (Seg $pinRole $pinTxt))
+        Out-Line @((Seg 'dim' '  Auto Sign-In  '), (Seg $autoRole $autoTxt))
+        Out-Line @()
+        Out-Line @((Seg 'accent' '  [S]'), (Seg 'text' ' Save / Update   '), (Seg 'accent' '[T]'), (Seg 'text' ' Test Login   '), (Seg 'accent' '[P]'), (Seg 'text' ' Certificate Pinning   '), (Seg 'accent' '[C]'), (Seg 'text' ' Clear Credentials'))
+        Out-Line @((Seg 'dim' '  Press any other key to return '), (Seg 'accent!' $script:G.prompt)) -NoNewline
+        $k = Read-Choice
+        Out-Line @()
+        Out-Line @()
+        switch (([string]$k.KeyChar).ToLowerInvariant()) {
+            's' {
+                if (-not (Assert-Admin)) { Out-Line @(); Out-Line @((Seg 'dim' '  press any key')); Wait-AnyKey; continue }
+                Out-Line @((Seg 'text' '  Use the same login you type on the campus portal page.'))
+                if (-not (Read-Confirm 'Store this login on this PC?')) { Out-Line @((Seg 'dim' '  cancelled.')); Start-Sleep -Milliseconds 700; continue }
+                Show-Cursor $true
+                $u = ([string](Read-Host '  username')).Trim()
+                if (-not $u) { Out-Line @((Seg 'warn' '  username was empty; cancelled.')); Start-Sleep -Milliseconds 800; continue }
+                $sec = Read-Host '  password' -AsSecureString
+                $cred = New-Object System.Net.NetworkCredential('', $sec)
+                $ok = $false
+                $plain = $cred.Password
+                if (-not $plain) { Out-Line @((Seg 'warn' '  password was empty; cancelled.')); Start-Sleep -Milliseconds 800; continue }
+                $ok = @(Invoke-WithLock { $r = Save-PortalCredentials $u $plain; Save-State; $r }) -contains $true
+                $plain = $null; $cred = $null; $sec = $null
+                if ($ok) {
+                    Out-Line @((Seg 'ok' ('  ' + $script:G.ok + ' ')), (Seg 'text' 'credentials saved safely to the DPAPI vault.'))
+                    if (-not $script:State.Misc['PortalPin'] -and @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' }).Count -gt 0) {
+                        $liveUrl = Resolve-PortalUrl (Get-InternetState -NoCache)
+                        $targetUri = $null; try { $targetUri = [uri]$liveUrl } catch {}
+                        $ci = Get-PortalCertInfo $targetUri
+                        if ($ci.Ok -and $ci.Errors -ne 'None') {
+                            Out-Line @((Seg 'warn' ('  ' + $script:G.warn + ' ')), (Seg 'warn' ('Portal certificate is self-signed (' + (Format-Fingerprint $ci.Sha256) + ').')))
+                            if (Read-Confirm 'Approve this certificate now for automatic sign-in?') {
+                                $fp = $ci.Sha256
+                                [void](Invoke-WithLock { $script:State.Misc['PortalPin'] = $fp; $script:State.Misc['PortalLoginSuspended'] = $false; Save-State })
+                                Out-Line @((Seg 'ok' ('  ' + $script:G.ok + ' ')), (Seg 'text' 'certificate pinned!'))
+                            }
+                        }
+                    }
+                }
+                Start-Sleep -Seconds 1
+            }
+            't' {
+                if (-not (Assert-Admin)) { Out-Line @(); Out-Line @((Seg 'dim' '  press any key')); Wait-AnyKey; continue }
+                [void](Invoke-HeadlessPortalLogin -Manual)
+                if (-not $script:IsDry) { [void](Invoke-WithLock { Save-State }) }
+                Out-Line @(); Out-Line @((Seg 'dim' '  press any key')); Wait-AnyKey
+            }
+            'p' {
+                if (-not (Assert-Admin)) { Out-Line @(); Out-Line @((Seg 'dim' '  press any key')); Wait-AnyKey; continue }
+                $liveUrl = Resolve-PortalUrl (Get-InternetState -NoCache)
+                $targetUri = $null; try { $targetUri = [uri]$liveUrl } catch {}
+                $ci = Get-PortalCertInfo $targetUri
+                if (-not $ci.Ok) { Out-Line @((Seg 'bad' ('  ' + $script:G.bad + ' ')), (Seg 'text' ('could not read the portal certificate (' + $ci.Error + '). Are you connected to the campus LAN?'))) }
+                else {
+                    Out-Line @((Seg 'dim' '  subject      '), (Seg 'text' $ci.Subject))
+                    Out-Line @((Seg 'dim' '  issuer       '), (Seg 'text' $ci.Issuer))
+                    Out-Line @((Seg 'dim' '  valid until  '), (Seg 'text' $ci.NotAfter))
+                    Out-Line @((Seg 'dim' '  sha-256      '), (Seg 'text' (Format-Fingerprint $ci.Sha256)))
+                    if ($ci.Errors -eq 'None') { Out-Line @((Seg 'ok' ('  ' + $script:G.ok + ' ')), (Seg 'text' 'Windows trusts this certificate: no approval is needed.')) }
+                    else {
+                        Out-Line @((Seg 'warn' ('  ' + $script:G.warn + ' ')), (Seg 'warn' ('Windows does not trust it (' + $ci.Errors + '). Compare the fingerprint with one IT gives you, if possible.')))
+                        if (Read-Confirm 'Approve exactly this certificate for the campus portal?') {
+                            $fp = $ci.Sha256
+                            [void](Invoke-WithLock { $script:State.Misc['PortalPin'] = $fp; $script:State.Misc['PortalLoginSuspended'] = $false; Save-State })
+                            Out-Line @((Seg 'ok' ('  ' + $script:G.ok + ' ')), (Seg 'text' 'approved. A different certificate will be refused.'))
+                        }
+                    }
+                }
+                Out-Line @(); Out-Line @((Seg 'dim' '  press any key')); Wait-AnyKey
+            }
+            'c' {
+                if (-not (Assert-Admin)) { Out-Line @(); Out-Line @((Seg 'dim' '  press any key')); Wait-AnyKey; continue }
+                if (Read-Confirm 'Delete the saved login and the approved certificate?') {
+                    [void](Invoke-WithLock { Remove-PortalCredentials; $script:State.Misc.Remove('PortalPin'); Save-State })
+                    Out-Line @((Seg 'ok' ('  ' + $script:G.ok + ' ')), (Seg 'text' 'deleted.'))
+                    Start-Sleep -Milliseconds 800
+                }
+            }
+            default { return }
+        }
+    }
+}
+
+function Start-Repair([string]$Title = 'quick heal') {
+    Show-View $Title {
+        if (-not (Assert-Admin)) { return }
+        if ($script:State.Misc -is [hashtable]) { $script:State.Misc['FailStreak'] = 0 }
+        $script:ChangeCount = 0; $script:FailCount = 0
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        $r = Pick-Hash (Invoke-WithLock { Invoke-HealPipeline })
+        $sw.Stop()
+        Write-HealSummary $r $sw
+        if ($r -and $r.Conn -eq 'Captive') {
+            $signedHeadless = $false
+            if ($script:Cfg.AutoPortalLogin -and (Get-PortalCredentials)) {
+                Out-Line @((Seg 'dim' '  Attempting automated sign-in using saved vault credentials...'))
+                $signedHeadless = [bool](Invoke-HeadlessPortalLogin (Get-InternetState -NoCache) -Manual)
+                if (-not $script:IsDry) { [void](Invoke-WithLock { Save-State }) }
+                if ($signedHeadless) { Write-Log 'OK' 'Signed in automatically using stored vault credentials.' }
+            }
+            if (-not $signedHeadless) {
+                [void](Invoke-WithLock { [void](Open-Portal); Save-State })
+                if ((Get-InternetState -NoCache).State -eq 'Captive') {
+                    Out-Line @((Seg 'dim' '  Sign in on the page that opened; the fast DNS path is applied for you afterwards.'))
+                    if (Wait-ForAuthentication 180) { [void](Invoke-WithLock { Complete-Authentication }); Write-Log 'OK' 'Signed in. Post-login DNS applied.' }
+                }
+            }
+        }
+    }
+}
+
+function Invoke-DashboardKey([string]$Key, $adv) {
+    $aliases = @{ w = '2'; n = '3'; p = '4'; f = '5'; c = '5'; d = '6'; o = '7'; u = '8'; v = 'a'; l = 'g'; h = '0'; '?' = '0' }
+    if ($aliases.ContainsKey($Key)) { $Key = $aliases[$Key] }
+    switch ($Key) {
+        '0' { Show-Advisory }
+        '1' { Start-Repair 'quick heal' }
+        'm' { Show-View 'routing priority' { Show-RouteMenu } -NoWait }
+        'x' {
+            Show-View 'full net reset (emergency recovery)' {
+                if (-not (Assert-Admin)) { return }
+                Out-Line @((Seg 'warn' '  NOTICE: Full Net Reset performs comprehensive network stack recovery:'))
+                Out-Wrapped 'faint' $script:G.mid 'text' 'Rescan PnP hardware bus, clear orphaned proxies, and clean WFP filters' 4
+                Out-Wrapped 'faint' $script:G.mid 'text' 'Normalize route metrics, reset MTU to standard 1500, and set routing to Adaptive' 4
+                Out-Wrapped 'faint' $script:G.mid 'text' 'Execute 7-layer heal pipeline, flush DNS/ARP caches, and clear NetBIOS' 4
+                Out-Wrapped 'faint' $script:G.mid 'text' 'Synchronize DHCP Client and Network Location Awareness (NlaSvc) services' 4
+                Out-Line @()
+                if (Read-Confirm 'Proceed with Full Net Reset?' 'yes') {
+                    $script:ChangeCount = 0; $script:FailCount = 0
+                    Invoke-SupremeOmnifix
+                    $script:WdCache = $null
+                } else {
+                    Out-Line @((Seg 'dim' '  Operation cancelled. No changes made.'))
+                }
+            }
+        }
+        '2' {
+            Show-View 'arm the watchdog' {
+                if (-not (Assert-Admin)) { return }
+                $script:ChangeCount = 0; $script:FailCount = 0
+                $sw = [System.Diagnostics.Stopwatch]::StartNew()
+                $ok = @(Invoke-WithLock { $okI = Install-Watchdog; Save-State; $okI }) -contains $true
+                $script:WdCache = $null
+                if ($ok) {
+                    Out-Line @((Seg 'dim' '  Executing initial repair pipeline...'))
+                    $r = Pick-Hash (Invoke-WithLock { $rr = Invoke-HealPipeline; Save-State; $rr })
+                    $sw.Stop()
+                    Write-HealSummary $r $sw
+                    if ($r -and $r.Conn -eq 'Captive') {
+                        $signedHeadless = $false
+                        if ($script:Cfg.AutoPortalLogin -and (Get-PortalCredentials)) {
+                            Out-Line @((Seg 'dim' '  Attempting automated sign-in using saved vault credentials...'))
+                            $signedHeadless = [bool](Invoke-HeadlessPortalLogin (Get-InternetState -NoCache) -Manual)
+                            if (-not $script:IsDry) { [void](Invoke-WithLock { Save-State }) }
+                            if ($signedHeadless) { Write-Log 'OK' 'Signed in automatically using stored vault credentials.' }
+                        }
+                        if (-not $signedHeadless) {
+                            [void](Invoke-WithLock { [void](Open-Portal); Save-State })
+                            if ((Get-InternetState -NoCache).State -eq 'Captive') {
+                                Out-Line @((Seg 'dim' '  Sign in on the page that opened; the fast DNS path is applied for you afterwards.'))
+                                if (Wait-ForAuthentication 180) { [void](Invoke-WithLock { Complete-Authentication }); Write-Log 'OK' 'Signed in. Post-login DNS applied.' }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        '3' { Show-View 'dns profile' { Show-DnsMenu } -NoWait }
+        '4' { Show-View 'latency, packet loss & jitter probe' { Run-QuickProbe } }
+        '5' {
+            Show-View 'flush caches' {
+                $script:ChangeCount = 0; $script:FailCount = 0
+                [void](Invoke-WithLock { Flush-NetworkCache })
+            }
+        }
+        '6' { Show-View 'system diagnostics audit' { Show-Diagnostics } }
+        '7' {
+            Show-View 'captive portal sign-in' {
+                $ups = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })
+                if ($ups.Count -eq 0) {
+                    Write-Log 'WARN' 'No active Ethernet link is connected. Plug in the campus LAN cable before opening the portal.'
+                    return
+                }
+                $ipV4 = Get-ValidIPv4 $ups[0]
+                if (-not $ipV4 -and $script:IsAdmin) {
+                    Out-Line @((Seg 'warn' '  No valid IP lease (APIPA/unassigned); renewing DHCP lease first...'))
+                    [void](Invoke-WithLock { Shield-DataLink @{ Ad = $ups[0]; Env = (Get-AdapterEnvironment $ups[0]); Repaired = $false } })
+                }
+                [void](Invoke-WithLock {
+                    if ($script:IsAdmin) {
+                        $script:WatchdogOn = Test-WatchdogInstalled
+                        foreach ($a in $ups) {
+                            $ctx = @{ Ad = $a; Env = (Get-AdapterEnvironment $a) }
+                            Shield-RouteMetrics $ctx 'Captive'
+                            if ((Get-DnsProfileName) -eq 'Adaptive') { Shield-Dns $ctx 'Captive' }
+                        }
+                    }
+                    [void](Open-Portal -Force)
+                    # The metric/DNS changes above are state even when the browser could not be opened: persist them
+                    # inside the same lock, or a SYSTEM watchdog pass would overwrite them with the state it still holds.
+                    Save-State
+                })
+                Out-Line @((Seg 'dim' '  Sign in in the browser window; the fast DNS path is applied afterwards.'))
+                if (Wait-ForAuthentication 180) { if ($script:IsAdmin) { [void](Invoke-WithLock { Complete-Authentication }) }; Write-Log 'OK' 'The internet is authenticated.' }
+            }
+        }
+        '8' {
+            Show-View 'disarm the watchdog' {
+                $script:ChangeCount = 0; $script:FailCount = 0
+                [void](Invoke-WithLock { Uninstall-Watchdog; Save-State })
+                $script:WdCache = $null
+            }
+        }
+        'e' {
+            if ($script:IsAdmin) { return $false }
+            if ($script:SelfPath) {
+                try {
+                    Start-Process -FilePath $script:SelfPath -ArgumentList '-LfElevated' -Verb RunAs -ErrorAction Stop
+                    Exit-Screen
+                    exit 0
+                } catch {}
+            }
+            return $true
+        }
+        'k' {
+            Show-View 'gateway mac verification' {
+                if (-not (Assert-Admin)) { return }
+                $pend = @(Get-PendingGatewayMacs)
+                if ($pend.Count -eq 0) { Out-Line @((Seg 'dim' '  No gateway change is waiting for a decision.')); return }
+                Out-Wrapped 'warn' $script:G.warn 'warn' 'A gateway now answers from a different hardware address than before. That is normal after IT replaces or fails over a router, and it is also exactly what ARP spoofing looks like. Approve only if you trust this network.' 2
+                foreach ($pg in $pend) {
+                    Out-Line @()
+                    Out-Line @((Seg 'dim' '  gateway      '), (Seg 'text' $pg.Gw))
+                    Out-Line @((Seg 'dim' '  used to be   '), (Seg 'text' $pg.Old))
+                    Out-Line @((Seg 'dim' '  now answers  '), (Seg 'warn' $pg.New))
+                    if (Read-Confirm ('Trust ' + $pg.New + ' for gateway ' + $pg.Gw + '?')) {
+                        # Re-read the candidate inside the lock: while this prompt was on screen the gateway may have
+                        # answered from a THIRD MAC (failover plus a spoofer, or a router still settling). Approving the
+                        # stale value would write a MAC the network no longer uses into the lock memory.
+                        $raw = Invoke-WithLock {
+                            $curCand = $script:State.Misc['ArpCand']
+                            $stillCurrent = $true
+                            if ($curCand -is [hashtable] -and $curCand.ContainsKey($pg.Gw)) {
+                                if ([string]$curCand[$pg.Gw].Mac -ne [string]$pg.New) { $stillCurrent = $false }
+                            }
+                            if (-not $stillCurrent) { 'STALE' }
+                            else { $r1 = Approve-GatewayMac $pg.Gw $pg.New; Save-State; $r1 }
+                        }
+                        if ($raw -contains 'STALE') {
+                            Out-Line @((Seg 'warn' ('  ' + $script:G.warn + ' ')), (Seg 'warn' 'The gateway answered from a different MAC while this prompt was open: nothing was approved. Run [K] again to review the current one.'))
+                        } elseif (-not ($raw -contains $true)) { Out-Line @((Seg 'dim' '  nothing to approve.')) }
+                    } else { Out-Line @((Seg 'dim' '  left unlocked.')) }
+                }
+            }
+        }
+        'a' { Show-VaultMenu }
+        'g' {
+            Show-View 'automated portal sign-in' {
+                $ups = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })
+                if ($ups.Count -eq 0) {
+                    Write-Log 'WARN' 'No active Ethernet link is connected. Plug in the campus LAN cable first.'
+                    return
+                }
+                $loginRes = Pick-Hash (Invoke-WithLock {
+                    $script:WatchdogOn = Test-WatchdogInstalled
+                    foreach ($a in $ups) {
+                        $ctx = @{ Ad = $a; Env = (Get-AdapterEnvironment $a) }
+                        if ($ctx.Env.Env -eq 'Campus') {
+                            Shield-RouteMetrics $ctx 'Captive'
+                            if ((Get-DnsProfileName) -eq 'Adaptive') { Shield-Dns $ctx 'Captive' }
+                        }
+                    }
+                    $inet = Get-InternetState -NoCache
+                    if ($inet.State -eq 'Online') {
+                        Write-Log 'OK' 'Ethernet is already authenticated and online; no sign-in needed.'
+                        return @{ State = 'Online'; Signed = $true }
+                    }
+                    if ($inet.State -ne 'Captive') {
+                        if ($inet.State -eq 'Offline' -and (Test-PortalOnlineSmart $script:Cfg.PortalIp ([int]$script:Cfg.PortalPort))) {
+                            $inet = @{ State = 'Captive'; Location = $script:Cfg.PortalUrl; Via = 'link' }
+                        } else {
+                            Write-Log 'WARN' ("Link state is '{0}' (not behind captive portal). Run [1] Quick Heal first." -f $inet.State)
+                            return @{ State = $inet.State; Signed = $false; SkipBrowser = $true }
+                        }
+                    }
+                    $okLogin = [bool](Invoke-HeadlessPortalLogin $inet -Manual)
+                    Save-State
+                    return @{ State = $inet.State; Signed = $okLogin; SkipBrowser = $false }
+                })
+                if ($loginRes -and -not $loginRes.Signed -and -not $loginRes.SkipBrowser) {
+                    Out-Line @((Seg 'dim' '  Automatic sign-in did not complete; opening the login page instead.'))
+                    [void](Invoke-WithLock { [void](Open-Portal -Force) })
+                    if (Wait-ForAuthentication 180) { if ($script:IsAdmin) { [void](Invoke-WithLock { Complete-Authentication }) }; Write-Log 'OK' 'The internet is authenticated.' }
+                }
+            }
+        }
+        's' { Show-View 'system self-test verification' { Invoke-SelfTest } }
+        't' {
+            Show-View 'safe dry-run simulation' {
+                $script:IsDry = $true
+                $script:ChangeCount = 0; $script:FailCount = 0
+                $sw = [System.Diagnostics.Stopwatch]::StartNew()
+                try {
+                    Out-Line @((Seg 'vio' ('  ' + $script:G.half + ' ')), (Seg 'vio' 'Simulation mode active: system configuration will not be modified'))
+                    $r = Pick-Hash (Invoke-HealPipeline)
+                    $sw.Stop()
+                    Write-HealSummary $r $sw
+                } finally { $script:IsDry = [bool]$DryRun; if ($script:StoreReady) { $script:State = Get-State } }
+            }
+        }
+        'r' { Show-View 'export system support report' { New-SupportReport } }
+        '9' {
+            Show-View 'factory reset & restore defaults' {
+                if (-not (Assert-Admin)) { return }
+                Out-Line @((Seg 'text' '  This action will revert system configuration:'))
+                Out-Wrapped 'faint' $script:G.mid 'text' 'Restore all adapter properties, DNS resolvers, and route metrics to original pre-LanFixer state' 4
+                Out-Wrapped 'faint' $script:G.mid 'text' 'Unregister background watchdog and helper tasks, NRPT rules, and firewall exceptions' 4
+                Out-Wrapped 'faint' $script:G.mid 'warn' 'Purge saved portal login credentials from the encrypted machine vault' 4
+                Out-Line @()
+                if (Read-Confirm 'Restore original settings?' 'yes') {
+                    $script:ChangeCount = 0; $script:FailCount = 0
+                    [void](Invoke-WithLock { Restore-Everything })
+                    $script:WdCache = $null
+                } else { Out-Line @((Seg 'dim' '  Operation cancelled. No changes made.')) }
+            }
+        }
+        default { return $false }
+    }
+    return $true
+}
+function Get-PendingGatewayMacs {
+    $out = @()
+    $cand = $script:State.Misc['ArpCand']
+    if ($cand -isnot [hashtable]) { return $out }
+    foreach ($gw in @($cand.Keys)) {
+        $old = ''
+        foreach ($g in @($script:State.Arp.Keys)) { $mem = $script:State.Arp[$g]; if ($mem -is [hashtable] -and $mem.ContainsKey($gw)) { $old = [string]$mem[$gw] } }
+        $out += @{ Gw = [string]$gw; New = [string]$cand[$gw].Mac; Old = $old; Since = [string]$cand[$gw].Since }
+    }
+    return $out
+}
+
+# Approves ONE gateway at ONE MAC (the caller has already shown old/new and asked you to confirm).
+function Approve-GatewayMac([string]$Gw, [string]$Mac, [switch]$Quiet) {
+    $done = $false
+    foreach ($g in @($script:State.Arp.Keys)) {
+        $mem = $script:State.Arp[$g]
+        if ($mem -is [hashtable]) { $mem[$Gw] = $Mac; $done = $true }
+    }
+    foreach ($a in @(Get-EthernetAdapters)) {
+        $mem = Get-SubTable 'Arp' ([string]$a.InterfaceGuid)
+        $mem[$Gw] = $Mac
+        $done = $true
+    }
+    if ($script:State.Misc['ArpCand'] -is [hashtable] -and $script:State.Misc['ArpCand'].ContainsKey($Gw)) { $script:State.Misc['ArpCand'].Remove($Gw) }
+    if ($done -and -not $Quiet) { Write-Log 'OK' ("Gateway {0} approved at {1}; it is locked on the next repair pass." -f $Gw, $Mac) }
+    return $done
+}
+
+# ---- USB selective suspend: record the ORIGINAL value and put exactly that back (no forced "factory" value)
+$script:UsbSub = '2a737441-1930-4402-8d77-b2bebba308a3'
+$script:UsbSet = '48e6b7a6-50f5-4782-a5d4-53bb8f07e226'
+function ConvertFrom-PowerIndexText([string]$Text) {
+    $m = [regex]::Match($Text, '0x([0-9a-fA-F]{1,8})')
+    if (-not $m.Success) { return $null }
+    return [Convert]::ToInt32($m.Groups[1].Value, 16)
+}
+
+function Get-ActivePowerScheme {
+    $r = Invoke-Native (Get-SysExe 'powercfg.exe') @('/getactivescheme') 5000
+    $m = [regex]::Match([string]$r.Output, '[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}')
+    if ($m.Success) { return $m.Value }
+    return ''
+}
+
+function Get-PowerSettingIndex([string]$Scheme, [string]$Mode) {
+    $r = Invoke-Native (Get-SysExe 'powercfg.exe') @('/query', $Scheme, $script:UsbSub, $script:UsbSet) 5000
+    if ($Mode -eq 'ac') {
+        $m = [regex]::Match([string]$r.Output, 'Current AC Power Setting Index:\s*0x([0-9a-fA-F]+)')
+        if ($m.Success) { return [Convert]::ToInt32($m.Groups[1].Value, 16) }
+    } else {
+        $m = [regex]::Match([string]$r.Output, 'Current DC Power Setting Index:\s*0x([0-9a-fA-F]+)')
+        if ($m.Success) { return [Convert]::ToInt32($m.Groups[1].Value, 16) }
+    }
+    return (ConvertFrom-PowerIndexText ([string]$r.Output))
+}
+
+function Set-UsbSuspendOff {
+    $pcfg = Get-SysExe 'powercfg.exe'
+    if (-not [System.IO.File]::Exists($pcfg)) { return }
+    $scheme = Get-ActivePowerScheme
+    if (-not $scheme) { return }
+    $ac = Get-PowerSettingIndex $scheme 'ac'
+    $dc = Get-PowerSettingIndex $scheme 'dc'
+    if ($null -eq $ac -and $null -eq $dc) { return }                        # unreadable: never write blind
+    if (($null -eq $ac -or $ac -eq 0) -and ($null -eq $dc -or $dc -eq 0)) { return }   # already off
+    Save-Original 'Global' 'UsbSuspend' @{ Scheme = $scheme; Ac = $ac; Dc = $dc }
+    [void](Invoke-Change 'USB selective suspend turned off in the active power plan (the dongle is never put to sleep)' {
+        [void](Invoke-Native $pcfg @('/setacvalueindex', $scheme, $script:UsbSub, $script:UsbSet, '0') 5000)
+        [void](Invoke-Native $pcfg @('/setdcvalueindex', $scheme, $script:UsbSub, $script:UsbSet, '0') 5000)
+        [void](Invoke-Native $pcfg @('/s', $scheme) 5000)
+    })
+}
+
+function Restore-UsbSuspend($Rec) {
+    if ($Rec -isnot [hashtable] -or -not $Rec.Scheme) { return }
+    $pcfg = Get-SysExe 'powercfg.exe'
+    if (-not [System.IO.File]::Exists($pcfg)) { return }
+    if ($null -ne $Rec.Ac) { [void](Invoke-Native $pcfg @('/setacvalueindex', [string]$Rec.Scheme, $script:UsbSub, $script:UsbSet, [string]$Rec.Ac) 5000) }
+    if ($null -ne $Rec.Dc) { [void](Invoke-Native $pcfg @('/setdcvalueindex', [string]$Rec.Scheme, $script:UsbSub, $script:UsbSet, [string]$Rec.Dc) 5000) }
+    if ((Get-ActivePowerScheme) -eq [string]$Rec.Scheme) {
+        [void](Invoke-Native $pcfg @('/s', [string]$Rec.Scheme) 5000)
+    }
+}
+function Get-ProbeVerdict($P1, $P2) {
+    if ($P1.Code -eq 204) { return 'Online' }
+    if ($P2.Code -eq 200 -and ([string]$P2.Body) -like 'Microsoft Connect Test*') { return 'Online' }
+    if ($P1.Error -eq 'DnsFail' -and $P2.Error -eq 'DnsFail') { return 'NoDns' }
+    foreach ($p in @($P1, $P2)) {
+        $c = [int]$p.Code
+        if (($c -ge 300 -and $c -le 399) -or ($c -ge 200 -and $c -le 299) -or $c -eq 401 -or $c -eq 407 -or $c -eq 511 -or ($p.Location -and $p.Location -ne '')) { return 'Captive' }
+    }
+    return 'Offline'
+}
+function Get-PrimarySourceIp {
+    foreach ($a in @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })) {
+        $ip = Get-ValidIPv4 $a
+        if ($ip) { return [string]$ip }
+    }
+    return ''
+}
+# State: Online | Captive | NoDns | Offline  (+ Location of a captive redirect, when there is one)
+function Get-InternetState {
+    param([switch]$NoCache, [string]$SourceIp)
+    $explicit = $PSBoundParameters.ContainsKey('SourceIp')
+    if (-not $script:Cfg.ProbeSourceBind) { $SourceIp = '' }
+    elseif (-not $explicit) { $SourceIp = Get-PrimarySourceIp }
+    if ($null -eq $SourceIp) { $SourceIp = '' }
+    $ckey = ('{0}|{1}' -f $SourceIp, $explicit)
+    if (-not $NoCache -and $script:ConnCache -and $script:ConnCache.Key -eq $ckey -and (((Get-Date) - $script:ConnCache.Time).TotalSeconds -lt 1.8)) { return $script:ConnCache.Result }
+    $none = @{ Code = 0; Body = ''; Location = ''; Error = '' }
+    $p1 = Invoke-HttpProbe 'connectivitycheck.gstatic.com' '/generate_204' 2500 $SourceIp
+    $p2 = $none
+    if ($p1.Code -ne 204) { $p2 = Invoke-HttpProbe 'www.msftconnecttest.com' '/connecttest.txt' 2500 $SourceIp }
+    $state = Get-ProbeVerdict $p1 $p2
+    $via = 'link'
+    if (-not $explicit -and ($state -eq 'Offline' -or $state -eq 'NoDns') -and (Test-AllowSystemFallback $explicit $state (Test-OtherUplinkActive))) {
+        $u1 = $none
+        if ($SourceIp) { $u1 = Invoke-HttpProbe 'connectivitycheck.gstatic.com' '/generate_204' 2000 '' }
+        if ($u1.Code -eq 204) { $state = 'Online'; $via = 'system'; $p1 = $u1 }
+        elseif (($u1.Code -ge 300 -and $u1.Code -le 399) -or ($u1.Code -ge 200 -and $u1.Code -le 299) -or $u1.Code -eq 401 -or $u1.Code -eq 407 -or $u1.Code -eq 511) { $state = 'Captive'; $via = 'system'; $p1 = $u1 }
+        if ($state -eq 'Offline' -or $state -eq 'NoDns') {
+            try {
+                $wr = [System.Net.HttpWebRequest]::Create('http://connectivitycheck.gstatic.com/generate_204')
+                $wr.Timeout = 2500
+                $wr.AllowAutoRedirect = $false
+                $wr.Proxy = $null   # a local proxy answering 204 must not count as internet
+                $resp = $wr.GetResponse()
+                $c = [int]$resp.StatusCode
+                if ($c -eq 204) { $state = 'Online'; $via = 'system' }
+                elseif (($c -ge 300 -and $c -le 399) -or ($c -ge 200 -and $c -le 299) -or $c -eq 401 -or $c -eq 407 -or $c -eq 511) {
+                    $state = 'Captive'; $via = 'system'
+                    $p1 = @{ Code = $c; Location = [string]$resp.Headers['Location'] }
+                }
+                $resp.Close()
+            } catch [System.Net.WebException] {
+                $webResp = $_.Exception.Response -as [System.Net.HttpWebResponse]
+                if ($webResp) {
+                    $c = [int]$webResp.StatusCode
+                    if (($c -ge 300 -and $c -le 399) -or $c -eq 401 -or $c -eq 407 -or $c -eq 511 -or [bool]$webResp.Headers['Location']) {
+                        $state = 'Captive'; $via = 'system'
+                        $p1 = @{ Code = $c; Location = [string]$webResp.Headers['Location'] }
+                    }
+                    try { $webResp.Close() } catch {}
+                }
+            } catch {}
+        }
+    }
+    $loc = ''
+    if ($state -eq 'Captive') {
+        if ($p1.Location) { $loc = [string]$p1.Location } elseif ($p2.Location) { $loc = [string]$p2.Location }
+        if ($loc -and -not $script:IsDry -and $script:State -is [hashtable] -and $script:State.Misc -is [hashtable]) {
+            try {
+                $lu = [uri]$loc
+                if ($lu.IsAbsoluteUri -and ($lu.Scheme -eq 'http' -or $lu.Scheme -eq 'https')) {
+                    $script:State.Misc['DiscoveredPortalUrl'] = [string]$lu.AbsoluteUri
+                    $script:State.Misc['DiscoveryTime'] = (Get-Date).ToString('o')
+                    $tmpIp = $null
+                    if ([System.Net.IPAddress]::TryParse($lu.Host, [ref]$tmpIp) -and (Test-AllowedPortalIp $lu.Host)) {
+                        $script:State.Misc['DiscoveredPortalIp'] = $lu.Host
+                    }
+                }
+            } catch {}
+        }
+    }
+    $res = @{ State = $state; Location = $loc; Via = $via }
+    $script:ConnCache = @{ Time = (Get-Date); Result = $res; Key = $ckey }
+    return $res
+}
+# "Gateway alive" no longer depends on ICMP alone: many campus gateways drop ping but still answer ARP.
+# Fresh evidence only: a cached neighbour entry proves nothing. 'Stale'/'Delay'/'Probe' are exactly what a DEAD gateway's
+# leftover entry looks like, and 'Permanent' is our own lock. Force a fresh ARP exchange and accept only a freshly
+# 'Reachable' entry (checked a few times, because the entry appears a moment after the probe).
+function Test-GatewayAlive($Ad, [string]$Gw) {
+    $rtt = Test-Ping $Gw 700
+    if ($null -ne $rtt) { return @{ Alive = $true; Rtt = $rtt; Via = 'icmp' } }
+    $ex = Get-NetNeighbor -InterfaceIndex $Ad.ifIndex -IPAddress $Gw -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($ex -and [string]$ex.State -eq 'Permanent' -and $ex.LinkLayerAddress -and $ex.LinkLayerAddress -notmatch '^(00-)+00$') {
+        $homeAd = $true
+        try { $eh = Get-AdapterEnvironment $Ad -UseCache; if ($null -ne $eh.Home) { $homeAd = [bool]$eh.Home } } catch {}
+        $gwSrc = [string](Get-ValidIPv4 $Ad)
+        if ((Test-TcpPort $Gw 80 400 $gwSrc) -or (Test-TcpPort $Gw 443 400 $gwSrc) -or (Test-TcpPort $Gw 53 400 $gwSrc)) {
+            return @{ Alive = $true; Rtt = $null; Via = 'arp' }
+        }
+        $freshArp = @(Get-GatewayMacs $Ad $Gw 1)
+        if ($freshArp.Count -gt 0 -and $freshArp[0] -eq [string]$ex.LinkLayerAddress) {
+            return @{ Alive = $true; Rtt = $null; Via = 'arp' }
+        }
+        return @{ Alive = $false; Rtt = $null; Via = '' }
+    }
+    if ($script:IsAdmin -and -not $script:IsDry -and $ex -and [string]$ex.State -ne 'Permanent') {
+        Remove-NetNeighbor -InterfaceIndex $Ad.ifIndex -IPAddress $Gw -Confirm:$false -ErrorAction SilentlyContinue
+    }
+    [void](Test-Ping $Gw 700)
+    for ($i = 0; $i -lt 4; $i++) {
+        Start-Sleep -Milliseconds 100
+        $n = Get-NetNeighbor -InterfaceIndex $Ad.ifIndex -IPAddress $Gw -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+             Where-Object { $_.LinkLayerAddress -and $_.LinkLayerAddress -notmatch '^(00-)+00$' -and ([string]$_.State -eq 'Reachable' -or [string]$_.State -eq 'Permanent') } | Select-Object -First 1
+        if ($n) { return @{ Alive = $true; Rtt = $null; Via = 'arp' } }
+    }
+    return @{ Alive = $false; Rtt = $null; Via = '' }
+}
+# ==============================================================================
+# ADAPTERS / ENVIRONMENT / HEALTH
+# ==============================================================================
+function Rescue-DormantEthernetPnp {
+    if (-not $script:IsAdmin -or $script:IsDry) { return }
+    if (-not (Test-Elapsed 'PnpRescan' 300)) { return }
+    Set-StateTime 'PnpRescan'
+    try {
+        $nics = @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object {
+            $_.MediaType -eq '802.3' -and $_.InterfaceDescription -notmatch $script:VirtRegex })
+        if ($nics.Count -eq 0) {
+            [void](Invoke-Native (Get-SysExe 'pnputil.exe') @('/scan-devices') 5000)
+            return
+        }
+        $sick = @(Get-PnpDevice -Class Net -PresentOnly -ErrorAction SilentlyContinue | Where-Object {
+            $_.FriendlyName -match 'Ethernet|GbE|Gigabit|ASIX|Realtek|USB' -and
+            $_.FriendlyName -notmatch $script:VirtRegex -and
+            $_.FriendlyName -notmatch 'Wi-?Fi|Wireless|WLAN|802\.11' -and
+            $_.Problem -notin @('CM_PROB_NONE', 'CM_PROB_DISABLED', 'CM_PROB_HARDWARE_DISABLED') })
+        foreach ($dev in ($sick | Select-Object -First 2)) {
+            Write-Log 'INFO' "Restarting faulted wired transceiver: $($dev.FriendlyName)"
+            [void](Invoke-Native (Get-SysExe 'pnputil.exe') @('/restart-device', $dev.InstanceId) 10000)
+        }
+    } catch {
+        Write-Log 'WARN' "Rescue-DormantEthernetPnp non-critical exception: $_"
+    }
+}
+function Get-EthernetAdapters {
+    Rescue-DormantEthernetPnp
+    return @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object {
+        $_.MediaType -eq '802.3' -and $_.InterfaceDescription -notmatch $script:VirtRegex
+    })
+}
+function Get-IfaceReg([string]$Guid) {
+    try { return (Get-ItemProperty -LiteralPath "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$Guid" -ErrorAction Stop) } catch { return $null }
+}
+function Get-DhcpDnsServers([string]$Guid) {
+    $reg = Get-IfaceReg $Guid
+    if ($reg -and $reg.DhcpNameServer) {
+        return @(([string]$reg.DhcpNameServer) -split '[,\s]+' | Where-Object { $_ -match '^\d{1,3}(\.\d{1,3}){3}$' })
+    }
+    return @()
+}
+function Get-DhcpCaptiveUrl([string]$Guid) {
+    $reg = Get-IfaceReg $Guid
+    if (-not $reg) { return $null }
+    foreach ($prop in 'DhcpCaptivePortalUrl', 'CaptivePortalUrl', 'DhcpOption114') {
+        if ($reg.$prop) {
+            $u = [string]$reg.$prop
+            if ($u -match '^https?://[^\s]+$') { return $u }
+        }
+    }
+    if ($reg.DhcpInterfaceOptions -is [byte[]]) {
+        [byte[]]$bytes = $reg.DhcpInterfaceOptions
+        $i = 0
+        while ($i -lt ($bytes.Length - 2)) {
+            $opt = [int]$bytes[$i]
+            $len = [int]$bytes[$i + 1]
+            if ($len -le 0 -or ($i + 2 + $len) -gt $bytes.Length) { break }
+            if ($opt -eq 114 -or $opt -eq 160) {
+                try {
+                    $str = [System.Text.Encoding]::ASCII.GetString($bytes, $i + 2, $len)
+                    if ($str -match '^https?://[^\s]+$') { return $str }
+                } catch {}
+            }
+            $i += (2 + $len)
+        }
+    }
+    return $null
+}
+function Get-GatewaysV4($Ad) {
+    return @(Get-NetRoute -InterfaceIndex $Ad.ifIndex -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue |
+        Where-Object { $_.NextHop -and $_.NextHop -ne '0.0.0.0' } | ForEach-Object { [string]$_.NextHop } | Select-Object -Unique)
+}
+function Get-ValidIPv4($Ad) {
+    $x = Get-NetIPAddress -InterfaceIndex $Ad.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+         Where-Object { $_.IPAddress -notlike '169.254.*' -and $_.AddressState -eq 'Preferred' } | Select-Object -First 1
+    if ($x) { return [string]$x.IPAddress }
+    return $null
+}

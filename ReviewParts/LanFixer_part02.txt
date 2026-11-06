@@ -1,0 +1,800 @@
+                if (-not $script:State.Env.ContainsKey($ek)) { $script:State.Env[$ek] = $memEnv[$ek] }
+                elseif ($memEnv[$ek] -is [hashtable] -and $script:State.Env[$ek] -is [hashtable] -and $memEnv[$ek].Time -and ([string]$memEnv[$ek].Time -gt [string]$script:State.Env[$ek].Time)) {
+                    $script:State.Env[$ek].Env = $memEnv[$ek].Env
+                    $script:State.Env[$ek].Time = $memEnv[$ek].Time
+                }
+            }
+        }
+        return $got
+    } catch { return $false }
+}
+function Exit-Lock {
+    if (-not $script:IsAdmin) { return }
+    if ($script:LockDepth -gt 0) {
+        $script:LockDepth--
+        if ($script:LockDepth -eq 0) {
+            try {
+                $lf = Join-Path $script:StoreDir 'lock.json'
+                if (Test-Path -LiteralPath $lf) { Remove-Item -LiteralPath $lf -Force -ErrorAction SilentlyContinue }
+            } catch {}
+            if ($script:Mutex) { try { $script:Mutex.ReleaseMutex() } catch {} }
+            $script:HasMutex = $false
+        }
+    } else {
+        $script:HasMutex = $false
+    }
+}
+function Invoke-WithLock {
+    param([scriptblock]$Block, [int]$WaitMs = 20000)
+    if (-not $script:IsAdmin) { return (& $Block) }   # read-only/limited mode: no shared lock needed (and a standard user cannot open it)
+    if (-not (Enter-Lock $WaitMs)) {
+        $holderDesc = 'Another Lan Fixer operation'
+        try {
+            $lf = Join-Path $script:StoreDir 'lock.json'
+            if (Test-Path -LiteralPath $lf) {
+                $h = ConvertFrom-Json (Get-Content -LiteralPath $lf -Raw -ErrorAction SilentlyContinue)
+                if ($h -and $h.Mode) { $holderDesc = ("Lan Fixer ({0}, PID {1})" -f $h.Mode, $h.Pid) }
+            }
+        } catch {}
+        Write-Log 'WARN' ("{0} is running. Try again in a moment." -f $holderDesc)
+        return $null
+    }
+    try { return (& $Block) } finally { Exit-Lock }
+}
+function Test-InteractiveSessionActive {
+    try {
+        $intFile = Join-Path $script:StoreDir 'interactive.json'
+        if (Test-Path -LiteralPath $intFile) {
+            $meta = ConvertFrom-Json (Get-Content -LiteralPath $intFile -Raw -ErrorAction SilentlyContinue)
+            if ($meta -and $meta.Pid -and ($meta.Pid -ne $PID)) {
+                $p = Get-Process -Id ([int]$meta.Pid) -ErrorAction SilentlyContinue
+                if ($p -and ($p.ProcessName -match 'powershell|cmd|LanFixer')) {
+                    if ($meta.StartTime) {
+                        try {
+                            $mStart = [datetime]::Parse([string]$meta.StartTime, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
+                            if ([math]::Abs(($p.StartTime.ToUniversalTime() - $mStart).TotalSeconds) -le 5) { return $true }
+                        } catch { return $true }
+                    } else { return $true }
+                }
+                Remove-Item -LiteralPath $intFile -Force -ErrorAction SilentlyContinue
+            }
+        }
+    } catch {}
+    return $false
+}
+function Assert-Admin {
+    if ($script:IsAdmin) { return $true }
+    Write-Log 'FAIL' 'Administrator rights are required for this action. Re-open Lan Fixer and approve the UAC prompt.'
+    return $false
+}
+
+# ==============================================================================
+# PROBES (all bounded by timeouts; no hangs on dead DNS or dead links)
+# ==============================================================================
+# Sets TLS 1.2/1.3 and trusts campus firewall self-signed certs for internal 10.* and 172.16.* subnets
+function Test-Ping([string]$Target, [int]$TimeoutMs = 800) {
+    $p = New-Object System.Net.NetworkInformation.Ping
+    try {
+        $r = $p.Send($Target, $TimeoutMs)
+        if ($r.Status -eq [System.Net.NetworkInformation.IPStatus]::Success) { return [int]$r.RoundtripTime }
+    } catch {} finally { $p.Dispose() }
+    return $null
+}
+function Test-TcpPort([string]$Address, [int]$Port, [int]$TimeoutMs = 800, [string]$SourceIp = '') {
+    $c = $null
+    try {
+        if ($SourceIp -and $SourceIp -ne '0.0.0.0' -and $SourceIp -notlike '169.254.*') {
+            $ep = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Parse($SourceIp), 0)
+            $c = New-Object System.Net.Sockets.TcpClient($ep)
+        } else {
+            $c = New-Object System.Net.Sockets.TcpClient
+        }
+        $iar = $c.BeginConnect($Address, $Port, $null, $null)
+        if ($iar.AsyncWaitHandle.WaitOne($TimeoutMs, $false) -and $c.Connected) { $c.EndConnect($iar); return $true }
+        return $false
+    } catch { return $false } finally { if ($c) { try { $c.Close() } catch {} } }
+}
+# Parses the ANSWER section of a DNS response and returns ONLY IPv4 A records, in wire order.
+# Pure (no sockets, no state): this is what unit tests feed synthetic packets to.
+#  - the transaction id must match the query, or a late answer to an earlier round is accepted as this one
+#  - QR must be set and RCODE must be 0 (NXDOMAIN/SERVFAIL/REFUSED carry no usable address)
+#  - compression pointers are followed only as a skip; name lengths are bounded so a hostile packet cannot hang us
+function Get-DnsAAnswers([byte[]]$Response, [byte[]]$Query) {
+    $out = @()
+    if ($null -eq $Response -or $null -eq $Query) { return $out }
+    if ($Response.Length -lt 12 -or $Query.Length -lt 12) { return $out }
+    $qid = ([int]$Query[0] -shl 8) -bor [int]$Query[1]
+    $rid = ([int]$Response[0] -shl 8) -bor [int]$Response[1]
+    if ($rid -ne $qid) { return $out }
+    if (($Response[2] -band 128) -eq 0) { return $out }
+    if (($Response[3] -band 15) -ne 0) { return $out }
+    $anc = ([int]$Response[6] -shl 8) -bor [int]$Response[7]
+    if ($anc -le 0) { return $out }
+    $i = 12
+    $guard = 0
+    while ($i -lt $Response.Length -and $guard -lt 256) {
+        $len = [int]$Response[$i]
+        if ($len -eq 0) { $i++; break }
+        if (($len -band 0xC0) -eq 0xC0) { $i += 2; break }
+        $i += ($len + 1); $guard++
+    }
+    $i += 4   # qtype + qclass
+    $n = 0
+    while ($n -lt $anc -and $i + 10 -le $Response.Length) {
+        $n++
+        $guard = 0
+        while ($i -lt $Response.Length -and $guard -lt 256) {
+            $len = [int]$Response[$i]
+            if ($len -eq 0) { $i++; break }
+            if (($len -band 0xC0) -eq 0xC0) { $i += 2; break }
+            $i += ($len + 1); $guard++
+        }
+        if ($i + 10 -gt $Response.Length) { break }
+        $type = ([int]$Response[$i] -shl 8) -bor [int]$Response[$i + 1]
+        $class = ([int]$Response[$i + 2] -shl 8) -bor [int]$Response[$i + 3]
+        $rdlen = ([int]$Response[$i + 8] -shl 8) -bor [int]$Response[$i + 9]
+        $i += 10
+        if ($i + $rdlen -gt $Response.Length) { break }
+        if ($type -eq 1 -and $class -eq 1 -and $rdlen -eq 4) { $out += ('{0}.{1}.{2}.{3}' -f $Response[$i], $Response[$i + 1], $Response[$i + 2], $Response[$i + 3]) }
+        $i += $rdlen
+    }
+    return $out
+}
+# One raw UDP DNS query for ONE name, sent FROM a given local IPv4 address, answered only by that adapter's own
+# configured resolvers. Binding the source is what makes the answer about THAT link: the system resolver would be
+# free to answer from the Wi-Fi hotspot's DNS and hide a completely dead campus resolver.
+function Get-ScopedDnsAnswers([string]$Name, [string]$SourceIp, [int]$TimeoutMs = 1200) {
+    $out = @()
+    if (-not $Name -or -not $SourceIp) { return $out }
+    $owner = $null
+    try { $owner = @(Get-NetIPAddress -IPAddress $SourceIp -ErrorAction SilentlyContinue | Select-Object -First 1) } catch {}
+    if (-not $owner) { return $out }
+    $idx = [int]$owner.InterfaceIndex
+    $servers = @()
+    try { $servers = @((Get-DnsClientServerAddress -InterfaceIndex $idx -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses | Where-Object { $_ -match '^\d{1,3}(\.\d{1,3}){3}$' }) } catch {}
+    $guidScoped = ''
+    try { $guidScoped = [string](Get-NetAdapter -InterfaceIndex $idx -ErrorAction SilentlyContinue | Select-Object -First 1).InterfaceGuid } catch {}
+    if ($guidScoped) { try { $servers += @(Get-DhcpDnsServers $guidScoped) } catch {} }
+    $ipifScoped = Get-NetIPInterface -InterfaceIndex $idx -AddressFamily IPv4 -ErrorAction SilentlyContinue
+    if ($ipifScoped -and [int]$ipifScoped.InterfaceMetric -ge 45 -and (Get-RouteProfileName) -ne 'Wifi') {
+        $localAllowed = @($script:Cfg.CampusDns, $script:Cfg.PortalIp)
+        if ($guidScoped) { try { $localAllowed += @(Get-DhcpDnsServers $guidScoped) } catch {} }
+        $localAllowed = @($localAllowed | Where-Object { $_ -and $_ -ne '0.0.0.0' } | Select-Object -Unique)
+        $scopedOnly = @($servers | Where-Object { $localAllowed -contains $_ -or (Test-PrivateIPv4 $_) })
+        if ($scopedOnly.Count -gt 0) { $servers = $scopedOnly } elseif ($localAllowed.Count -gt 0) { $servers = $localAllowed }
+    }
+    $servers = @($servers | Where-Object { $_ -and $_ -ne '0.0.0.0' } | Select-Object -Unique)
+    if ($servers.Count -eq 0) { return $out }
+    $id = Get-Random -Minimum 1000 -Maximum 60000
+    [byte[]]$pkt = New-DnsQueryPacket $Name $id
+    $pending = @{}
+    foreach ($s in $servers) {
+        $u = $null
+        try {
+            try { $u = New-Object System.Net.Sockets.UdpClient((New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Parse($SourceIp), 0))) }
+            catch { if ($u) { try { $u.Close() } catch {} }; $u = $null }
+            if (-not $u) {
+                if ($s -eq $script:Cfg.CampusDns -or $s -eq $script:Cfg.PortalIp) { $u = New-Object System.Net.Sockets.UdpClient }
+                else { continue }
+            }
+            $u.Connect($s, 53)
+            [void]$u.Send($pkt, $pkt.Length)
+            $pending[$s] = $u
+        } catch { if ($u) { try { $u.Close() } catch {} } }
+    }
+    if ($pending.Count -eq 0) { return $out }
+    $clock = [System.Diagnostics.Stopwatch]::StartNew()
+    try {
+        while ($pending.Count -gt 0 -and $clock.ElapsedMilliseconds -lt $TimeoutMs -and $out.Count -eq 0) {
+            $slice = [int][math]::Min(25, [math]::Max(1, $TimeoutMs - $clock.ElapsedMilliseconds))
+            $rl = New-Object System.Collections.ArrayList
+            foreach ($s in $pending.Keys) { [void]$rl.Add($pending[$s].Client) }
+            try { [System.Net.Sockets.Socket]::Select($rl, $null, $null, ($slice * 1000)) } catch { Start-Sleep -Milliseconds 2 }
+            foreach ($s in @($pending.Keys)) {
+                $u = $pending[$s]
+                if (-not $rl.Contains($u.Client)) { continue }
+                try {
+                    $ep = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Any, 0)
+                    $ans = @(Get-DnsAAnswers ($u.Receive([ref]$ep)) $pkt)
+                    if ($ans.Count -gt 0) { $out = @($ans) }
+                } catch {}
+                try { $u.Close() } catch {}
+                $pending.Remove($s)
+            }
+        }
+    } finally {
+        foreach ($s in @($pending.Keys)) { try { $pending[$s].Close() } catch {} }
+    }
+    return $out
+}
+# DNS lookup with a hard time limit (HttpWebRequest/GetHostAddresses alone can block for many seconds).
+# $SourceIp pins the lookup to ONE link: while a second uplink is up, the system-wide resolver answers from ITS DNS,
+# so a dead Ethernet resolver looks healthy. In that case only this adapter's own resolvers may answer; when none
+# does, the truthful answer is "no DNS on this link" ($null) and Invoke-HttpProbe reports DnsFail for that adapter.
+function Test-IsSinkholeIp([string]$Ip) {
+    if (-not $Ip) { return $true }
+    $s = ([string]$Ip).Trim()
+    # IPv4 RFC 5737 TEST-NET-1/2/3, loopback, 0.0.0.0/8, link-local, benchmarking, multicast, reserved
+    if ($s -match '^192\.0\.2\.' -or $s -match '^198\.51\.100\.' -or $s -match '^203\.0\.113\.' -or
+        $s -match '^127\.' -or $s -eq '0.0.0.0' -or $s -match '^0\.' -or $s -match '^169\.254\.' -or
+        $s -match '^198\.(1[89])\.' -or $s -match '^(22[4-9]|23[0-9]|24[0-9]|25[0-5])\.') {
+        return $true
+    }
+    # IPv6 documentation (2001:db8::), loopback (::1), unspecified (::), link-local (fe80::) or ULA (fc00::/fd00::)
+    if ($s -match '^(?i)2001:0?db8:' -or $s -eq '::1' -or $s -eq '::' -or
+        $s -match '^(?i)fe[89ab][0-9a-f]:' -or $s -match '^(?i)f[cd][0-9a-f]{2}:') {
+        return $true
+    }
+    return $false
+}
+
+function Get-DnsVerdictDecision([bool]$HasGlobalV6, [bool]$HasV6Route, [int]$V6DnsCount, [bool]$IsSinkhole) {
+    if ($V6DnsCount -le 0) { return 'None' }
+    if ($IsSinkhole) { return 'Neutralize' }
+    if (-not $HasGlobalV6 -or -not $HasV6Route) { return 'Neutralize' }
+    return 'Keep'
+}
+
+function Get-AdapterDnsVerdict($Ad) {
+    $hasGlobalV6 = $false
+    $hasV6Route = $false
+    $v6Dns = @()
+    $isSinkhole = $false
+    try {
+        $addrs = @(Get-NetIPAddress -InterfaceIndex $Ad.ifIndex -AddressFamily IPv6 -ErrorAction SilentlyContinue | Where-Object { [string]$_.AddressState -eq 'Preferred' })
+        foreach ($a in $addrs) {
+            $ip = [string]$a.IPAddress
+            if ($ip -match '^(?i)[23][0-9a-f]{3}:') { $hasGlobalV6 = $true; break }
+        }
+        $routes = @(Get-NetRoute -InterfaceIndex $Ad.ifIndex -AddressFamily IPv6 -DestinationPrefix '::/0' -ErrorAction SilentlyContinue)
+        foreach ($r in $routes) {
+            $nh = [string]$r.NextHop
+            if ($nh -and $nh -ne '::') {
+                $hasV6Route = $true; break
+            }
+        }
+        $v6Dns = @(Get-DnsClientServerAddress -InterfaceIndex $Ad.ifIndex -AddressFamily IPv6 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty ServerAddresses)
+        if ($v6Dns.Count -gt 0) {
+            try {
+                $dnsq = Resolve-DnsName -Name 'connectivitycheck.gstatic.com' -Server $v6Dns[0] -Type A -QuickTimeout -DnsOnly -ErrorAction SilentlyContinue | Select-Object -First 1
+                if ($dnsq -and $dnsq.IPAddress -and (Test-IsSinkholeIp [string]$dnsq.IPAddress)) {
+                    $isSinkhole = $true
+                }
+            } catch {}
+        }
+    } catch {}
+    $decision = Get-DnsVerdictDecision $hasGlobalV6 $hasV6Route $v6Dns.Count $isSinkhole
+    return @{
+        Action      = $decision
+        HasGlobalV6 = $hasGlobalV6
+        HasV6Route  = $hasV6Route
+        V6DnsCount  = $v6Dns.Count
+        IsSinkhole  = $isSinkhole
+    }
+}
+function Resolve-HostBounded([string]$Name, [int]$TimeoutMs = 2500, [string]$SourceIp = '', [switch]$NoPin) {
+    if (-not $Name) { return $null }
+    $cleanName = $Name.Trim().TrimEnd('.')
+    if (-not $cleanName) { return $null }
+    if (-not $NoPin -and $script:Cfg.PortalHost -and ($cleanName.ToLower() -eq ([string]$script:Cfg.PortalHost).TrimEnd('.').ToLower()) -and $script:Cfg.PortalIp) {
+        return [string]$script:Cfg.PortalIp
+    }
+    if ($SourceIp -and (Test-OtherUplinkActive)) {
+        $bounded = @(Get-ScopedDnsAnswers $cleanName $SourceIp 1200)
+        foreach ($b in $bounded) {
+            if ($b -and -not (Test-IsSinkholeIp [string]$b)) { return [string]$b }
+        }
+        return $null
+    }
+    try {
+        $ar = [System.Net.Dns]::BeginGetHostAddresses($cleanName, $null, $null)
+        $ok = $ar.AsyncWaitHandle.WaitOne($TimeoutMs, $false)   # the runtime owns this handle: closing it early breaks later connects
+        if ($ok) {
+            $ips = [System.Net.Dns]::EndGetHostAddresses($ar)
+            foreach ($ip in $ips) {
+                if ($ip.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork) {
+                    $s = $ip.ToString()
+                    if (-not (Test-IsSinkholeIp $s)) { return $s }
+                }
+            }
+        }
+    } catch {}
+    try {
+        $dnsRecs = @(Resolve-DnsName -Name $cleanName -Type A -QuickTimeout -DnsOnly -ErrorAction SilentlyContinue)
+        foreach ($rec in $dnsRecs) {
+            if ($rec -and $rec.IPAddress) {
+                $s = [string]$rec.IPAddress
+                if (-not (Test-IsSinkholeIp $s)) { return $s }
+            }
+        }
+    } catch {}
+    return $null
+}
+# Pure (unit-tested): the absolute http(s) URL a captive page redirects to with <meta refresh> or JavaScript, else ''.
+function Get-RedirectFromBody([string]$Html) {
+    if (-not $Html) { return '' }
+    $h = $Html
+    if ($h.Length -gt 4096) { $h = $h.Substring(0, 4096) }
+    $patterns = @(
+        '(?is)<meta\b[^>]*http-equiv\s*=\s*["'']?refresh["'']?[^>]*content\s*=\s*["''][^"'']*?url\s*=\s*["'']?([^"''>\s]+)',
+        '(?is)(?:window\.|self\.|top\.|document\.)?location(?:\.href|\.replace)?\s*(?:=|\()\s*["''](https?://[^"''\s<>]+)["'']'
+    )
+    foreach ($rx in $patterns) {
+        $m = [regex]::Match($h, $rx)
+        if ($m.Success) {
+            $u = [System.Net.WebUtility]::HtmlDecode($m.Groups[1].Value)
+            if ($u -match '^https?://\S+$') { return $u }
+        }
+    }
+    return ''
+}
+function ConvertFrom-HttpResponse([string]$Raw) {
+    $r = @{ Code = 0; Body = ''; Location = '' }
+    if (-not $Raw) { return $r }
+    $m = [regex]::Match($Raw, '^HTTP/\d\.\d\s+(\d{3})')
+    if (-not $m.Success) { return $r }
+    $r.Code = [int]$m.Groups[1].Value
+    $head = $Raw
+    $cut = $Raw.IndexOf("`r`n`r`n"); $skip = 4
+    if ($cut -lt 0) { $cut = $Raw.IndexOf("`n`n"); $skip = 2 }
+    $full = ''
+    if ($cut -ge 0) {
+        $head = $Raw.Substring(0, $cut)
+        $body = $Raw.Substring($cut + $skip)
+        $full = $body
+        if ($body.Length -gt 128) { $body = $body.Substring(0, 128) }
+        $r.Body = $body
+    }
+    $lm = [regex]::Match($head, '(?im)^Location:[ \t]*(\S+)')
+    if ($lm.Success) { $r.Location = $lm.Groups[1].Value }
+    elseif ($r.Code -eq 200 -and $full) { $r.Location = Get-RedirectFromBody $full }
+    return $r
+}
+# Plain HTTP/1.0 over a raw socket: hard timeouts everywhere, no proxy, no redirects followed, and the
+# socket can be bound to the Ethernet adapter's own IP so the verdict is about THAT link (not Wi-Fi).
+function Invoke-HttpProbe([string]$HostName, [string]$Path, [int]$TimeoutMs = 2500, [string]$SourceIp = '', [int]$Port = 80) {
+    $r = @{ Code = 0; Body = ''; Location = ''; Error = '' }
+    # The socket is bound to $SourceIp, so the NAME has to be resolved the same way: otherwise Wi-Fi's DNS answers
+    # for the Ethernet probe and a dead campus resolver is never reported.
+    $ip = Resolve-HostBounded $HostName 2200 $SourceIp
+    if (-not $ip) { $r.Error = 'DnsFail'; return $r }
+    $sock = New-Object System.Net.Sockets.Socket([System.Net.Sockets.AddressFamily]::InterNetwork, [System.Net.Sockets.SocketType]::Stream, [System.Net.Sockets.ProtocolType]::Tcp)
+    try {
+        if ($SourceIp) {
+            try { $sock.Bind((New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Parse($SourceIp), 0))) } catch { $r.Error = 'BindFailure'; return $r }
+        }
+        $iar = $sock.BeginConnect([System.Net.IPAddress]::Parse($ip), $Port, $null, $null)
+        $connected = $iar.AsyncWaitHandle.WaitOne($TimeoutMs, $false)
+        if (-not $connected) { $r.Error = 'Timeout'; return $r }
+        try { $sock.EndConnect($iar) } catch { $r.Error = 'ConnectFailure'; return $r }
+        $sock.ReceiveTimeout = $TimeoutMs
+        $sock.SendTimeout = $TimeoutMs
+        $req = "GET $Path HTTP/1.0`r`nHost: $HostName`r`nUser-Agent: Mozilla/5.0 LanFixer-Probe`r`nAccept: */*`r`nConnection: close`r`n`r`n"
+        [void]$sock.Send([System.Text.Encoding]::ASCII.GetBytes($req))
+        $buf = New-Object byte[] 2048
+        $total = 0
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        while ($total -lt $buf.Length -and $sw.ElapsedMilliseconds -lt $TimeoutMs) {
+            $n = 0
+            try { $n = $sock.Receive($buf, $total, ($buf.Length - $total), [System.Net.Sockets.SocketFlags]::None) } catch { break }
+            if ($n -le 0) { break }
+            $total += $n
+            $txt = [System.Text.Encoding]::ASCII.GetString($buf, 0, $total)
+            $he = $txt.IndexOf("`r`n`r`n")
+            if ($he -ge 0) {
+                # Headers are complete. Anything but a 200 is already decisive; a 200 needs a little body to compare.
+                $bodyLen = $total - $he - 4
+                if (($txt -notmatch '^HTTP/\d\.\d\s+200') -or (($bodyLen -ge 40) -and (($txt -match 'Microsoft Connect Test') -or ($bodyLen -ge 700)))) { break }
+            }
+        }
+        if ($total -eq 0) { $r.Error = 'NoResponse'; return $r }
+        $p = ConvertFrom-HttpResponse ([System.Text.Encoding]::ASCII.GetString($buf, 0, $total))
+        $r.Code = $p.Code; $r.Body = $p.Body; $r.Location = $p.Location
+        if ($r.Code -eq 0) { $r.Error = 'BadResponse' }
+    } catch { $r.Error = $_.Exception.Message }
+    finally { try { $sock.Close() } catch {} }
+    return $r
+}
+# Pure classifier (unit-tested in SelfTest).
+#   Captive = a redirect (3xx), an auth demand (401/407/511) or a 2xx that is not the expected probe answer.
+#   v2 treated EVERY HTTP answer as "captive", so a 502/503 from an upstream outage made it open the login
+#   page and sit in a 12-minute auth watch over and over. 4xx/5xx now means Offline (gateway up, path broken).
+# ==============================================================================
+# CONNECTIVITY VERDICT (strict per adapter; a system-wide fallback only when no other uplink could be answering)
+# ==============================================================================
+function Test-OtherUplinkActive {
+    try { return ((Get-OtherUplinkAdapters).Count -gt 0) }
+    catch { return $true }   # cannot tell: assume yes (the safe answer: no fallback)
+}
+
+# Pure decision (unit-tested). The unbound/system probe exists for VPN/WARP/loopback-DNS setups. It would also happily
+# answer over Wi-Fi, so it is allowed only for a general question (not a per-adapter one) and only when no other
+# physical uplink is up; otherwise a dead Ethernet port would be reported "Online" and the repair engine would stand down.
+function Test-AllowSystemFallback([bool]$Explicit, [string]$State, [bool]$OtherUplink) {
+    if ($Explicit) { return $false }
+    if ($State -ne 'Offline' -and $State -ne 'NoDns') { return $false }
+    if ($OtherUplink) { return $false }
+    return $true
+}
+
+# ==============================================================================
+# INTERFACE METRICS (apply only while Ethernet is verified online; always restorable to the ORIGINAL values)
+# ==============================================================================
+function Get-AllWirelessAdapters {
+    $ethGuids = @(Get-EthernetAdapters | ForEach-Object { [string]$_.InterfaceGuid })
+    return @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object {
+        $ethGuids -notcontains [string]$_.InterfaceGuid -and
+        ($_.InterfaceAlias -match 'Wi-?Fi|Wireless|WLAN' -or $_.InterfaceDescription -match 'Wi-?Fi|Wireless|802\.11|WLAN') -and
+        $_.InterfaceDescription -notmatch 'Virtual|Hyper-V|VMware|VirtualBox|\bTAP\b|\bTUN\b|\bWSL\b|Tailscale|ZeroTier|WireGuard|Wintun|Loopback|Npcap|OpenVPN|AnyConnect|Fortinet|PANGP|WARP|Wi-Fi Direct'
+    })
+}
+function Get-OtherUplinkAdapters {
+    $ethGuids = @(Get-EthernetAdapters | ForEach-Object { [string]$_.InterfaceGuid })
+    $candidates = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object {
+        $_.Status -eq 'Up' -and
+        $ethGuids -notcontains [string]$_.InterfaceGuid -and
+        $_.InterfaceDescription -notmatch 'Virtual|Hyper-V|VMware|VirtualBox|\bTAP\b|\bTUN\b|\bWSL\b|Tailscale|ZeroTier|WireGuard|Wintun|Loopback|Npcap|OpenVPN|AnyConnect|Fortinet|PANGP|WARP|Wi-Fi Direct'
+    })
+    $valid = @()
+    foreach ($c in $candidates) {
+        $hasGw4 = @(Get-NetRoute -InterfaceIndex $c.ifIndex -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Where-Object { $_.NextHop -and $_.NextHop -ne '0.0.0.0' -and $_.NextHop -notlike '169.254.*' }).Count -gt 0
+        $hasGw6 = @(Get-NetRoute -InterfaceIndex $c.ifIndex -DestinationPrefix '::/0' -ErrorAction SilentlyContinue | Where-Object { $_.NextHop -and $_.NextHop -ne '::' }).Count -gt 0
+        $hasIp4 = [bool](Get-ValidIPv4 $c)
+        $hasIp6 = @(Get-NetIPAddress -InterfaceIndex $c.ifIndex -AddressFamily IPv6 -ErrorAction SilentlyContinue | Where-Object { [string]$_.AddressState -eq 'Preferred' -and [string]$_.IPAddress -notmatch '^(fe80|fc|fd|::1)' }).Count -gt 0
+        if (($hasGw4 -and $hasIp4) -or ($hasGw6 -and $hasIp6)) { $valid += $c }
+    }
+    return $valid
+}
+
+function Save-MetricOriginal($If) {
+    if ($script:IsDry) { return }
+    $ad = Get-NetAdapter -InterfaceIndex $If.ifIndex -IncludeHidden -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $ad) { return }
+    if ($script:State.Misc['MetricOrig'] -isnot [hashtable]) { $script:State.Misc['MetricOrig'] = @{} }
+    $k = ('{0}|{1}' -f [string]$ad.InterfaceGuid, [string]$If.AddressFamily)
+    if ($script:State.Misc['MetricOrig'].ContainsKey($k)) { return }
+    $script:State.Misc['MetricOrig'][$k] = @{ Auto = [string]$If.AutomaticMetric; Metric = [int]$If.InterfaceMetric; Alias = [string]$If.InterfaceAlias; Af = [string]$If.AddressFamily }
+}
+
+function Set-InterfaceMetric($If, [int]$Metric, [string]$Why) {
+    Save-MetricOriginal $If
+    $af = [string]$If.AddressFamily
+    return (Invoke-Change $Why { Set-NetIPInterface -InterfaceIndex $If.ifIndex -AddressFamily $af -InterfaceMetric $Metric -AutomaticMetric Disabled -ErrorAction Stop })
+}
+
+# Remember every host route we create, so cleanup can remove addresses the configuration does not name.
+function Add-TrackedHostRoute([string]$Ip) {
+    try {
+        if (-not $Ip -or $script:State -isnot [hashtable] -or $script:State.Misc -isnot [hashtable]) { return }
+        $cur = @($script:State.Misc['InjectedHostRoutes'] | Where-Object { $_ })
+        if ($cur -notcontains $Ip) { $script:State.Misc['InjectedHostRoutes'] = @($cur + $Ip) }
+    } catch {}
+}
+function Remove-CampusHostRoutes([int]$InterfaceIndex = 0) {
+    if ($script:IsDry) { return }
+    foreach ($hip in @($script:Cfg.PortalIp, $script:Cfg.CampusDns) | Where-Object { $_ }) {
+        foreach ($rt in @(Get-NetRoute -DestinationPrefix "$hip/32" -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Where-Object { [int]$_.RouteMetric -eq 5 -and ($InterfaceIndex -le 0 -or [int]$_.InterfaceIndex -eq $InterfaceIndex) })) {
+            Remove-NetRoute -InterfaceIndex ([int]$rt.InterfaceIndex) -DestinationPrefix "$hip/32" -NextHop ([string]$rt.NextHop) -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue
+            Remove-NetRoute -InterfaceIndex ([int]$rt.InterfaceIndex) -DestinationPrefix "$hip/32" -NextHop ([string]$rt.NextHop) -PolicyStore PersistentStore -Confirm:$false -ErrorAction SilentlyContinue
+        }
+    }
+    # Ensure-CampusPortalPath also routes the discovered portal, the redirect target and each adapter's DHCP resolvers.
+    # Those are removed here too, but only routes that carry OUR metric (5), so a route someone else owns is never touched.
+    $extra = @()
+    try {
+        if ($script:State -is [hashtable] -and $script:State.Misc -is [hashtable]) {
+            $extra += [string]$script:State.Misc['DiscoveredPortalIp']
+            $extra += @($script:State.Misc['InjectedHostRoutes'] | ForEach-Object { [string]$_ })
+        }
+        foreach ($ea in @(Get-EthernetAdapters)) { $extra += @(Get-DhcpDnsServers ([string]$ea.InterfaceGuid) | Where-Object { Test-PrivateIPv4 $_ }) }
+    } catch {}
+    foreach ($hip in @($extra | Where-Object { $_ } | Select-Object -Unique)) {
+        foreach ($rt in @(Get-NetRoute -DestinationPrefix "$hip/32" -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Where-Object { [int]$_.RouteMetric -eq 5 -and ($InterfaceIndex -le 0 -or [int]$_.InterfaceIndex -eq $InterfaceIndex) })) {
+            Remove-NetRoute -InterfaceIndex ([int]$rt.InterfaceIndex) -DestinationPrefix "$hip/32" -NextHop ([string]$rt.NextHop) -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue
+        }
+    }
+    try { if ($InterfaceIndex -le 0 -and $script:State -is [hashtable] -and $script:State.Misc -is [hashtable] -and $script:State.Misc.ContainsKey('InjectedHostRoutes')) { $script:State.Misc.Remove('InjectedHostRoutes') } } catch {}
+}
+function Restore-InterfaceMetrics([string]$Why) {
+    Remove-CampusHostRoutes
+    $orig = $script:State.Misc['MetricOrig']
+    $present = @(Get-NetAdapter -IncludeHidden -ErrorAction SilentlyContinue)
+    if ($orig -is [hashtable] -and $orig.Count -gt 0) {
+        foreach ($k in @($orig.Keys)) {
+            $rec = $orig[$k]
+            $guid = ($k -split '\|')[0]
+            $ad = $present | Where-Object { [string]$_.InterfaceGuid -eq $guid } | Select-Object -First 1
+            if (-not $ad) { if (-not $script:IsDry) { $orig.Remove($k) }; continue }
+            $af = [string]$rec.Af
+            $ok = $false
+            if ([string]$rec.Auto -eq 'Enabled') {
+                $ok = Invoke-Change ('{0}: {1} {2} metric back to automatic' -f $Why, $rec.Alias, $af) { Set-NetIPInterface -InterfaceIndex $ad.ifIndex -AddressFamily $af -AutomaticMetric Enabled -ErrorAction Stop }
+            } else {
+                $mv = [int]$rec.Metric
+                $ok = Invoke-Change ('{0}: {1} {2} metric back to {3}' -f $Why, $rec.Alias, $af, $mv) { Set-NetIPInterface -InterfaceIndex $ad.ifIndex -AddressFamily $af -InterfaceMetric $mv -ErrorAction Stop }
+            }
+            if ($ok -and -not $script:IsDry) { $orig.Remove($k) }
+        }
+    }
+    if ($script:State.Misc['WifiMetricManaged'] -eq $true -and -not ($orig -is [hashtable] -and $orig.Count -gt 0)) {
+        # records written by an older build: it never kept the original values, so automatic is the best honest restore
+        foreach ($w in @(Get-NetIPInterface -ErrorAction SilentlyContinue | Where-Object { $_.InterfaceAlias -match 'Wi-?Fi|Wireless' })) {
+            [void](Invoke-Change ('{0}: {1} {2} metric back to automatic (older record)' -f $Why, $w.InterfaceAlias, $w.AddressFamily) { Set-NetIPInterface -InterfaceIndex $w.ifIndex -AddressFamily $w.AddressFamily -AutomaticMetric Enabled -ErrorAction Stop })
+        }
+        if (-not $script:IsDry) { $script:State.Misc['WifiMetricManaged'] = $false }
+    }
+    if ((Get-RouteProfileName) -eq 'Windows') {
+        foreach ($ea in @(Get-EthernetAdapters)) {
+            foreach ($af in @('IPv4', 'IPv6')) {
+                $ipif = Get-NetIPInterface -InterfaceIndex $ea.ifIndex -AddressFamily $af -ErrorAction SilentlyContinue | Select-Object -First 1
+                if ($ipif -and [string]$ipif.AutomaticMetric -ne 'Enabled') {
+                    [void](Invoke-Change ('{0}: {1} {2} automatic metric enabled' -f $Why, $ea.Name, $af) { Set-NetIPInterface -InterfaceIndex $ea.ifIndex -AddressFamily $af -AutomaticMetric Enabled -ErrorAction Stop })
+                }
+            }
+        }
+        foreach ($w in @(Get-OtherUplinkAdapters)) {
+            foreach ($af in @('IPv4', 'IPv6')) {
+                $ipif = Get-NetIPInterface -InterfaceIndex $w.ifIndex -AddressFamily $af -ErrorAction SilentlyContinue | Select-Object -First 1
+                if ($ipif -and [string]$ipif.AutomaticMetric -ne 'Enabled') {
+                    [void](Invoke-Change ('{0}: {1} {2} automatic metric enabled' -f $Why, $w.Name, $af) { Set-NetIPInterface -InterfaceIndex $w.ifIndex -AddressFamily $af -AutomaticMetric Enabled -ErrorAction Stop })
+                }
+            }
+        }
+    }
+}
+
+function Test-MetricsManaged {
+    $o = $script:State.Misc['MetricOrig']
+    return (($o -is [hashtable] -and $o.Count -gt 0) -or ($script:State.Misc['WifiMetricManaged'] -eq $true))
+}
+
+# ==============================================================================
+# IPv6: act only on EVIDENCE (advertised, but unreachable while IPv4 works); keep every other DisabledComponents bit
+# ==============================================================================
+function Get-Ipv6State($Ad, [string]$Conn) {
+    $g6 = @(Get-NetIPAddress -InterfaceIndex $Ad.ifIndex -AddressFamily IPv6 -ErrorAction SilentlyContinue | Where-Object { [string]$_.AddressState -eq 'Preferred' -and [string]$_.IPAddress -notmatch '^(fe80|fc|fd|::1)' })
+    $r6 = @(Get-NetRoute -InterfaceIndex $Ad.ifIndex -AddressFamily IPv6 -DestinationPrefix '::/0' -ErrorAction SilentlyContinue)
+    $reach = $false
+    if ($g6.Count -gt 0 -and $r6.Count -gt 0 -and $Conn -eq 'Online') { $reach = Test-Ipv6Reach ([string]$g6[0].IPAddress) }
+    return @{ Verdict = (Get-Ipv6Verdict ($g6.Count -gt 0) ($r6.Count -gt 0) $Conn $reach); HasGlobal = ($g6.Count -gt 0) }
+}
+
+function Get-PreferIpv4Value($Current) {
+    $c = 0
+    if ($null -ne $Current) { $c = [int]$Current }
+    return ($c -bor 32)   # 0x20 = prefer IPv4 in prefix policy; every other bit the user/OS set stays
+}
+
+# Pure decision (unit-tested): skip | candidate (seen once) | clamp (seen twice, within 8 bytes).
+function Get-MtuDecision($Pmtu, [int]$CurrentMtu, $Candidate) {
+    if ($null -eq $Pmtu) { return @{ Action = 'skip'; Value = 0 } }
+    $p = [int]$Pmtu
+    if ($CurrentMtu -lt 1500) { return @{ Action = 'skip'; Value = 0 } }     # already lowered (by us or by you)
+    if ($p -ge 1500 -or $p -lt 1280) { return @{ Action = 'skip'; Value = 0 } }
+    if ($null -ne $Candidate -and [Math]::Abs([int]$Candidate - $p) -le 8) { return @{ Action = 'clamp'; Value = [Math]::Min([int]$Candidate, $p) } }
+    return @{ Action = 'candidate'; Value = $p }
+}
+
+# ==============================================================================
+# DHCP FAILURE WORDING (states what Windows logged; does not guess at the cause)
+# ==============================================================================
+$script:DhcpDiagCache = $null
+function Get-DhcpErrorCode {
+    $c = $script:DhcpDiagCache
+    if ($c -and (((Get-Date) - $c.Time).TotalSeconds -lt 60)) { return $c.Code }
+    $code = $null
+    try {
+        foreach ($e in @(Get-WinEvent -FilterHashtable @{ LogName = 'Microsoft-Windows-Dhcp-Client/Admin'; Id = 1001 } -MaxEvents 3 -ErrorAction SilentlyContinue)) {
+            if (((Get-Date) - $e.TimeCreated).TotalSeconds -gt 300) { continue }
+            $m = [regex]::Match([string]$e.Message, '0x([0-9a-fA-F]{1,8})')
+            if ($m.Success) { $code = [Convert]::ToInt32($m.Groups[1].Value, 16); break }
+            if ($e.Properties -and $e.Properties.Count -gt 7) { $v = 0; if ([int]::TryParse([string]$e.Properties[7].Value, [ref]$v)) { $code = $v; break } }
+        }
+    } catch {}
+    $script:DhcpDiagCache = @{ Time = (Get-Date); Code = $code }
+    return $code
+}
+
+function Get-DhcpFailureText($Code, [string]$Mac) {
+    $extra = ''
+    try {
+        $lastL = $script:State.Misc['LastCampusLease']
+        if ($lastL -and $lastL.Ip) { $extra = " (Last known lease was $($lastL.Ip))." }
+    } catch {}
+    if ($null -ne $Code -and [int]$Code -eq 121) { return ('The DHCP request timed out (0x79): no DHCP server or relay answered on this port. A switch fault and an unregistered MAC look identical from here.' + $extra) }
+    if ($null -ne $Code) { return (('Windows logged DHCP error 0x{0:X} for this port.' -f [int]$Code) + $extra) }
+    return (('No lease. Likely causes: wrong or blocked wall port, VLAN not provisioned, or this MAC is not registered: {0}' -f $Mac) + $extra)
+}
+# ==============================================================================
+# HARDENED PORTAL CLIENT (raw TLS over a source-bound socket; no process-wide certificate bypass)
+# ==============================================================================
+function Test-AllowedPortalIp([string]$Ip, $Ad = $null) {
+    if (Test-PrivateIPv4 $Ip) { return $true }
+    if ($Ip -match '^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.') { return $true }
+    if ($Ip -eq [string]$script:Cfg.PortalIp) { return $true }
+    if ($Ad) {
+        foreach ($g in @(Get-GatewaysV4 $Ad)) { if ($g -eq $Ip) { return $true } }
+    } else {
+        foreach ($a in @(Get-EthernetAdapters)) {
+            foreach ($g in @(Get-GatewaysV4 $a)) { if ($g -eq $Ip) { return $true } }
+        }
+    }
+    return $false
+}
+function Test-PrivateIPv4([string]$Ip) {
+    $a = $null
+    if (-not [System.Net.IPAddress]::TryParse($Ip, [ref]$a)) { return $false }
+    if ($a.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork) { return $false }
+    $b = $a.GetAddressBytes()
+    if ($b[0] -eq 10) { return $true }
+    if ($b[0] -eq 172 -and $b[1] -ge 16 -and $b[1] -le 31) { return $true }
+    if ($b[0] -eq 192 -and $b[1] -eq 168) { return $true }
+    return $false
+}
+
+# Pure decision (unit-tested). The real callback inlines the same rule: a delegate cannot see script functions.
+function Get-CertDecision([string]$PolicyErrors, [string]$Sha256, [string]$Pin) {
+    if ($PolicyErrors -eq 'None') { return 'valid' }
+    if ($Pin -and $Sha256 -and ($Sha256.ToUpper() -eq $Pin.ToUpper())) { return 'pinned' }
+    return 'reject'
+}
+
+# A certificate is accepted ONLY when Windows validates it, or when its SHA-256 equals the pin you approved.
+# $Capture (optional hashtable) receives the certificate details; with AcceptAny it is a look-only handshake.
+function New-CertCallback([string]$Pin, $Capture) {
+    $pinU = ([string]$Pin).ToUpper()
+    $cb = {
+        param($sender, $cert, $chain, $errs)
+        $sha = $null; $hex = ''
+        try {
+            if ($null -ne $cert) {
+                $sha = [System.Security.Cryptography.SHA256]::Create()
+                $hex = ([BitConverter]::ToString($sha.ComputeHash($cert.GetRawCertData())) -replace '-', '')
+            }
+        } catch {} finally { if ($sha) { $sha.Dispose() } }
+        if ($null -ne $Capture) {
+            $Capture.Sha256 = $hex; $Capture.Errors = [string]$errs; $Capture.Subject = ''; $Capture.Issuer = ''; $Capture.NotAfter = ''
+            try { $c2 = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($cert); $Capture.Subject = [string]$c2.Subject; $Capture.Issuer = [string]$c2.Issuer; $Capture.NotAfter = $c2.NotAfter.ToString('yyyy-MM-dd') } catch {}
+            if ($Capture.AcceptAny) { return $true }
+        }
+        if ([string]$errs -eq 'None') { return $true }
+        if ($pinU -and $hex -and ($hex -eq $pinU)) { return $true }
+        return $false
+    }.GetNewClosure()
+    return [System.Net.Security.RemoteCertificateValidationCallback]$cb
+}
+
+function ConvertFrom-ChunkedBytes([byte[]]$Data) {
+    $out = New-Object System.IO.MemoryStream
+    try {
+        $i = 0
+        while ($i -lt $Data.Length) {
+            $e = $i
+            $lfLen = 0
+            while ($e -lt $Data.Length) {
+                if ($e -lt ($Data.Length - 1) -and $Data[$e] -eq 13 -and $Data[$e + 1] -eq 10) { $lfLen = 2; break }
+                if ($Data[$e] -eq 10) { $lfLen = 1; break }
+                $e++
+            }
+            if ($lfLen -eq 0) { break }
+            $line = [System.Text.Encoding]::ASCII.GetString($Data, $i, $e - $i)
+            $semi = $line.IndexOf(';'); if ($semi -ge 0) { $line = $line.Substring(0, $semi) }
+            $n = 0
+            try { $n = [Convert]::ToInt32($line.Trim(), 16) } catch { break }
+            $i = $e + $lfLen
+            if ($n -le 0 -or $i -ge $Data.Length) { break }
+            $take = [Math]::Min($n, $Data.Length - $i)
+            if ($take -gt 0) { $out.Write($Data, $i, $take) }
+            $i += $take
+            if ($i -lt ($Data.Length - 1) -and $Data[$i] -eq 13 -and $Data[$i + 1] -eq 10) { $i += 2 }
+            elseif ($i -lt $Data.Length -and $Data[$i] -eq 10) { $i += 1 }
+        }
+        return , ($out.ToArray())
+    } finally {
+        $out.Dispose()
+    }
+}
+
+# Bounded gzip / deflate (zlib or raw) decoder. A decompression bomb (> MaxBytes) or undecodable data returns the raw bytes.
+function Expand-HttpBody([byte[]]$Bytes, [string]$Encoding, [int]$MaxBytes = 1048576) {
+    $enc = ([string]$Encoding).Trim().ToLowerInvariant()
+    if ($null -eq $Bytes -or $Bytes.Length -lt 2) { return , $Bytes }
+    $isGz = ($Bytes[0] -eq 0x1F -and $Bytes[1] -eq 0x8B)
+    if ($enc -notmatch 'gzip|deflate' -and -not $isGz) { return , $Bytes }
+    $in = $null; $zs = $null; $out = $null
+    try {
+        $start = 0
+        if (-not $isGz -and (($Bytes[0] -band 0x0F) -eq 8) -and ((([int]$Bytes[0] * 256) + [int]$Bytes[1]) % 31) -eq 0) { $start = 2 }
+        $in = New-Object System.IO.MemoryStream(, $Bytes)
+        $in.Position = $start
+        if ($isGz) { $zs = New-Object System.IO.Compression.GZipStream($in, [System.IO.Compression.CompressionMode]::Decompress) }
+        else { $zs = New-Object System.IO.Compression.DeflateStream($in, [System.IO.Compression.CompressionMode]::Decompress) }
+        $out = New-Object System.IO.MemoryStream
+        $buf = New-Object byte[] 8192
+        $total = 0
+        while ($true) {
+            $n = $zs.Read($buf, 0, $buf.Length)
+            if ($n -le 0) { break }
+            $total += $n
+            if ($total -gt $MaxBytes) { return , $Bytes }
+            $out.Write($buf, 0, $n)
+        }
+        return , ($out.ToArray())
+    } catch { return , $Bytes }
+    finally { foreach ($o in @($zs, $out, $in)) { if ($o) { try { $o.Dispose() } catch {} } } }
+}
+function ConvertFrom-HttpBytes([byte[]]$Raw) {
+    $r = @{ Code = 0; Headers = @{}; Cookies = @(); Body = ''; Location = '' }
+    if ($null -eq $Raw -or $Raw.Length -lt 12) { return $r }
+    $he = -1
+    $termLen = 4
+    for ($i = 0; $i -lt ($Raw.Length - 3); $i++) {
+        if ($Raw[$i] -eq 13 -and $Raw[$i + 1] -eq 10 -and $Raw[$i + 2] -eq 13 -and $Raw[$i + 3] -eq 10) {
+            $he = $i; $termLen = 4; break
+        }
+    }
+    if ($he -lt 0) {
+        for ($i = 0; $i -lt ($Raw.Length - 1); $i++) {
+            if ($Raw[$i] -eq 10 -and $Raw[$i + 1] -eq 10) {
+                $he = $i; $termLen = 2; break
+            }
+        }
+    }
+    if ($he -lt 0) { return $r }
+    $headerStr = [System.Text.Encoding]::ASCII.GetString($Raw, 0, $he)
+    $lines = $headerStr -split "`r?`n"
+    $m = [regex]::Match($lines[0], '^HTTP/\d\.\d\s+(\d{3})')
+    if (-not $m.Success) { return $r }
+    $r.Code = [int]$m.Groups[1].Value
+    foreach ($l in ($lines | Select-Object -Skip 1)) {
+        $c = $l.IndexOf(':'); if ($c -lt 1) { continue }
+        $k = $l.Substring(0, $c).Trim().ToLower(); $v = $l.Substring($c + 1).Trim()
+        if ($k -eq 'set-cookie') { $r.Cookies += $v } else { $r.Headers[$k] = $v }
+    }
+    $r.Location = [string]$r.Headers['location']
+    $bs = $he + $termLen
+    $len = [Math]::Max(0, $Raw.Length - $bs)
+    $bodyBytes = New-Object byte[] $len
+    if ($len -gt 0) { [Array]::Copy($Raw, $bs, $bodyBytes, 0, $len) }
+    if (([string]$r.Headers['transfer-encoding']) -match 'chunked') { $bodyBytes = ConvertFrom-ChunkedBytes $bodyBytes }
+    $bodyBytes = Expand-HttpBody $bodyBytes ([string]$r.Headers['content-encoding'])
+    $r.Body = [System.Text.Encoding]::UTF8.GetString($bodyBytes)
+    return $r
+}
+
+# One HTTPS exchange. Source-bound to the Ethernet IP, TLS 1.2, bounded time and size, no proxy, no auto-redirect.
+function Invoke-TlsHttp {
+    param([uri]$Uri, [string]$Method = 'GET', [string]$Body = '', [string]$SourceIp = '', [string]$Pin = '', [hashtable]$Jar, [int]$TimeoutMs = 6000, [int]$MaxBytes = 262144, $Capture = $null, [switch]$HandshakeOnly)
+    $r = @{ Code = 0; Headers = @{}; Body = ''; Location = ''; Error = ''; Sha256 = ''; TlsErrors = '' }
+    $sock = $null; $ssl = $null
+    try {
+        $hostName = [string]$Uri.Host
+        $ip = ''
+        $tmp = $null
+        if ([System.Net.IPAddress]::TryParse($hostName, [ref]$tmp)) { $ip = $hostName } else { $ip = Resolve-HostBounded $hostName 2500 $SourceIp }
+        if (-not $ip) { $r.Error = 'DnsFail'; return $r }
+        # Verify IP is allowed campus IP (private RFC1918, CGNAT, configured portal IP, or local gateway)
+        if (-not (Test-AllowedPortalIp $ip)) { $r.Error = 'NotPrivate'; return $r }
+        $sock = New-Object System.Net.Sockets.Socket([System.Net.Sockets.AddressFamily]::InterNetwork, [System.Net.Sockets.SocketType]::Stream, [System.Net.Sockets.ProtocolType]::Tcp)
+        if ($SourceIp) {
+            try { $sock.Bind((New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Parse($SourceIp), 0))) } catch { $r.Error = 'BindFailure'; return $r }
+        }
+        $iar = $sock.BeginConnect([System.Net.IPAddress]::Parse($ip), [int]$Uri.Port, $null, $null)
+        $connected = $iar.AsyncWaitHandle.WaitOne($TimeoutMs, $false)
+        if (-not $connected) {
+            try { $sock.Close() } catch {}
+            $r.Error = 'ConnectTimeout'; return $r
+        }
+        try { $sock.EndConnect($iar) } catch { $r.Error = 'ConnectFailure'; return $r }
+        $ns = New-Object System.Net.Sockets.NetworkStream($sock, $false)
+        $ns.ReadTimeout = $TimeoutMs; $ns.WriteTimeout = $TimeoutMs
+        $cb = New-CertCallback $Pin $Capture
+        $ssl = New-Object System.Net.Security.SslStream($ns, $false, $cb)
+        $protocols = [System.Security.Authentication.SslProtocols]::Tls12
+        try { $protocols = [System.Security.Authentication.SslProtocols]'Tls12, Tls13' } catch {
+            # keep TLS 1.2: never fall back to the OS default list (it can still include TLS 1.0/1.1)
+        }
+        try { $ssl.AuthenticateAsClient($hostName, $null, $protocols, $false) }
+        catch { $r.Error = 'TlsRejected'; if ($Capture) { $r.Sha256 = [string]$Capture.Sha256; $r.TlsErrors = [string]$Capture.Errors }; return $r }
+        if ($Capture) { $r.Sha256 = [string]$Capture.Sha256; $r.TlsErrors = [string]$Capture.Errors }
+        if ($HandshakeOnly) { return $r }
