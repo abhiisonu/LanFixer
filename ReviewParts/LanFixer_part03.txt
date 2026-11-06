@@ -519,7 +519,11 @@ function Show-Cursor([bool]$On) { if ($script:Ui.Vt) { [Console]::Write($script:
 function Enter-Screen {
     Set-ConsoleQuickEdit $true
     Clear-InputBuffer
-    if ($script:Ui.Vt) { [Console]::Write($script:Esc + '[?1049h'); $script:Ui.Alt = $true }
+    try {
+        if ($Host.UI.RawUI.BufferSize.Height -lt 3000) {
+            $Host.UI.RawUI.BufferSize = New-Object System.Management.Automation.Host.Size($Host.UI.RawUI.BufferSize.Width, 3000)
+        }
+    } catch {}
     Clear-Screen
 }
 function Exit-Screen {
@@ -794,7 +798,3 @@ function Get-DashboardModel($t, $adv, [int]$Width = 0) {
     $right = ''
     if ($t.LinkUp) {
         if ($t.UplinkActive -and $t.UplinkName) {
-            $uLabel = if ($t.UplinkProfile) { "$($t.UplinkName) ($($t.UplinkProfile))" } else { $t.UplinkName }
-            if ($t.UplinkIsPrimary) {
-                $right = ('Eth ' + $t.Speed + ' (Standby) ' + $script:G.mid + ' Uplink: ' + $uLabel)
-            } else {

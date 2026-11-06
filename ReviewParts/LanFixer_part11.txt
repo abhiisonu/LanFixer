@@ -1,3 +1,7 @@
+    }
+
+    foreach ($a in @($ads | Where-Object { $_.Status -eq 'Up' })) {
+        $guid = [string]$a.InterfaceGuid
         Write-Section ("NETWORK STATE: " + $a.Name)
         $h = Get-AdapterHealth $a
         $e = Get-AdapterEnvironment $a
@@ -794,7 +798,3 @@ function Invoke-LogicTests {
     $hrJs = ConvertFrom-HttpResponse ("HTTP/1.1 200 OK`r`n`r`n<script>window.location.href = 'http://portal.univ.edu/js';</script>")
     $hrRel = ConvertFrom-HttpResponse ("HTTP/1.1 200 OK`r`n`r`n<script>location.href='/login'</script>")
     $hrMs = ConvertFrom-HttpResponse ("HTTP/1.1 200 OK`r`n`r`nMicrosoft Connect Test")
-    $hr204 = ConvertFrom-HttpResponse ("HTTP/1.1 204 No Content`r`n`r`n")
-    Write-Check 'Logic: ConvertFrom-HttpResponse reads Location headers and meta/JS redirects of 200 portal pages' (($hr302.Location -ceq 'http://portal.univ.edu/login') -and ($hrMeta.Location -ceq 'http://portal.univ.edu/a?x=1&y=2') -and ($hrJs.Location -ceq 'http://portal.univ.edu/js'))
-    Write-Check 'Logic: ordinary probe answers (Microsoft test page, 204, relative JS) yield no redirect' (($hrRel.Location -eq '') -and ($hrMs.Location -eq '') -and ($hr204.Location -eq '') -and ($hrMs.Body -like 'Microsoft Connect Test*'))
-    $edPlain = [System.Text.Encoding]::UTF8.GetBytes('<form>portal-ok</form>')

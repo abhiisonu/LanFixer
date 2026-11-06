@@ -1,3 +1,7 @@
+            $uLabel = if ($t.UplinkProfile) { "$($t.UplinkName) ($($t.UplinkProfile))" } else { $t.UplinkName }
+            if ($t.UplinkIsPrimary) {
+                $right = ('Eth ' + $t.Speed + ' (Standby) ' + $script:G.mid + ' Uplink: ' + $uLabel)
+            } else {
                 $right = ('Eth ' + $t.Speed + ' (Primary) ' + $script:G.mid + ' Uplink: ' + $uLabel)
             }
         } else {
@@ -391,7 +395,7 @@ function Invoke-DashboardKey([string]$Key, $adv) {
             } -NoWait
         }
         '1' { Start-Repair 'quick heal' }
-        'm' { Show-View 'routing priority' { Show-RouteMenu } -NoWait }
+        'm' { Show-View 'routing priority' { Show-RouteMenu } }
         'x' {
             Show-View 'reset & system recovery options' {
                 Show-ResetMenu
@@ -495,7 +499,7 @@ function Invoke-DashboardKey([string]$Key, $adv) {
                 }
             }
         }
-        '3' { Show-View 'dns profile' { Show-DnsMenu } -NoWait }
+        '3' { Show-View 'dns profile' { Show-DnsMenu } }
         '4' { Show-View 'latency, packet loss & jitter probe' { Run-QuickProbe } }
         '5' {
             Show-View 'flush caches' {
@@ -794,7 +798,3 @@ function Get-InternetState {
                 }
                 $resp.Close()
             } catch [System.Net.WebException] {
-                $webResp = $_.Exception.Response -as [System.Net.HttpWebResponse]
-                if ($webResp) {
-                    $c = [int]$webResp.StatusCode
-                    if (($c -ge 300 -and $c -le 399) -or $c -eq 401 -or $c -eq 407 -or $c -eq 511 -or [bool]$webResp.Headers['Location']) {

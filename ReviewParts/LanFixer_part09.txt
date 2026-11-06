@@ -1,3 +1,7 @@
+            }
+        }
+        if ($anyVerifyFail -and -not $script:IsDry -and ($resHeal.Conn -ne 'Captive')) {
+            Write-Log 'WARN' 'DNS resolution failed for public endpoints. Deploying adaptive public DNS rescue...'
             foreach ($ad in @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' })) {
                 $rescueDns = @(Get-BestDnsOrder ([string]$ad.InterfaceGuid) @())
                 if ($rescueDns.Count -gt 0) {
@@ -794,7 +798,3 @@ function New-WatchdogXml([string]$CmdArgs, [string]$Start) {
       <Enabled>true</Enabled>
       <Subscription>&lt;QueryList&gt;&lt;Query Id="0" Path="System"&gt;&lt;Select Path="System"&gt;*[System[Provider[@Name='Microsoft-Windows-Power-Troubleshooter'] and (EventID=1)]]&lt;/Select&gt;&lt;/Query&gt;&lt;/QueryList&gt;</Subscription>
       <Delay>PT10S</Delay>
-    </EventTrigger>
-    <EventTrigger>
-      <Enabled>true</Enabled>
-      <Subscription>&lt;QueryList&gt;&lt;Query Id="0" Path="System"&gt;&lt;Select Path="System"&gt;*[System[Provider[@Name='Microsoft-Windows-Kernel-Power'] and (EventID=107 or EventID=507)]]&lt;/Select&gt;&lt;/Query&gt;&lt;/QueryList&gt;</Subscription>

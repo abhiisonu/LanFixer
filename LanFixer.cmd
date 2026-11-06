@@ -2119,7 +2119,11 @@ function Show-Cursor([bool]$On) { if ($script:Ui.Vt) { [Console]::Write($script:
 function Enter-Screen {
     Set-ConsoleQuickEdit $true
     Clear-InputBuffer
-    if ($script:Ui.Vt) { [Console]::Write($script:Esc + '[?1049h'); $script:Ui.Alt = $true }
+    try {
+        if ($Host.UI.RawUI.BufferSize.Height -lt 3000) {
+            $Host.UI.RawUI.BufferSize = New-Object System.Management.Automation.Host.Size($Host.UI.RawUI.BufferSize.Width, 3000)
+        }
+    } catch {}
     Clear-Screen
 }
 function Exit-Screen {
@@ -2791,7 +2795,7 @@ function Invoke-DashboardKey([string]$Key, $adv) {
             } -NoWait
         }
         '1' { Start-Repair 'quick heal' }
-        'm' { Show-View 'routing priority' { Show-RouteMenu } -NoWait }
+        'm' { Show-View 'routing priority' { Show-RouteMenu } }
         'x' {
             Show-View 'reset & system recovery options' {
                 Show-ResetMenu
@@ -2895,7 +2899,7 @@ function Invoke-DashboardKey([string]$Key, $adv) {
                 }
             }
         }
-        '3' { Show-View 'dns profile' { Show-DnsMenu } -NoWait }
+        '3' { Show-View 'dns profile' { Show-DnsMenu } }
         '4' { Show-View 'latency, packet loss & jitter probe' { Run-QuickProbe } }
         '5' {
             Show-View 'flush caches' {
@@ -9290,9 +9294,8 @@ function Show-DnsMenu {
     $c = [string]$k.KeyChar
     if ($map.ContainsKey($c)) {
         Set-DnsProfileMode $map[$c]
-        Out-Line @()
-        Out-Line @((Seg 'dim' '  press any key to return'))
-        Wait-AnyKey
+    } else {
+        Out-Line @((Seg 'dim' '  Operation cancelled. No changes made.'))
     }
 }
 function Show-RouteMenu {
@@ -9323,9 +9326,8 @@ function Show-RouteMenu {
     $c = [string]$k.KeyChar
     if ($map.ContainsKey($c)) {
         Set-RouteProfileMode $map[$c]
-        Out-Line @()
-        Out-Line @((Seg 'dim' '  press any key to return'))
-        Wait-AnyKey
+    } else {
+        Out-Line @((Seg 'dim' '  Operation cancelled. No changes made.'))
     }
 }
 function Show-ResetMenu {

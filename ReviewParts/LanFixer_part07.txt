@@ -1,3 +1,7 @@
+    $hasNeutTsk = ($script:State.Misc['NeutralizedTasks'] -is [hashtable] -and $script:State.Misc['NeutralizedTasks'].Count -gt 0)
+    # A substituted resolver on Wi-Fi / USB tethering / Bluetooth PAN is a reason to clean up on its own, even when every
+    # other hostel-only change has already been reverted.
+    $dnsManaged = @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object { (Get-SubTable 'Dns' ([string]$_.InterfaceGuid)).Managed -eq $true }).Count -gt 0
     $any = ($rules.Count -gt 0) -or (Test-MetricsManaged) -or $hasNeutSvc -or $hasNeutTsk -or $dnsManaged
     foreach ($fl in $flags) { if ($script:State.Misc[$fl] -eq $true) { $any = $true } }
     if (-not $any) { return }
@@ -794,7 +798,3 @@ function Invoke-UltraSystemReset {
             [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'tcp', 'reset') 5000)
             [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'tcp', 'set', 'heuristics', 'disabled') 5000)
             [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'tcp', 'set', 'global', 'autotuninglevel=normal') 5000)
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'tcp', 'set', 'global', 'rss=enabled') 5000)
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'tcp', 'set', 'global', 'rsc=enabled') 5000)
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'tcp', 'set', 'global', 'ecncapability=disabled') 5000)
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'tcp', 'set', 'global', 'timestamps=disabled') 5000)

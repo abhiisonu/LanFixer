@@ -1,3 +1,7 @@
+    $hr204 = ConvertFrom-HttpResponse ("HTTP/1.1 204 No Content`r`n`r`n")
+    Write-Check 'Logic: ConvertFrom-HttpResponse reads Location headers and meta/JS redirects of 200 portal pages' (($hr302.Location -ceq 'http://portal.univ.edu/login') -and ($hrMeta.Location -ceq 'http://portal.univ.edu/a?x=1&y=2') -and ($hrJs.Location -ceq 'http://portal.univ.edu/js'))
+    Write-Check 'Logic: ordinary probe answers (Microsoft test page, 204, relative JS) yield no redirect' (($hrRel.Location -eq '') -and ($hrMs.Location -eq '') -and ($hr204.Location -eq '') -and ($hrMs.Body -like 'Microsoft Connect Test*'))
+    $edPlain = [System.Text.Encoding]::UTF8.GetBytes('<form>portal-ok</form>')
     $edMs = New-Object System.IO.MemoryStream
     $edGz = New-Object System.IO.Compression.GZipStream($edMs, [System.IO.Compression.CompressionMode]::Compress)
     $edGz.Write($edPlain, 0, $edPlain.Length); $edGz.Close()
@@ -490,9 +494,8 @@ function Show-DnsMenu {
     $c = [string]$k.KeyChar
     if ($map.ContainsKey($c)) {
         Set-DnsProfileMode $map[$c]
-        Out-Line @()
-        Out-Line @((Seg 'dim' '  press any key to return'))
-        Wait-AnyKey
+    } else {
+        Out-Line @((Seg 'dim' '  Operation cancelled. No changes made.'))
     }
 }
 function Show-RouteMenu {
@@ -523,9 +526,8 @@ function Show-RouteMenu {
     $c = [string]$k.KeyChar
     if ($map.ContainsKey($c)) {
         Set-RouteProfileMode $map[$c]
-        Out-Line @()
-        Out-Line @((Seg 'dim' '  press any key to return'))
-        Wait-AnyKey
+    } else {
+        Out-Line @((Seg 'dim' '  Operation cancelled. No changes made.'))
     }
 }
 function Show-ResetMenu {
@@ -796,5 +798,3 @@ function New-SentinelTaskXml([string]$CmdArgs) {
       <Count>999</Count>
     </RestartOnFailure>
   </Settings>
-  <Actions Context="Author">
-    <Exec>

@@ -1,3 +1,7 @@
+    </EventTrigger>
+    <EventTrigger>
+      <Enabled>true</Enabled>
+      <Subscription>&lt;QueryList&gt;&lt;Query Id="0" Path="System"&gt;&lt;Select Path="System"&gt;*[System[Provider[@Name='Microsoft-Windows-Kernel-Power'] and (EventID=107 or EventID=507)]]&lt;/Select&gt;&lt;/Query&gt;&lt;/QueryList&gt;</Subscription>
       <Delay>PT10S</Delay>
     </EventTrigger>
     <EventTrigger>
@@ -794,7 +798,3 @@ function Show-Diagnostics {
             Write-KV '  Packet errors / discards' ("{0} / {1}" -f $errs, $disc) $c
             if ($errs -gt 100) { [void]$issues.Add("Adapter reports $errs packet errors: suspect cable, wall port or duplex mismatch") }
         }
-    }
-
-    foreach ($a in @($ads | Where-Object { $_.Status -eq 'Up' })) {
-        $guid = [string]$a.InterfaceGuid

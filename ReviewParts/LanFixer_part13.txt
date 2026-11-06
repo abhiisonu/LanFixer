@@ -1,3 +1,5 @@
+  <Actions Context="Author">
+    <Exec>
       <Command>%SystemRoot%\System32\cmd.exe</Command>
       <Arguments>$CmdArgs</Arguments>
     </Exec>

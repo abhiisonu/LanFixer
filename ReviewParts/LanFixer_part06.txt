@@ -1,3 +1,7 @@
+                    Set-NetIPInterface -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -Dhcp Disabled -ErrorAction Stop
+                    $params = @{ InterfaceIndex = $ad.ifIndex; IPAddress = $origIpInfo.IPAddress; PrefixLength = $origIpInfo.PrefixLength; ErrorAction = 'Stop' }
+                    if ($origIpInfo.DefaultGateway) { $params.DefaultGateway = $origIpInfo.DefaultGateway }
+                    New-NetIPAddress @params -ErrorAction SilentlyContinue | Out-Null
                 })
             }
             $script:EnvCache.Remove($guid)
@@ -794,7 +798,3 @@ function Invoke-RoamingCleanup {
     $rules = @(Get-OurNrptRules)
     $flags = @('LlmnrManaged', 'NegCacheManaged', 'MdnsManaged', 'SmartDnsManaged', 'TcpKeepAliveManaged', 'Ipv4PrecedenceManaged')
     $hasNeutSvc = ($script:State.Misc['NeutralizedServices'] -is [hashtable] -and $script:State.Misc['NeutralizedServices'].Count -gt 0)
-    $hasNeutTsk = ($script:State.Misc['NeutralizedTasks'] -is [hashtable] -and $script:State.Misc['NeutralizedTasks'].Count -gt 0)
-    # A substituted resolver on Wi-Fi / USB tethering / Bluetooth PAN is a reason to clean up on its own, even when every
-    # other hostel-only change has already been reverted.
-    $dnsManaged = @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object { (Get-SubTable 'Dns' ([string]$_.InterfaceGuid)).Managed -eq $true }).Count -gt 0
