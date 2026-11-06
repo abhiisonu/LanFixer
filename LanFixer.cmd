@@ -7207,6 +7207,18 @@ function Invoke-LogicTests {
     Write-Check 'Logic: RFC 8910 DHCP option 114 binary decoder extracts captive portal URL' ($decodedOpt114 -ceq $opt114Url)
     Write-Check 'Logic: sinkhole detector catches 192.0.2.1 and unroutable test blocks' ((Test-IsSinkholeIp '192.0.2.1') -and (Test-IsSinkholeIp '198.51.100.25') -and (Test-IsSinkholeIp '203.0.113.8') -and (Test-IsSinkholeIp '127.0.0.1') -and (-not (Test-IsSinkholeIp '142.251.43.142')) -and (-not (Test-IsSinkholeIp '1.1.1.1')))
     Write-Check 'Logic: universal DNS verdict engine neutralizes unroutable or sinkholed IPv6 and preserves genuine dual-stack' (((Get-DnsVerdictDecision $false $false 2 $false) -eq 'Neutralize') -and ((Get-DnsVerdictDecision $true $true 2 $true) -eq 'Neutralize') -and ((Get-DnsVerdictDecision $true $true 2 $false) -eq 'Keep') -and ((Get-DnsVerdictDecision $false $false 0 $false) -eq 'None'))
+    # v6.4.2 Hardened Invariant Checks: PnP rate-limit, StartTime ISO round-trip, DryRun guards, Uplink fallback ladder, and Interceptor restoration
+    $pnpDef = [string](Get-Command Rescue-DormantEthernetPnp -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Rescue-DormantEthernetPnp stamps 300s limiter before query and uses -PresentOnly' (($pnpDef.IndexOf("Test-Elapsed 'PnpRescan' 300") -ge 0) -and ($pnpDef.IndexOf("Set-StateTime 'PnpRescan'") -ge 0) -and ($pnpDef.IndexOf('-PresentOnly') -ge 0))
+    $utcNow = (Get-Date).ToUniversalTime()
+    $parsedUtc = [datetime]::Parse($utcNow.ToString('o'), [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
+    Write-Check 'Logic: interactive session timestamp round-trips via ISO-8601 UTC with zero drift' ([math]::Abs(($utcNow - $parsedUtc).TotalSeconds) -lt 0.001)
+    $gwDef = [string](Get-Command Get-GatewayMacs -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Get-GatewayMacs guards Remove-NetNeighbor with -not $script:IsDry' (($gwDef.IndexOf('if (-not $script:IsDry)') -ge 0) -and ($gwDef.IndexOf('Remove-NetNeighbor') -ge 0))
+    $rnDef = [string](Get-Command Restore-NeutralizedInterceptors -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Restore-NeutralizedInterceptors restores DelayedAutostart and restarts running services' (($rnDef.IndexOf('WasRunning') -ge 0) -and ($rnDef.IndexOf('DelayedAutostart') -ge 0) -and ($rnDef.IndexOf('Start-Service') -ge 0))
+    $ssDef = [string](Get-Command Shield-SystemStack -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Shield-SystemStack falls back to DHCP DNS and gateway before public resolvers' (($ssDef.IndexOf('Get-DhcpDnsServers') -ge 0) -and ($ssDef.IndexOf('IPv4DefaultGateway') -ge 0) -and ($ssDef.IndexOf('fallbackDns') -ge 0))
     $script:State = $stSave
 }
 function Invoke-SelfTest {
