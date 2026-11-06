@@ -1,3 +1,17 @@
+    $edMs = New-Object System.IO.MemoryStream
+    $edGz = New-Object System.IO.Compression.GZipStream($edMs, [System.IO.Compression.CompressionMode]::Compress)
+    $edGz.Write($edPlain, 0, $edPlain.Length); $edGz.Close()
+    $edGzBytes = $edMs.ToArray()
+    $edMs2 = New-Object System.IO.MemoryStream
+    $edDf = New-Object System.IO.Compression.DeflateStream($edMs2, [System.IO.Compression.CompressionMode]::Compress)
+    $edDf.Write($edPlain, 0, $edPlain.Length); $edDf.Close()
+    $edRaw = $edMs2.ToArray()
+    $edZlib = [byte[]](@(0x78, 0x9C) + $edRaw)
+    $edBig = New-Object byte[] 3000000
+    $edMs3 = New-Object System.IO.MemoryStream
+    $edBg = New-Object System.IO.Compression.GZipStream($edMs3, [System.IO.Compression.CompressionMode]::Compress)
+    $edBg.Write($edBig, 0, $edBig.Length); $edBg.Close()
+    $edBomb = $edMs3.ToArray()
     $edText = { param($b) [System.Text.Encoding]::UTF8.GetString([byte[]]$b) }
     $edOk = ((& $edText (Expand-HttpBody $edGzBytes 'gzip')) -ceq '<form>portal-ok</form>') -and ((& $edText (Expand-HttpBody $edGzBytes '')) -ceq '<form>portal-ok</form>') -and ((& $edText (Expand-HttpBody $edRaw 'deflate')) -ceq '<form>portal-ok</form>') -and ((& $edText (Expand-HttpBody $edZlib 'deflate')) -ceq '<form>portal-ok</form>')
     $edI = Expand-HttpBody $edPlain 'identity'
@@ -784,17 +798,3 @@ function New-SentinelTaskXml([string]$CmdArgs) {
   </Settings>
   <Actions Context="Author">
     <Exec>
-      <Command>%SystemRoot%\System32\cmd.exe</Command>
-      <Arguments>$CmdArgs</Arguments>
-    </Exec>
-  </Actions>
-</Task>
-"@
-}
-
-function Install-SentinelTask {
-    if (-not (Assert-Admin)) { return $false }
-    if (-not $script:StoreReady -or -not $script:StoreSecure) {
-        Write-Log 'FAIL' 'Protected store folder unavailable. Cannot register Sentinel task.'
-        return $false
-    }

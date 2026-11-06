@@ -431,9 +431,17 @@ function Get-PortalCredentials {
     return $null
 }
 function Remove-PortalCredentials {
-    foreach ($f in @($script:VaultFile, ($script:VaultFile + '.new'))) { if (Test-Path -LiteralPath $f) { Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue } }
-    $script:State.Misc['PortalFails'] = 0; $script:State.Misc['PortalAmbiguous'] = 0
-    $script:State.Misc['PortalLoginSuspended'] = $false
+    foreach ($f in @($script:VaultFile, ($script:VaultFile + '.new'), ($script:VaultFile + '.bak'), ($script:VaultFile + '.tmp'))) {
+        if (Test-Path -LiteralPath $f) { Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue }
+    }
+    if ($script:State.Misc -is [hashtable]) {
+        $script:State.Misc['PortalFails'] = 0
+        $script:State.Misc['PortalAmbiguous'] = 0
+        $script:State.Misc['PortalLoginSuspended'] = $false
+        $script:State.Misc.Remove('PortalPin')
+        $script:State.Misc.Remove('DiscoveredPortalUrl')
+        $script:State.Misc.Remove('DiscoveredPortalIp')
+    }
 }
 # Zero-touch login. Every guard below exists because a rogue device on a hostel LAN can answer for the portal.
 function Invoke-HeadlessPortalLogin {
@@ -790,11 +798,3 @@ function New-WatchdogXml([string]$CmdArgs, [string]$Start) {
     <EventTrigger>
       <Enabled>true</Enabled>
       <Subscription>&lt;QueryList&gt;&lt;Query Id="0" Path="System"&gt;&lt;Select Path="System"&gt;*[System[Provider[@Name='Microsoft-Windows-Kernel-Power'] and (EventID=107 or EventID=507)]]&lt;/Select&gt;&lt;/Query&gt;&lt;/QueryList&gt;</Subscription>
-      <Delay>PT10S</Delay>
-    </EventTrigger>
-    <EventTrigger>
-      <Enabled>true</Enabled>
-      <Subscription>&lt;QueryList&gt;&lt;Query Id="0" Path="System"&gt;&lt;Select Path="System"&gt;*[System[Provider[@Name='Tcpip'] and (EventID=4199)]]&lt;/Select&gt;&lt;/Query&gt;&lt;/QueryList&gt;</Subscription>
-      <Delay>PT5S</Delay>
-    </EventTrigger>
-    <BootTrigger>

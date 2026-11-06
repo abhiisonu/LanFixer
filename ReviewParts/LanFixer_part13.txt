@@ -1,3 +1,17 @@
+      <Command>%SystemRoot%\System32\cmd.exe</Command>
+      <Arguments>$CmdArgs</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+"@
+}
+
+function Install-SentinelTask {
+    if (-not (Assert-Admin)) { return $false }
+    if (-not $script:StoreReady -or -not $script:StoreSecure) {
+        Write-Log 'FAIL' 'Protected store folder unavailable. Cannot register Sentinel task.'
+        return $false
+    }
     $cmdArgs = '/c ""' + $script:SelfCopy + '" -Mode Daemon -Headless -NoPause"'
     $xml = New-SentinelTaskXml $cmdArgs
     $ok = Register-LfTask 'LanFixer_Sentinel' $xml 'LanFixer_Sentinel.xml'

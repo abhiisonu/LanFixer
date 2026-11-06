@@ -6831,9 +6831,17 @@ function Get-PortalCredentials {
     return $null
 }
 function Remove-PortalCredentials {
-    foreach ($f in @($script:VaultFile, ($script:VaultFile + '.new'))) { if (Test-Path -LiteralPath $f) { Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue } }
-    $script:State.Misc['PortalFails'] = 0; $script:State.Misc['PortalAmbiguous'] = 0
-    $script:State.Misc['PortalLoginSuspended'] = $false
+    foreach ($f in @($script:VaultFile, ($script:VaultFile + '.new'), ($script:VaultFile + '.bak'), ($script:VaultFile + '.tmp'))) {
+        if (Test-Path -LiteralPath $f) { Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue }
+    }
+    if ($script:State.Misc -is [hashtable]) {
+        $script:State.Misc['PortalFails'] = 0
+        $script:State.Misc['PortalAmbiguous'] = 0
+        $script:State.Misc['PortalLoginSuspended'] = $false
+        $script:State.Misc.Remove('PortalPin')
+        $script:State.Misc.Remove('DiscoveredPortalUrl')
+        $script:State.Misc.Remove('DiscoveredPortalIp')
+    }
 }
 # Zero-touch login. Every guard below exists because a rogue device on a hostel LAN can answer for the portal.
 function Invoke-HeadlessPortalLogin {
@@ -7432,7 +7440,10 @@ function Update-WatchdogIfStale {
 function Uninstall-Watchdog {
     if (-not (Assert-Admin)) { return }
     foreach ($n in @($script:Cfg.TaskWatchdog, $script:Cfg.TaskPortal, $script:Cfg.TaskNotify, 'A07_NetShield')) {
-        [void](Invoke-Change "Scheduled task '$n' removed (if present)" { [void](Invoke-Native (Get-SysExe 'schtasks.exe') @('/delete', '/tn', $n, '/f') 8000) })
+        [void](Invoke-Change "Scheduled task '$n' removed (if present)" {
+            [void](Invoke-Native (Get-SysExe 'schtasks.exe') @('/end', '/tn', $n) 3000)
+            [void](Invoke-Native (Get-SysExe 'schtasks.exe') @('/delete', '/tn', $n, '/f') 8000)
+        })
     }
     if (-not $script:IsDry -and $script:State.Misc -is [hashtable]) { $script:State.Misc.Remove('WatchdogSince') }
     $script:WatchdogOn = $false
@@ -7457,7 +7468,10 @@ function Restore-Everything {
     Uninstall-SentinelTask
     Uninstall-Watchdog
     try {
-        Get-ScheduledTask -TaskName 'LanFixer_*' -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false -ErrorAction SilentlyContinue
+        Get-ScheduledTask -TaskName 'LanFixer_*' -ErrorAction SilentlyContinue | ForEach-Object {
+            try { [void](Invoke-Native (Get-SysExe 'schtasks.exe') @('/end', '/tn', $_.TaskName) 3000) } catch {}
+            Unregister-ScheduledTask -TaskName $_.TaskName -Confirm:$false -ErrorAction SilentlyContinue
+        }
     } catch {}
 
     # 2. Restore Pre-LanFixer Snapshots (If snapshot exists in state)
@@ -7785,7 +7799,7 @@ function Restore-Everything {
                 if ($rAd) { Reset-PhysicalAdapterHardware $rAd } else { Restart-NetAdapter -Name $n -Confirm:$false -ErrorAction Stop }
             })
         }
-        if (Test-Path -LiteralPath $script:VaultFile) { Remove-PortalCredentials; Write-Log 'OK' 'Saved portal credentials deleted.' }
+        Remove-PortalCredentials; Write-Log 'OK' 'Saved portal credentials and encrypted vault purged.'
 
         $scrubFiles = @('sentinel.log', 'sentinel.log.bak', 'firewall_pre_reset.wfw', 'LanFixer_Watchdog.xml', 'LanFixer_Portal.xml', 'LanFixer_Notify.xml', 'LanFixer_Sentinel.xml', 'LanFixer_Core.cmd', 'interactive.json')
         foreach ($sf in $scrubFiles) {

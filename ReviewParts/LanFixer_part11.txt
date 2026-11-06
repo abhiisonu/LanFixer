@@ -1,3 +1,17 @@
+        Write-Section ("NETWORK STATE: " + $a.Name)
+        $h = Get-AdapterHealth $a
+        $e = Get-AdapterEnvironment $a
+        $envText = "{0} (score {1})" -f $e.Env, $e.Score
+        Write-KV 'Environment' $envText $(if ($e.Env -eq 'Campus') { 'Cyan' } else { 'White' })
+        foreach ($x in $e.Evidence) { Write-KV '  evidence' ([string]$x) 'DarkGray' }
+        Write-KV 'IPv4' $(if ($h.Ip) { [string]$h.Ip } else { 'NONE (APIPA/unassigned)' }) $(if ($h.Ip) { 'Green' } else { 'Red' })
+        if (-not $h.Ip) { [void]$issues.Add('No valid IPv4 lease (APIPA)') }
+        $sub = Get-SubnetInfoFromLease $a
+        if ($sub) {
+            Write-KV '  Subnet Mask' ("{0} (/{1})" -f $sub.SubnetMask, $sub.PrefixLength)
+            Write-KV '  Network / Bcast' ("{0} / {1}" -f $sub.NetworkAddress, $sub.Broadcast)
+            Write-KV '  Usable Hosts' ("{0} to {1} ({2} hosts)" -f $sub.MinHost, $sub.MaxHost, $sub.TotalHosts)
+        }
         $optMtu = Find-OptimalPathMtu $a
         Write-KV '  Optimal Path MTU' ("{0} bytes" -f $optMtu) $(if ($optMtu -lt 1500) { 'Yellow' } else { 'White' })
         Write-KV 'Gateway' $(if ($h.Gateway) { "{0} ({1})" -f $h.Gateway, $(if ($null -ne $h.GwRtt) { "$($h.GwRtt) ms" } elseif ($h.GwAlive) { 'ARP ok, ping filtered' } else { 'no reply' }) } else { 'none' })
@@ -784,17 +798,3 @@ function Invoke-LogicTests {
     Write-Check 'Logic: ConvertFrom-HttpResponse reads Location headers and meta/JS redirects of 200 portal pages' (($hr302.Location -ceq 'http://portal.univ.edu/login') -and ($hrMeta.Location -ceq 'http://portal.univ.edu/a?x=1&y=2') -and ($hrJs.Location -ceq 'http://portal.univ.edu/js'))
     Write-Check 'Logic: ordinary probe answers (Microsoft test page, 204, relative JS) yield no redirect' (($hrRel.Location -eq '') -and ($hrMs.Location -eq '') -and ($hr204.Location -eq '') -and ($hrMs.Body -like 'Microsoft Connect Test*'))
     $edPlain = [System.Text.Encoding]::UTF8.GetBytes('<form>portal-ok</form>')
-    $edMs = New-Object System.IO.MemoryStream
-    $edGz = New-Object System.IO.Compression.GZipStream($edMs, [System.IO.Compression.CompressionMode]::Compress)
-    $edGz.Write($edPlain, 0, $edPlain.Length); $edGz.Close()
-    $edGzBytes = $edMs.ToArray()
-    $edMs2 = New-Object System.IO.MemoryStream
-    $edDf = New-Object System.IO.Compression.DeflateStream($edMs2, [System.IO.Compression.CompressionMode]::Compress)
-    $edDf.Write($edPlain, 0, $edPlain.Length); $edDf.Close()
-    $edRaw = $edMs2.ToArray()
-    $edZlib = [byte[]](@(0x78, 0x9C) + $edRaw)
-    $edBig = New-Object byte[] 3000000
-    $edMs3 = New-Object System.IO.MemoryStream
-    $edBg = New-Object System.IO.Compression.GZipStream($edMs3, [System.IO.Compression.CompressionMode]::Compress)
-    $edBg.Write($edBig, 0, $edBig.Length); $edBg.Close()
-    $edBomb = $edMs3.ToArray()
