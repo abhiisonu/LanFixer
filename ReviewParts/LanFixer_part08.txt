@@ -1,6 +1,89 @@
+            # Purge Kerberos ticket cache to clear expired campus realm authentication tickets
+            [void](Invoke-Native (Get-SysExe 'klist.exe') @('purge') 5000)
+
+            # Flush stale SMB network share sessions
+            [void](Invoke-Native (Get-SysExe 'net.exe') @('use', '*', '/delete', '/y') 5000)
+
+            # Purge orphaned unmanaged network signatures in Network List Manager
+            try {
+                $nlmSigKey = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\NetworkList\Signatures\Unmanaged'
+                if (Test-Path -LiteralPath $nlmSigKey) {
+                    Get-ChildItem -LiteralPath $nlmSigKey -ErrorAction SilentlyContinue | ForEach-Object {
+                        try { Remove-Item -LiteralPath $_.PSPath -Recurse -Force -ErrorAction SilentlyContinue } catch {}
+                    }
+                }
+            } catch {}
+        }
+
+        # ----------------------------------------------------------------------
+        # STAGE 7/10: CACHE EVICTION, NEIGHBOR TABLE PURGE & NETBIOS RELEASE
+        # ----------------------------------------------------------------------
+        Write-Log 'STEP' 'STAGE 7/10  Purging ARP/NDP/NetBIOS caches & flushing DNS resolver'
+        if ($script:IsDry) {
+            Write-Log 'DRY' 'Would execute: netsh interface ip delete arpcache, arp -d *, and delete neighbors'
+            Write-Log 'DRY' 'Would execute: nbtstat -R & nbtstat -RR'
+            Write-Log 'DRY' 'Would execute: ipconfig /flushdns, Clear-DnsClientCache, and clear suffix search list'
+        } else {
+            # Low-level ARP & neighbor cache deletion across all interfaces
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('interface', 'ip', 'delete', 'arpcache') 5000)
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'ip', 'delete', 'neighbors') 5000)
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'ipv6', 'delete', 'neighbors') 5000)
+            [void](Invoke-Native (Get-SysExe 'arp.exe') @('-d', '*') 5000)
+            Get-NetNeighbor -AddressFamily IPv4 -ErrorAction SilentlyContinue | Remove-NetNeighbor -Confirm:$false -ErrorAction SilentlyContinue
+            Get-NetNeighbor -AddressFamily IPv6 -ErrorAction SilentlyContinue | Remove-NetNeighbor -Confirm:$false -ErrorAction SilentlyContinue
+
+            # Flush NetBIOS remote name cache and broadcast name release/refresh
+            [void](Invoke-Native (Get-SysExe 'nbtstat.exe') @('-R') 5000)
+            [void](Invoke-Native (Get-SysExe 'nbtstat.exe') @('-RR') 5000)
+
+            # Flush DNS resolver cache and clear global suffix search lists
+            Clear-DnsClientCache -ErrorAction SilentlyContinue
+            [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/flushdns') 5000)
+            try { Set-DnsClientGlobalSetting -SuffixSearchList @() -ErrorAction SilentlyContinue } catch {}
+        }
+
+        # ----------------------------------------------------------------------
+        # STAGE 8/10: PHY HARDWARE TRANSCEIVER HARD CYCLE, PROTOCOL BINDINGS & DRIVER POWER LOCK
+        # ----------------------------------------------------------------------
+        Write-Log 'STEP' 'STAGE 8/10  Cycling PHY hardware, locking driver power profiles & rebuilding NDIS bindings'
+        Shield-Aspm
+        Set-UsbSuspendOff
+        foreach ($ea in @(Get-EthernetAdapters)) {
+            if ($script:IsDry) {
+                Write-Log 'DRY' "Would cycle transceiver, restore bindings, lock power, and configure $($ea.Name)"
+            } else {
+                Reset-PhysicalAdapterHardware $ea
+                Release-ArpLocks $ea
+                [void](Shield-TcpOffloads $ea)
+                [void](Shield-Dot3Svc $ea)
+                [void](Shield-Hardware $ea)
+
+                # Ensure core protocol bindings are active
+                foreach ($comp in @('ms_tcpip', 'ms_tcpip6', 'ms_rspndr', 'ms_lltdio', 'ms_msclient', 'ms_server', 'ms_pacer')) {
                     try { Enable-NetAdapterBinding -Name $ea.Name -ComponentID $comp -ErrorAction SilentlyContinue } catch {}
                 }
 
+                # Defeat energy-saving / Green Ethernet traps on the PHY
+                try {
+                    Set-NetAdapterAdvancedProperty -Name $ea.Name -RegistryKeyword '*EEE' -RegistryValue 0 -ErrorAction SilentlyContinue
+                    Set-NetAdapterAdvancedProperty -Name $ea.Name -RegistryKeyword '*EnergyEfficientEthernet' -RegistryValue 0 -ErrorAction SilentlyContinue
+                    Set-NetAdapterAdvancedProperty -Name $ea.Name -RegistryKeyword '*GreenEthernet' -RegistryValue 0 -ErrorAction SilentlyContinue
+                } catch {}
+            }
+        }
+        if (-not $script:IsDry) {
+            [void](Invoke-Native (Get-SysExe 'pnputil.exe') @('/scan-devices') 5000)
+        }
+        Restore-InterfaceMetrics 'Ultra System Reset metrics restore'
+
+        # ----------------------------------------------------------------------
+        # STAGE 9/10: DHCP LEASE REGISTRY OBLITERATION & RFC 2131 BROADCAST FLAG ENFORCEMENT
+        # ----------------------------------------------------------------------
+        Write-Log 'STEP' 'STAGE 9/10  Zeroing DHCP lease registry & enforcing RFC 2131 broadcast flag'
+        foreach ($ea in @(Get-EthernetAdapters)) {
+            if ($script:IsDry) {
+                Write-Log 'DRY' "Would zero DHCP lease registry, set DhcpConnForceBroadcastFlag, and reset MTU/DNS on $($ea.Name)"
+            } else {
                 # Zero out cached DHCP lease keys in the Windows registry to force clean DHCP Discover broadcast
                 $guid = [string]$ea.InterfaceGuid
                 if ($guid) {
@@ -24,29 +107,21 @@
                     Set-NetIPInterface -InterfaceIndex $ea.ifIndex -AddressFamily IPv6 -Dhcp Enabled -ErrorAction SilentlyContinue
                     Set-DnsClientServerAddress -InterfaceIndex $ea.ifIndex -ResetServerAddresses -ErrorAction SilentlyContinue
                 } catch {}
-
-                # Defeat energy-saving / Green Ethernet traps on the PHY
-                try {
-                    Set-NetAdapterAdvancedProperty -Name $ea.Name -RegistryKeyword '*EEE' -RegistryValue 0 -ErrorAction SilentlyContinue
-                    Set-NetAdapterAdvancedProperty -Name $ea.Name -RegistryKeyword '*EnergyEfficientEthernet' -RegistryValue 0 -ErrorAction SilentlyContinue
-                    Set-NetAdapterAdvancedProperty -Name $ea.Name -RegistryKeyword '*GreenEthernet' -RegistryValue 0 -ErrorAction SilentlyContinue
-                } catch {}
             }
         }
-        if (-not $script:IsDry) {
-            [void](Invoke-Native (Get-SysExe 'pnputil.exe') @('/scan-devices') 5000)
-        }
-        Restore-InterfaceMetrics 'Ultra System Reset metrics restore'
 
         # ----------------------------------------------------------------------
-        # STAGE 8/9: SYSTEM SERVICE STACK RESUSCITATION (TOPOLOGICAL STARTUP)
+        # STAGE 10/10: TOPOLOGICAL 10-SERVICE RESUSCITATION, 802.1X RECONNECT, STP CONVERGENCE & 7-LAYER DUAL VERIFY
         # ----------------------------------------------------------------------
-        Write-Log 'STEP' 'STAGE 8/9  Resuscitating core networking services in topological dependency order'
+        Write-Log 'STEP' 'STAGE 10/10 Resuscitating 10 core services, reconnecting 802.1X, running DHCP discover & 7-layer verification'
         if ($script:IsDry) {
-            Write-Log 'DRY' 'Would start services in topological order: BFE -> mpssvc -> Dhcp -> Dnscache -> iphlpsvc -> dot3svc -> WlanSvc -> NlaSvc -> netprofm'
+            Write-Log 'DRY' 'Would start services in topological order: BFE -> mpssvc -> CryptSvc -> Dhcp -> Dnscache -> iphlpsvc -> dot3svc -> WlanSvc -> NlaSvc -> netprofm -> BITS'
             Write-Log 'DRY' 'Would execute: netsh lan reconnect'
+            Write-Log 'DRY' 'Would execute: ipconfig /release *, /renew *, /registerdns'
+            Write-Log 'DRY' 'Would await 802.1D Spanning Tree Protocol (STP) switch convergence'
+            Write-Log 'DRY' 'Would run 7-layer heal pipeline and verify dual-endpoint reachability'
         } else {
-            $upSvcs = @('BFE', 'mpssvc', 'Dhcp', 'Dnscache', 'iphlpsvc', 'dot3svc', 'WlanSvc', 'NlaSvc', 'netprofm')
+            $upSvcs = @('BFE', 'mpssvc', 'CryptSvc', 'Dhcp', 'Dnscache', 'iphlpsvc', 'dot3svc', 'WlanSvc', 'NlaSvc', 'netprofm', 'BITS')
             foreach ($s in $upSvcs) {
                 try { Start-Service -Name $s -ErrorAction SilentlyContinue } catch {}
             }
@@ -54,17 +129,8 @@
 
             # Force 802.1X Wired AutoConfig reconnect across all LAN interfaces
             [void](Invoke-Native (Get-SysExe 'netsh.exe') @('lan', 'reconnect') 5000)
-        }
 
-        # ----------------------------------------------------------------------
-        # STAGE 9/9: DHCP DISCOVER CYCLE, DYNAMIC DNS, STP CONVERGENCE & 7-LAYER HEAL
-        # ----------------------------------------------------------------------
-        Write-Log 'STEP' 'STAGE 9/9  Executing DHCP discover cycle, registering dynamic DNS & verifying 7-layer heal'
-        if ($script:IsDry) {
-            Write-Log 'DRY' 'Would execute: ipconfig /release *, /renew *, /registerdns'
-            Write-Log 'DRY' 'Would await 802.1D Spanning Tree Protocol (STP) switch convergence'
-            Write-Log 'DRY' 'Would run 7-layer heal pipeline and verify dual-endpoint reachability'
-        } else {
+            # Execute clean DHCP discover cycle
             [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/release') 8000)
             [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/release6') 8000)
             Start-Sleep -Milliseconds 1000
@@ -732,69 +798,3 @@ function Invoke-AutoHeal {
         $needFull = ($script:State.Misc['Version'] -ne $script:Version) -or (Test-Elapsed 'LastFull' 7200)
         $newConn = $false
         $mismatch = $false
-        foreach ($adUp in $ups) {
-            $guidUp = [string]$adUp.InterfaceGuid
-            $healthUp = if ($adUp.ifIndex -eq $primary.ifIndex) { $health } else { Get-AdapterHealth $adUp }
-            $enviUp = Get-AdapterEnvironment $adUp
-            $hUp = Get-SubTable 'Env' $guidUp
-            $dUp = Get-SubTable 'Dns' $guidUp
-            $nc = (($hUp.Up -ne $true) -or ([string]$hUp.Ip -ne [string]$healthUp.Ip))
-            $wantUp = $(if ($healthUp.Conn -eq 'Online') { 'Online' } else { 'NotOnline' })
-            $mm = ($enviUp.Env -eq 'Campus' -and (Get-DnsProfileName) -eq 'Adaptive' -and ([string]$dUp.ConnApplied -ne $wantUp))
-            if ($nc) { $newConn = $true }
-            if ($mm) { $mismatch = $true }
-            if (($healthUp.Problem -ne 'Healthy') -or $nc -or $mm) {
-                $needFull = $true
-            }
-        }
-        if (-not $needFull) {
-            foreach ($adUp in $ups) {
-                $enviUp = Get-AdapterEnvironment $adUp
-                $hUp = Get-SubTable 'Env' ([string]$adUp.InterfaceGuid)
-                $healthUp = if ($adUp.ifIndex -eq $primary.ifIndex) { $health } else { Get-AdapterHealth $adUp }
-                $hUp.Up = $true; $hUp.Ip = [string]$healthUp.Ip
-                Shield-RouteMetrics @{ Ad = $adUp; Env = $enviUp } $healthUp.Conn
-            }
-            [void](Clear-FailStreakIfRecovered ([string]$health.Problem))
-            Save-State
-            return 0
-        }
-        $streak = [int]$script:State.Misc['FailStreak']
-        if ($streak -ge [int]$script:Cfg.BreakerFails -and -not $newConn -and -not (Test-Elapsed 'LastFull' 3600)) {
-            Write-Log 'INFO' "Repair breaker open ($streak failed passes in a row): next automatic attempt within the hour, or as soon as the cable is re-plugged."
-            Save-State
-            return 0
-        }
-        Write-Log 'INFO' ("AutoHeal pass: problem={0} newConnection={1} dnsPhaseMismatch={2}" -f $health.Problem, $newConn, $mismatch)
-        $r = Pick-Hash (Invoke-HealPipeline)
-        if ($null -eq $r) { $r = @{ Conn = 'Offline'; Problem = 'Offline' } }
-        if (Test-HardFailure ([string]$r.Problem)) {
-            $script:State.Misc['FailStreak'] = $streak + 1
-            if (($streak + 1) -eq [int]$script:Cfg.BreakerFails) { Write-Log 'ALERT' 'Automatic repair has not fixed the connection after several passes: check the cable and wall port, and check your MAC from the audit [6] or report [R].' }
-        } else {
-            if ($streak -gt 0 -or (Test-HardFailure ([string]$health.Problem))) {
-                if ($r.Conn -eq 'Online') { Invoke-RecoveryToast ([string]$r.Ip) }
-            }
-            $script:State.Misc['FailStreak'] = 0
-        }
-        $script:State.Misc['LastAutoHealUpCount'] = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' }).Count
-        Set-StateTime 'LastAutoHealRun'; Save-State
-        if ($r.Conn -eq 'Captive') {
-            if ($newConn -or (Test-Elapsed 'LastPortal' 1800)) { if (Test-Elapsed 'LastPortal' 20) { [void](Open-Portal) } }
-            $watch = $true
-        }
-    } finally { Exit-Lock }
-    if ($watch) { Invoke-AuthWatch }
-    return 0
-}
-
-# ==============================================================================
-# WATCHDOG (SYSTEM task, runs ONLY the ACL-locked copy) + portal helper task (user session)
-# ==============================================================================
-function New-WatchdogXml([string]$CmdArgs, [string]$Start) {
-    $hb = "PT$($script:Cfg.HeartbeatMin)M"
-    return @"
-<?xml version="1.0" encoding="UTF-16"?>
-<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
-  <RegistrationInfo>
-    <Description>Lan Fixer autonomous Ethernet watchdog (link up, resume from sleep, address conflicts, boot, logon, heartbeat)</Description>

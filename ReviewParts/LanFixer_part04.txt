@@ -1,3 +1,4 @@
+    }
     $hp = ($w + 2) - (Get-SegsLength $heroL) - $right.Length
     [void]$L.Add(@($heroL + (Seg 'text' (' ' * [Math]::Max(2, $hp))) + (Seg 'dim' $right)))
     # path
@@ -161,7 +162,7 @@ function Show-Advisory {
         # 4. Safety & Rollback
         @('Instant background sign-in with saved login', 'G', 'Headless Portal Sign-In'),
         @('Total network down / no internet anywhere',   'X', 'Full Network Reset'),
-        @('Thermonuclear stack wipe & driver/LSP rebuild','U', 'Ultra System Reset'),
+        @('Hyper-nuclear stack purge & driver/LSP rebuild','U', 'Ultra System Reset'),
         @('Preview repairs safely without changes',      'T', 'Dry-Run Simulation'),
         @('Verify system cmdlets & security integrity',  'S', 'Run Self-Test Suite'),
         @('Autonomous Sentinel background daemon',       'B', 'Autonomous Daemon'),
@@ -334,14 +335,14 @@ function Invoke-DashboardKey([string]$Key, $adv) {
                 if (-not (Assert-Admin)) { return }
                 Out-Line @((Seg 'warn' '  NOTICE: Choose your recovery tier:'))
                 Out-Wrapped 'faint' $script:G.mid 'text' '[1] Standard Full Net Reset (5-Stage: Transceiver, metrics, MTU 1500, 7-layer heal, caches)' 4
-                Out-Wrapped 'warn!' $script:G.mid 'warn!' '[2] ULTRA System Reset (THERMONUCLEAR HYDROGEN WEAPON: Dual Winsock, TCP/IP, route -f, DoH wipe, firewall, autoproxy, DHCP broadcast flag, STP convergence)' 4
+                Out-Wrapped 'warn!' $script:G.mid 'warn!' '[2] ULTRA System Reset (HYPER-NUCLEAR ANTIMATTER WEAPON: Dual Winsock, TCP/IP, route -f, PortProxy, DoH wipe, NCSI calibrate, klist purge, DHCP broadcast flag, STP loop)' 4
                 Out-Line @()
                 Out-Line @((Seg 'dim' '  Select tier [1] Standard, [2] or [U] ULTRA Nuclear, or press any other key to cancel '), (Seg 'accent!' $script:G.prompt)) -NoNewline
                 $k = Read-Choice
                 Out-Line @()
                 $choice = ([string]$k.KeyChar).ToLowerInvariant()
                 if ($choice -eq '2' -or $choice -eq 'u') {
-                    if (Read-Confirm 'Execute ULTRA SYSTEM RESET (Thermonuclear Stack Resuscitation)?' 'no') {
+                    if (Read-Confirm 'Execute ULTRA SYSTEM RESET (Hyper-Nuclear Antimatter Weapon)?' 'no') {
                         $script:ChangeCount = 0; $script:FailCount = 0
                         Invoke-UltraSystemReset
                         $script:WdCache = $null
@@ -362,20 +363,21 @@ function Invoke-DashboardKey([string]$Key, $adv) {
             }
         }
         'u' {
-            Show-View 'ultra system reset (thermonuclear hydrogen weapon)' {
+            Show-View 'ultra system reset (hyper-nuclear antimatter weapon)' {
                 if (-not (Assert-Admin)) { return }
-                Out-Line @((Seg 'warn!' '  WARNING: ULTRA SYSTEM RESET IS THE SUPREME THERMONUCLEAR REMEDIATION ENGINE:'))
-                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 1: Pre-flight ACID snapshot, process isolation & 8-service topological teardown' 4
+                Out-Line @((Seg 'warn!' '  WARNING: ULTRA SYSTEM RESET IS THE SUPREME HYPER-NUCLEAR REMEDIATION ENGINE:'))
+                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 1: Pre-flight ACID snapshot, process isolation & 10-service reverse topological teardown' 4
                 Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 2: Dual-architecture 64-bit System32 & 32-bit SysWOW64 Winsock catalog wipe & autodial zeroing' 4
-                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 3: Dual-stack TCP/IP stack restoration, global heuristics reset & IPv6 transition tunnel defeat' 4
-                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 4: Routing table purge (route -f), destination cache delete, bridge destruction & firewall factory policy' 4
-                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 5: DNS-over-HTTPS (DoH) factory wipe, WinHTTP autoproxy (WPAD) reset & HTTP driver log buffer flush' 4
-                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 6: Cache eviction, neighbor table purge, NetBIOS release/refresh (nbtstat -R/-RR) & resolver flush' 4
-                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 7: PHY transceiver cycle, protocol re-binding, DHCP lease zeroing & broadcast flag enforcement' 4
-                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 8: Topological network service resuscitation (BFE -> mpssvc -> Dhcp -> Dnscache -> NlaSvc) & 802.1X reconnect' 4
-                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 9: DHCP discover cycle, dynamic DNS registration, STP switch convergence loop & 7-layer verification' 4
+                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 3: Dual-stack TCP/IP stack restoration, global heuristics reset, tunnel defeat & HTTP driver flush' 4
+                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 4: Routing table purge (route -f), portproxy reset, bridge destruction & firewall factory policy' 4
+                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 5: Encrypted DNS (DoH/DoT/DDR) wipe (global & per-interface), WPAD reset & BITS job purge' 4
+                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 6: NCSI active probing calibration, Kerberos ticket purge, SMB session sweep & NLM cleanup' 4
+                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 7: Low-level ARP/NDP eviction, NetBIOS release/refresh (nbtstat -R/-RR) & DNS resolver deep flush' 4
+                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 8: PHY transceiver hard cycle, NDIS protocol re-binding, driver power lock & EEE defeat' 4
+                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 9: DHCP lease registry obliteration, RFC 2131 broadcast flag enforcement & auto-metric lock' 4
+                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 10: Topological 10-service resuscitation, 802.1X reconnect, STP convergence & 7-layer verification' 4
                 Out-Line @()
-                if (Read-Confirm 'Execute ULTRA SYSTEM RESET (Thermonuclear Hydrogen Weapon)?' 'no') {
+                if (Read-Confirm 'Execute ULTRA SYSTEM RESET (Hyper-Nuclear Antimatter Weapon)?' 'no') {
                     $script:ChangeCount = 0; $script:FailCount = 0
                     Invoke-UltraSystemReset
                     $script:WdCache = $null
@@ -796,5 +798,3 @@ function Rescue-DormantEthernetPnp {
         }
         $sick = @(Get-PnpDevice -Class Net -PresentOnly -ErrorAction SilentlyContinue | Where-Object {
             $_.FriendlyName -match 'Ethernet|GbE|Gigabit|ASIX|Realtek|USB' -and
-            $_.FriendlyName -notmatch $script:VirtRegex -and
-            $_.FriendlyName -notmatch 'Wi-?Fi|Wireless|WLAN|802\.11' -and

@@ -1,3 +1,5 @@
+            Write-Log 'ALERT' ("Gateway {0} now answers from {1}, but it used to answer from {2}. Not locking it. If IT did not replace the router, treat this network with suspicion." -f $gw, $mac, [string]$mem[$gw])
+            continue
         }
         if ($dec -eq 'wait') { Write-Log 'WARN' ("Gateway {0} still answers from the new MAC {1}; it is locked only after 24 stable hours." -f $gw, $mac); continue }
         $ip = $Ctx.Env.Ip
@@ -796,5 +798,3 @@ function Shield-Ipv6Precedence($Ctxs, [string]$ConnState) {
         if ($v6.Verdict -ne 'Blackhole') { return }
         Save-Original 'Global' 'DisabledComponents' $cur
         $new = Get-PreferIpv4Value $cur
-        $ok = Invoke-Change 'IPv4 preferred over IPv6 (IPv6 is advertised on this LAN but unreachable); applies after the next restart' {
-            if (-not (Test-Path -LiteralPath $script:Tcpip6Key)) { New-Item -Path $script:Tcpip6Key -Force -ErrorAction Stop | Out-Null }

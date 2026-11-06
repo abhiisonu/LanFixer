@@ -1,3 +1,4 @@
+            try { $sock.Close() } catch {}
             $r.Error = 'ConnectTimeout'; return $r
         }
         try { $sock.EndConnect($iar) } catch { $r.Error = 'ConnectFailure'; return $r }
@@ -797,4 +798,3 @@ function Get-DashboardModel($t, $adv, [int]$Width = 0) {
         if ($right.Length -gt $maxRightLen) {
             $right = Fit $right $maxRightLen
         }
-    }

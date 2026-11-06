@@ -1,3 +1,69 @@
+        if ($reg) {
+            if ($reg.DhcpServer) { Write-KV 'DHCP server' ([string]$reg.DhcpServer) }
+            try {
+                if ($reg.LeaseObtainedTime) { Write-KV 'Lease obtained' ([DateTimeOffset]::FromUnixTimeSeconds([long]$reg.LeaseObtainedTime).LocalDateTime.ToString('yyyy-MM-dd HH:mm:ss')) }
+                if ($reg.LeaseTerminatesTime) { Write-KV 'Lease expires' ([DateTimeOffset]::FromUnixTimeSeconds([long]$reg.LeaseTerminatesTime).LocalDateTime.ToString('yyyy-MM-dd HH:mm:ss')) }
+            } catch {}
+        }
+        $dnsNow = @((Get-DnsClientServerAddress -InterfaceIndex $a.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses) -join ', '
+        $isStatic = (Get-StaticDnsString $guid) -ne ''
+        Write-KV 'DNS in use' ("{0} ({1})" -f $dnsNow, $(if ($isStatic) { 'static/managed' } else { 'from DHCP' }))
+        Write-KV 'DNS profile / phase' ("{0} / {1}" -f (Get-DnsProfileName), $(if ((Get-SubTable 'Dns' $guid).Phase) { (Get-SubTable 'Dns' $guid).Phase } else { '-' }))
+        foreach ($gw in @(Get-GatewaysV4 $a)) {
+            $n = Get-NetNeighbor -InterfaceIndex $a.ifIndex -IPAddress $gw -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($n) { Write-KV 'Gateway ARP entry' ("{0} -> {1} [{2}]" -f $gw, $n.LinkLayerAddress, $n.State) }
+        }
+        $prof = Get-NetConnectionProfile -InterfaceIndex $a.ifIndex -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($prof) { Write-KV 'Network / firewall profile' ("{0} / {1}" -f $prof.Name, $prof.NetworkCategory) }
+
+        Write-Section 'CONNECTIVITY & INTERNET REACHABILITY'
+        $epDiag = Get-ActivePortalEndpoint
+        $tcp = Test-TcpPort $epDiag.Ip $epDiag.Port 900
+        Write-KV ("Portal {0}:{1}" -f $epDiag.Ip, $epDiag.Port) $(if ($tcp) { 'open' } else { 'closed/hidden' })
+        $conn = [string]$h.Conn
+        $cc = $(switch ($conn) { 'Online' { 'Green' } 'Captive' { 'Yellow' } default { 'Red' } })
+        Write-KV 'Internet' $conn $cc
+        if ($conn -eq 'NoDns') { [void]$issues.Add('DNS resolution fails') }
+        if ($conn -eq 'Captive') { [void]$issues.Add('Campus login (captive portal) required') }
+        if ($conn -eq 'Offline') { [void]$issues.Add('No Internet through the gateway') }
+        $g6 = @(Get-NetIPAddress -InterfaceIndex $a.ifIndex -AddressFamily IPv6 -ErrorAction SilentlyContinue | Where-Object { [string]$_.AddressState -eq 'Preferred' -and [string]$_.IPAddress -notmatch '^(fe80|fc|fd|::1)' })
+        $r6 = @(Get-NetRoute -InterfaceIndex $a.ifIndex -AddressFamily IPv6 -DestinationPrefix '::/0' -ErrorAction SilentlyContinue)
+        $reach6 = $false
+        if ($g6.Count -gt 0 -and $r6.Count -gt 0 -and $conn -eq 'Online') { $reach6 = Test-Ipv6Reach ([string]$g6[0].IPAddress) }
+        $v6 = Get-Ipv6Verdict ($g6.Count -gt 0) ($r6.Count -gt 0) $conn $reach6
+        $v6txt = switch ($v6) {
+            'None'      { 'no global IPv6 address (IPv4-only link: nothing to go wrong)' }
+            'NoRoute'   { 'global address but no IPv6 default route (harmless)' }
+            'Untested'  { 'advertised, but IPv4 is not online yet: re-run the audit after login' }
+            'Working'   { 'advertised and reachable' }
+            default     { 'ADVERTISED BUT UNREACHABLE (IPv4 works)' }
+        }
+        Write-KV 'IPv6' $v6txt $(if ($v6 -eq 'Blackhole') { 'Yellow' } else { 'White' })
+        if ($v6 -eq 'Blackhole') { [void]$issues.Add("IPv6 is advertised on this LAN but unreachable while IPv4 works: some apps stall 15-30 s before falling back. Ask IT to filter IPv6 router advertisements, or turn IPv6 off on this adapter yourself: Disable-NetAdapterBinding -Name '$($a.Name)' -ComponentID ms_tcpip6   (undo with Enable-NetAdapterBinding). Lan Fixer does not change this on its own.") }
+        $sys = Resolve-HostBounded 'www.msftconnecttest.com' 2000
+        Write-KV 'System resolver' $(if ($sys) { "ok ($sys)" } else { 'FAILED' }) $(if ($sys) { 'Green' } else { 'Red' })
+        $tests = @(@(Get-DhcpDnsServers $guid) + @($script:Cfg.PublicDns) | Select-Object -Unique)
+        $meas = Measure-ResolversFast $tests
+        foreach ($s in $tests) {
+            $ms = $meas[$s]
+            Write-KV ("Resolver {0}" -f $s) $(if ($null -ne $ms) { "$ms ms (median of 3)" } else { 'no answer' }) $(if ($null -ne $ms) { 'White' } else { 'DarkGray' })
+        }
+        $mtuT = $(if ($conn -eq 'Online') { '1.1.1.1' } else { [string]$h.Gateway })
+        if ($mtuT) {
+            $mtu = Get-PathMtu $mtuT
+            if ($null -ne $mtu) {
+                Write-KV ("Path MTU to " + $mtuT) "$mtu bytes"
+                if ($mtu -lt 1500) { [void]$issues.Add("Path MTU is $mtu (<1500): large pages may hang; consider MTU $mtu on the adapter") }
+            }
+        }
+    }
+
+    Write-Section 'SECONDARY UPLINKS & SYSTEM SERVICES'
+    $secUps = @(Get-OtherUplinkAdapters)
+    if ($secUps.Count -eq 0) { Write-KV 'Secondary uplinks' 'none active' 'DarkGray' }
+    else {
+        foreach ($su in $secUps) {
+            $suIp = Get-ValidIPv4 $su
             $suDns = @((Get-DnsClientServerAddress -InterfaceIndex $su.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses) -join ', '
             Write-KV ("Uplink " + $su.Name) ("{0} (DNS: {1})" -f $(if ($suIp) { $suIp } else { 'IPv6/active' }), $(if ($suDns) { $suDns } else { 'auto' })) 'Green'
         }
@@ -732,69 +798,3 @@ function Invoke-LogicTests {
     $edG = Expand-HttpBody ([byte[]](1, 2, 3, 4, 5)) 'gzip'
     $edB = Expand-HttpBody $edBomb 'gzip'
     $edSafe = ($edI.Length -eq $edPlain.Length) -and ($edG.Length -eq 5) -and ($edB.Length -eq $edBomb.Length)
-    Write-Check 'Logic: Expand-HttpBody decodes gzip, deflate and zlib bodies' $edOk
-    Write-Check 'Logic: Expand-HttpBody leaves identity or undecodable data alone and refuses a decompression bomb' $edSafe
-    $rcDef = [string](Get-Command Remove-CampusHostRoutes -ErrorAction SilentlyContinue).Definition
-    Write-Check 'Logic: Remove-CampusHostRoutes also removes the host routes added for discovered / DHCP addresses (metric 5 only)' (($rcDef.IndexOf('InjectedHostRoutes') -ge 0) -and ($rcDef.IndexOf('RouteMetric -eq 5') -ge 0))
-    $ecDef = [string](Get-Command Ensure-CampusPortalPath -ErrorAction SilentlyContinue).Definition
-    Write-Check 'Logic: host routes to the configured portal/resolver are added only on the home campus and are tracked' (($ecDef.IndexOf('$cfgTargets') -ge 0) -and ($ecDef.IndexOf('$e.Home') -ge 0) -and ($ecDef.IndexOf('Add-TrackedHostRoute') -ge 0))
-    $aeDef = [string](Get-Command Get-AdapterEnvironment -ErrorAction SilentlyContinue).Definition
-    Write-Check 'Logic: Get-AdapterEnvironment records whether the lease is the configured campus' (($aeDef.IndexOf('Get-HomeCampusVerdict') -ge 0) -and ($aeDef.IndexOf('$portalHit') -ge 0) -and ($aeDef.IndexOf('Home = $homeVerdict') -ge 0))
-    $ncDef = [string](Get-Command Set-CampusNrpt -ErrorAction SilentlyContinue).Definition
-    Write-Check 'Logic: Set-CampusNrpt maps the configured campus domain only for the home campus' (($ncDef.IndexOf('$HomeNet') -ge 0) -and ($ncDef.IndexOf('$wantNs.Count -eq 0') -ge 0))
-    $pmDef = [string](Get-Command Shield-PathMtu -ErrorAction SilentlyContinue).Definition
-    Write-Check 'Logic: Shield-PathMtu only measures a path that really leaves through this adapter' (($pmDef.IndexOf('Get-PathMtuForAdapter') -ge 0) -and ($pmDef.IndexOf("Get-PathMtu '9.9.9.9'") -lt 0))
-    $ovGood = ConvertTo-CfgOverride ('{"PortalIp":"10.20.30.40","CampusDns":"10.20.0.2","PortalPort":8443,"PortalHost":"Portal.Univ.EDU.","CampusDomain":"univ.edu","PortalUrl":"https://portal.univ.edu:8443/login","GwRegex":"^10\\.20\\.\\d+\\.1$","ProfileRegex":"univ|hostel"}' | ConvertFrom-Json)
-    Write-Check 'Logic: config override accepts well-formed values (and normalises host names)' (($ovGood.Count -eq 8) -and ($ovGood['PortalHost'] -ceq 'portal.univ.edu') -and ($ovGood['PortalPort'] -eq 8443) -and ($ovGood['CampusDns'] -ceq '10.20.0.2'))
-    $ovBad = ConvertTo-CfgOverride ('{"PortalIp":"999.1.1.1","CampusDns":"127.0.0.1","PortalPort":70000,"PortalHost":"not a host","CampusDomain":"","PortalUrl":"http://portal.univ.edu/","GwRegex":"([unclosed","ProfileRegex":"","Unknown":"x"}' | ConvertFrom-Json)
-    Write-Check 'Logic: config override rejects malformed, blank, non-https and unknown values' ($ovBad.Count -eq 0)
-    Write-Check 'Logic: config override can never blank a setting (empty input yields nothing)' ((ConvertTo-CfgOverride $null).Count -eq 0 -and (ConvertTo-CfgOverride ('{}' | ConvertFrom-Json)).Count -eq 0)
-    # v6.0.0 Sovereign Peak: RFC 8910 DHCP Option 114 captive URL decoder check
-    $opt114Url = 'https://login.campus.edu/portal'
-    [byte[]]$opt114Bytes = @(252, 4, 1, 2, 3, 4, 114, $opt114Url.Length) + [System.Text.Encoding]::ASCII.GetBytes($opt114Url)
-    $fakeReg = [pscustomobject]@{ DhcpInterfaceOptions = $opt114Bytes }
-    $decodedOpt114 = $null
-    if ($fakeReg.DhcpInterfaceOptions -is [byte[]]) {
-        [byte[]]$fb = $fakeReg.DhcpInterfaceOptions; $fi = 0
-        while ($fi -lt ($fb.Length - 2)) {
-            $fopt = [int]$fb[$fi]; $flen = [int]$fb[$fi + 1]
-            if ($flen -le 0 -or ($fi + 2 + $flen) -gt $fb.Length) { break }
-            if ($fopt -eq 114 -or $fopt -eq 160) {
-                try { $fstr = [System.Text.Encoding]::ASCII.GetString($fb, $fi + 2, $flen); if ($fstr -match '^https?://[^\s]+$') { $decodedOpt114 = $fstr; break } } catch {}
-            }
-            $fi += (2 + $flen)
-        }
-    }
-    Write-Check 'Logic: RFC 8910 DHCP option 114 binary decoder extracts captive portal URL' ($decodedOpt114 -ceq $opt114Url)
-    Write-Check 'Logic: sinkhole detector catches 192.0.2.1 and unroutable test blocks' ((Test-IsSinkholeIp '192.0.2.1') -and (Test-IsSinkholeIp '198.51.100.25') -and (Test-IsSinkholeIp '203.0.113.8') -and (Test-IsSinkholeIp '127.0.0.1') -and (-not (Test-IsSinkholeIp '142.251.43.142')) -and (-not (Test-IsSinkholeIp '1.1.1.1')))
-    Write-Check 'Logic: universal DNS verdict engine neutralizes unroutable or sinkholed IPv6 and preserves genuine dual-stack' (((Get-DnsVerdictDecision $false $false 2 $false) -eq 'Neutralize') -and ((Get-DnsVerdictDecision $true $true 2 $true) -eq 'Neutralize') -and ((Get-DnsVerdictDecision $true $true 2 $false) -eq 'Keep') -and ((Get-DnsVerdictDecision $false $false 0 $false) -eq 'None'))
-    # v6.4.2 Hardened Invariant Checks: PnP rate-limit, StartTime ISO round-trip, DryRun guards, Uplink fallback ladder, and Interceptor restoration
-    $pnpDef = [string](Get-Command Rescue-DormantEthernetPnp -ErrorAction SilentlyContinue).Definition
-    Write-Check 'Logic: Rescue-DormantEthernetPnp stamps 300s limiter before query and uses -PresentOnly' (($pnpDef.IndexOf("Test-Elapsed 'PnpRescan' 300") -ge 0) -and ($pnpDef.IndexOf("Set-StateTime 'PnpRescan'") -ge 0) -and ($pnpDef.IndexOf('-PresentOnly') -ge 0))
-    $utcNow = (Get-Date).ToUniversalTime()
-    $parsedUtc = [datetime]::Parse($utcNow.ToString('o'), [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
-    Write-Check 'Logic: interactive session timestamp round-trips via ISO-8601 UTC with zero drift' ([math]::Abs(($utcNow - $parsedUtc).TotalSeconds) -lt 0.001)
-    $gwDef = [string](Get-Command Get-GatewayMacs -ErrorAction SilentlyContinue).Definition
-    Write-Check 'Logic: Get-GatewayMacs guards Remove-NetNeighbor with -not $script:IsDry' (($gwDef.IndexOf('if (-not $script:IsDry)') -ge 0) -and ($gwDef.IndexOf('Remove-NetNeighbor') -ge 0))
-    $rnDef = [string](Get-Command Restore-NeutralizedInterceptors -ErrorAction SilentlyContinue).Definition
-    Write-Check 'Logic: Restore-NeutralizedInterceptors restores DelayedAutostart and restarts running services' (($rnDef.IndexOf('WasRunning') -ge 0) -and ($rnDef.IndexOf('DelayedAutostart') -ge 0) -and ($rnDef.IndexOf('Start-Service') -ge 0))
-    $ssDef = [string](Get-Command Shield-SystemStack -ErrorAction SilentlyContinue).Definition
-    Write-Check 'Logic: Shield-SystemStack falls back to DHCP DNS and gateway before public resolvers' (($ssDef.IndexOf('Get-DhcpDnsServers') -ge 0) -and ($ssDef.IndexOf('IPv4DefaultGateway') -ge 0) -and ($ssDef.IndexOf('fallbackDns') -ge 0))
-
-    # ---- Omniscient Layer 1-7 Adaptive Engine & Sentinel Daemon Test Assertions ----
-    Write-Check 'Logic: Test-NdisLinkHealth returns structured health object on null' (((Test-NdisLinkHealth $null).Reason) -eq 'NoAdapter' -and ((Test-NdisLinkHealth $null).Healthy -eq $false))
-    Write-Check 'Logic: Resolve-DuplexFlap dry run is non-destructive' ((Resolve-DuplexFlap $null) -eq $false)
-    Write-Check 'Logic: Optimize-PhySiliconBuffers enforces discard threshold lock' ((Optimize-PhySiliconBuffers $null) -eq $false)
-    Write-Check 'Logic: Shield-Dot3Svc handles null adapter safely' ((Shield-Dot3Svc $null) -eq $false)
-    Write-Check 'Logic: Wait-StpConvergence handles dry run / null adapter gracefully' ((Wait-StpConvergence $null) -eq $true)
-    $sub24 = Get-SubnetInfoFromLease $null
-    Write-Check 'Logic: Get-SubnetInfoFromLease handles null adapter' ($null -eq $sub24)
-
-    # Subnet calculus pure math validation
-    $calcFunc = {
-        param([string]$ipStr, [int]$prefix)
-        $ip = [System.Net.IPAddress]::Parse($ipStr)
-        $ipBytes = $ip.GetAddressBytes()
-        $maskBytes = New-Object byte[] 4; $netBytes = New-Object byte[] 4; $bcastBytes = New-Object byte[] 4
-        for ($i = 0; $i -lt 4; $i++) {
-            $bits = [math]::Max(0, [math]::Min(8, $prefix - ($i * 8)))

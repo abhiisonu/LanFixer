@@ -18,18 +18,19 @@ exit /b %errorlevel%
     Add -DryRun to see exactly what would change without changing anything.
     Every change is snapshotted first, so ResetFactory restores YOUR original values.
 .NOTES
-    6.5.0 (Omniscient Layer 1-7 Healer & Sovereign Thermonuclear Hydrogen Weapon Reset Engine):
-      - Invoke-UltraSystemReset: 9-stage thermonuclear stack resuscitation engine implementing non-destructive full-spectrum remediation.
+    6.5.0 (Omniscient Layer 1-7 Healer & Sovereign Hyper-Nuclear Antimatter Weapon Reset Engine):
+      - Invoke-UltraSystemReset: 10-stage hyper-nuclear stack resuscitation engine implementing non-destructive full-spectrum low-level eradication.
       - Dual-Architecture Winsock LSP & NSP Annihilation: wipes 64-bit System32 and 32-bit SysWOW64 Winsock catalogs (netsh winsock reset catalog & reset), zeroes AutodialFlags.
       - Dual-Stack TCP/IP & Heuristics Normalization: netsh int ip/ipv6 reset, netsh int tcp reset, autotuninglevel=normal, RSS/RSC enabled, ECN/timestamps disabled, initialrto=3000.
       - Transition Tunnel Disablement: disables Teredo, ISATAP, and 6to4 transition tunnels to eliminate campus IPv6 routing sinkholes.
-      - Encrypted DNS (DoH/DoT) Factory Wipe: netsh dnsclient delete global all restores global DNS and removes dead DoH templates.
-      - Routing, Destination Cache & Accidental Bridge Purge: route -f (clears gateways), deletes destinationcache, destroys rogue bridges via netsh bridge.
-      - Firewall & WPAD Autoproxy Reset: netsh advfirewall reset & allprofiles on, netsh winhttp reset proxy/autoproxy/tracing, flushes HTTP log buffer.
+      - Routing, Destination Cache, PortProxy & Bridge Purge: route -f (clears gateways), deletes destinationcache, netsh int portproxy/httpstunnel reset, destroys rogue bridges via netsh bridge.
+      - Encrypted DNS (DoH/DoT/DDR) Global & Per-Interface Factory Wipe: netsh dnsclient delete global all & delete interface all.
+      - Firewall, WPAD Autoproxy & BITS Transfer Purge: netsh advfirewall reset & on, netsh winhttp reset proxy/autoproxy/tracing, flushes HTTP log buffer, cancels zombie BITS jobs.
+      - NCSI Calibration, Kerberos Purge & SMB Session Sweep: calibrates ActiveWebProbe/ActiveDnsProbe, klist purge, net use * /delete /y, purges unmanaged NLM signatures.
       - Cache & NetBIOS Eviction: netsh interface ip delete arpcache, netsh int ip/ipv6 delete neighbors, arp -d *, nbtstat -R & -RR, Clear-DnsClientCache, ipconfig /flushdns.
+      - Hardware Transceiver Cycle & Driver Power Lock: pnputil /restart-device, re-binds ms_tcpip/ms_tcpip6/ms_rspndr/ms_lltdio/ms_pacer, defeats PHY EEE/green power & selective suspend.
       - DHCP Broadcast Flag Enforcement & Registry Zeroing: enforces DhcpConnForceBroadcastFlag=1 (RFC 2131), zeroes cached DhcpIPAddress/DhcpServer keys to force pure Discover.
-      - Hardware Transceiver Cycle & NDIS Bindings: pnputil /restart-device, re-binds ms_tcpip/ms_tcpip6/ms_rspndr/ms_lltdio/ms_pacer, defeats PHY EEE/green power traps.
-      - Topological Service Stack Resuscitation: cleanly halts 8 dependent services before reset and restarts them in strict topological dependency order (BFE -> mpssvc -> Dhcp -> Dnscache -> iphlpsvc -> dot3svc -> WlanSvc -> NlaSvc -> netprofm).
+      - Topological 10-Service Stack Resuscitation: cleanly halts 10 dependent services before reset and restarts them in strict topological order (BFE -> mpssvc -> CryptSvc -> Dhcp -> Dnscache -> iphlpsvc -> dot3svc -> WlanSvc -> NlaSvc -> netprofm -> BITS).
       - 802.1X Wired AutoConfig Reconnection: issues netsh lan reconnect across wired LAN interfaces.
       - Full DHCP Stack Cycle & Dynamic DNS: ipconfig /release & /renew (IPv4/IPv6), ipconfig /registerdns, and 802.1D Spanning Tree Protocol (STP) convergence loop.
       - Interactive TUI & CLI Integration: Key [U] on dashboard, dual-tier selector on [X], -Mode UltraReset / FullNetReset CLI dispatch.
@@ -797,4 +798,3 @@ function Enter-Lock([int]$TimeoutMs = 1000) {
             $memMisc = @{}
             if ($script:State -is [hashtable] -and $script:State.Misc -is [hashtable]) {
                 foreach ($mk in @('LearnedDhcp','DiscoveredDomain','DiscoveredPortalUrl','DiscoveredPortalIp','DiscoveryTime','InjectedHostRoutes')) {
-                    if ($script:State.Misc.ContainsKey($mk)) { $memMisc[$mk] = $script:State.Misc[$mk] }

@@ -1,3 +1,69 @@
+    Write-Check 'Logic: Expand-HttpBody decodes gzip, deflate and zlib bodies' $edOk
+    Write-Check 'Logic: Expand-HttpBody leaves identity or undecodable data alone and refuses a decompression bomb' $edSafe
+    $rcDef = [string](Get-Command Remove-CampusHostRoutes -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Remove-CampusHostRoutes also removes the host routes added for discovered / DHCP addresses (metric 5 only)' (($rcDef.IndexOf('InjectedHostRoutes') -ge 0) -and ($rcDef.IndexOf('RouteMetric -eq 5') -ge 0))
+    $ecDef = [string](Get-Command Ensure-CampusPortalPath -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: host routes to the configured portal/resolver are added only on the home campus and are tracked' (($ecDef.IndexOf('$cfgTargets') -ge 0) -and ($ecDef.IndexOf('$e.Home') -ge 0) -and ($ecDef.IndexOf('Add-TrackedHostRoute') -ge 0))
+    $aeDef = [string](Get-Command Get-AdapterEnvironment -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Get-AdapterEnvironment records whether the lease is the configured campus' (($aeDef.IndexOf('Get-HomeCampusVerdict') -ge 0) -and ($aeDef.IndexOf('$portalHit') -ge 0) -and ($aeDef.IndexOf('Home = $homeVerdict') -ge 0))
+    $ncDef = [string](Get-Command Set-CampusNrpt -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Set-CampusNrpt maps the configured campus domain only for the home campus' (($ncDef.IndexOf('$HomeNet') -ge 0) -and ($ncDef.IndexOf('$wantNs.Count -eq 0') -ge 0))
+    $pmDef = [string](Get-Command Shield-PathMtu -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Shield-PathMtu only measures a path that really leaves through this adapter' (($pmDef.IndexOf('Get-PathMtuForAdapter') -ge 0) -and ($pmDef.IndexOf("Get-PathMtu '9.9.9.9'") -lt 0))
+    $ovGood = ConvertTo-CfgOverride ('{"PortalIp":"10.20.30.40","CampusDns":"10.20.0.2","PortalPort":8443,"PortalHost":"Portal.Univ.EDU.","CampusDomain":"univ.edu","PortalUrl":"https://portal.univ.edu:8443/login","GwRegex":"^10\\.20\\.\\d+\\.1$","ProfileRegex":"univ|hostel"}' | ConvertFrom-Json)
+    Write-Check 'Logic: config override accepts well-formed values (and normalises host names)' (($ovGood.Count -eq 8) -and ($ovGood['PortalHost'] -ceq 'portal.univ.edu') -and ($ovGood['PortalPort'] -eq 8443) -and ($ovGood['CampusDns'] -ceq '10.20.0.2'))
+    $ovBad = ConvertTo-CfgOverride ('{"PortalIp":"999.1.1.1","CampusDns":"127.0.0.1","PortalPort":70000,"PortalHost":"not a host","CampusDomain":"","PortalUrl":"http://portal.univ.edu/","GwRegex":"([unclosed","ProfileRegex":"","Unknown":"x"}' | ConvertFrom-Json)
+    Write-Check 'Logic: config override rejects malformed, blank, non-https and unknown values' ($ovBad.Count -eq 0)
+    Write-Check 'Logic: config override can never blank a setting (empty input yields nothing)' ((ConvertTo-CfgOverride $null).Count -eq 0 -and (ConvertTo-CfgOverride ('{}' | ConvertFrom-Json)).Count -eq 0)
+    # v6.0.0 Sovereign Peak: RFC 8910 DHCP Option 114 captive URL decoder check
+    $opt114Url = 'https://login.campus.edu/portal'
+    [byte[]]$opt114Bytes = @(252, 4, 1, 2, 3, 4, 114, $opt114Url.Length) + [System.Text.Encoding]::ASCII.GetBytes($opt114Url)
+    $fakeReg = [pscustomobject]@{ DhcpInterfaceOptions = $opt114Bytes }
+    $decodedOpt114 = $null
+    if ($fakeReg.DhcpInterfaceOptions -is [byte[]]) {
+        [byte[]]$fb = $fakeReg.DhcpInterfaceOptions; $fi = 0
+        while ($fi -lt ($fb.Length - 2)) {
+            $fopt = [int]$fb[$fi]; $flen = [int]$fb[$fi + 1]
+            if ($flen -le 0 -or ($fi + 2 + $flen) -gt $fb.Length) { break }
+            if ($fopt -eq 114 -or $fopt -eq 160) {
+                try { $fstr = [System.Text.Encoding]::ASCII.GetString($fb, $fi + 2, $flen); if ($fstr -match '^https?://[^\s]+$') { $decodedOpt114 = $fstr; break } } catch {}
+            }
+            $fi += (2 + $flen)
+        }
+    }
+    Write-Check 'Logic: RFC 8910 DHCP option 114 binary decoder extracts captive portal URL' ($decodedOpt114 -ceq $opt114Url)
+    Write-Check 'Logic: sinkhole detector catches 192.0.2.1 and unroutable test blocks' ((Test-IsSinkholeIp '192.0.2.1') -and (Test-IsSinkholeIp '198.51.100.25') -and (Test-IsSinkholeIp '203.0.113.8') -and (Test-IsSinkholeIp '127.0.0.1') -and (-not (Test-IsSinkholeIp '142.251.43.142')) -and (-not (Test-IsSinkholeIp '1.1.1.1')))
+    Write-Check 'Logic: universal DNS verdict engine neutralizes unroutable or sinkholed IPv6 and preserves genuine dual-stack' (((Get-DnsVerdictDecision $false $false 2 $false) -eq 'Neutralize') -and ((Get-DnsVerdictDecision $true $true 2 $true) -eq 'Neutralize') -and ((Get-DnsVerdictDecision $true $true 2 $false) -eq 'Keep') -and ((Get-DnsVerdictDecision $false $false 0 $false) -eq 'None'))
+    # v6.4.2 Hardened Invariant Checks: PnP rate-limit, StartTime ISO round-trip, DryRun guards, Uplink fallback ladder, and Interceptor restoration
+    $pnpDef = [string](Get-Command Rescue-DormantEthernetPnp -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Rescue-DormantEthernetPnp stamps 300s limiter before query and uses -PresentOnly' (($pnpDef.IndexOf("Test-Elapsed 'PnpRescan' 300") -ge 0) -and ($pnpDef.IndexOf("Set-StateTime 'PnpRescan'") -ge 0) -and ($pnpDef.IndexOf('-PresentOnly') -ge 0))
+    $utcNow = (Get-Date).ToUniversalTime()
+    $parsedUtc = [datetime]::Parse($utcNow.ToString('o'), [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
+    Write-Check 'Logic: interactive session timestamp round-trips via ISO-8601 UTC with zero drift' ([math]::Abs(($utcNow - $parsedUtc).TotalSeconds) -lt 0.001)
+    $gwDef = [string](Get-Command Get-GatewayMacs -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Get-GatewayMacs guards Remove-NetNeighbor with -not $script:IsDry' (($gwDef.IndexOf('if (-not $script:IsDry)') -ge 0) -and ($gwDef.IndexOf('Remove-NetNeighbor') -ge 0))
+    $rnDef = [string](Get-Command Restore-NeutralizedInterceptors -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Restore-NeutralizedInterceptors restores DelayedAutostart and restarts running services' (($rnDef.IndexOf('WasRunning') -ge 0) -and ($rnDef.IndexOf('DelayedAutostart') -ge 0) -and ($rnDef.IndexOf('Start-Service') -ge 0))
+    $ssDef = [string](Get-Command Shield-SystemStack -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Shield-SystemStack falls back to DHCP DNS and gateway before public resolvers' (($ssDef.IndexOf('Get-DhcpDnsServers') -ge 0) -and ($ssDef.IndexOf('IPv4DefaultGateway') -ge 0) -and ($ssDef.IndexOf('fallbackDns') -ge 0))
+
+    # ---- Omniscient Layer 1-7 Adaptive Engine & Sentinel Daemon Test Assertions ----
+    Write-Check 'Logic: Test-NdisLinkHealth returns structured health object on null' (((Test-NdisLinkHealth $null).Reason) -eq 'NoAdapter' -and ((Test-NdisLinkHealth $null).Healthy -eq $false))
+    Write-Check 'Logic: Resolve-DuplexFlap dry run is non-destructive' ((Resolve-DuplexFlap $null) -eq $false)
+    Write-Check 'Logic: Optimize-PhySiliconBuffers enforces discard threshold lock' ((Optimize-PhySiliconBuffers $null) -eq $false)
+    Write-Check 'Logic: Shield-Dot3Svc handles null adapter safely' ((Shield-Dot3Svc $null) -eq $false)
+    Write-Check 'Logic: Wait-StpConvergence handles dry run / null adapter gracefully' ((Wait-StpConvergence $null) -eq $true)
+    $sub24 = Get-SubnetInfoFromLease $null
+    Write-Check 'Logic: Get-SubnetInfoFromLease handles null adapter' ($null -eq $sub24)
+
+    # Subnet calculus pure math validation
+    $calcFunc = {
+        param([string]$ipStr, [int]$prefix)
+        $ip = [System.Net.IPAddress]::Parse($ipStr)
+        $ipBytes = $ip.GetAddressBytes()
+        $maskBytes = New-Object byte[] 4; $netBytes = New-Object byte[] 4; $bcastBytes = New-Object byte[] 4
+        for ($i = 0; $i -lt 4; $i++) {
+            $bits = [math]::Max(0, [math]::Min(8, $prefix - ($i * 8)))
             $maskBytes[$i] = [byte]$(if ($bits -eq 0) { 0 } else { 256 - [math]::Pow(2, 8 - $bits) })
             $netBytes[$i]  = [byte]($ipBytes[$i] -band $maskBytes[$i])
             $wildcard      = [byte](255 -bxor $maskBytes[$i])
@@ -54,6 +120,11 @@
     Write-Check 'Logic: Ultra System Reset sets DhcpConnForceBroadcastFlag' ($ultraDef.IndexOf('DhcpConnForceBroadcastFlag') -ge 0)
     Write-Check 'Logic: Ultra System Reset audits and destroys accidental network bridges' ($ultraDef.IndexOf('bridge') -ge 0)
     Write-Check 'Logic: Ultra System Reset flushes HTTP driver log buffers' ($ultraDef.IndexOf('logbuffer') -ge 0)
+    Write-Check 'Logic: Ultra System Reset resets interface portproxy and httpstunnel' ($ultraDef.IndexOf('portproxy') -ge 0 -and $ultraDef.IndexOf('httpstunnel') -ge 0)
+    Write-Check 'Logic: Ultra System Reset purges BITS transfers and Kerberos tickets' ($ultraDef.IndexOf('Get-BitsTransfer') -ge 0 -and $ultraDef.IndexOf('klist.exe') -ge 0)
+    Write-Check 'Logic: Ultra System Reset calibrates NCSI active probing in registry' ($ultraDef.IndexOf('EnableActiveProbing') -ge 0 -and $ultraDef.IndexOf('ActiveWebProbeHost') -ge 0)
+    Write-Check 'Logic: Ultra System Reset wipes interface DNS settings via delete interface' ($ultraDef.IndexOf('dnsclient') -ge 0 -and $ultraDef.IndexOf('setting=all') -ge 0)
+    Write-Check 'Logic: Ultra System Reset purges SMB sessions via net use' ($ultraDef.IndexOf('net.exe') -ge 0 -and $ultraDef.IndexOf('use') -ge 0)
     $idkDefNow = [string](Get-Command Invoke-DashboardKey -ErrorAction SilentlyContinue).Definition
     Write-Check 'Logic: Invoke-DashboardKey handles key U for Ultra System Reset' ($idkDefNow.IndexOf("Invoke-UltraSystemReset") -ge 0)
 
@@ -727,74 +798,3 @@ if (-not $script:IsAdmin -and -not $script:IsDry -and ($adminModes -contains $Mo
             foreach ($kv in $PSBoundParameters.GetEnumerator()) {
                 if ($kv.Key -eq 'LfElevated') { continue }
                 if ($kv.Value -is [System.Management.Automation.SwitchParameter]) { if ($kv.Value.IsPresent) { $parts += ('-' + $kv.Key) } }
-                else { $parts += ('-' + $kv.Key); $parts += [string]$kv.Value }
-            }
-            Start-Process -FilePath $script:SelfPath -ArgumentList ($parts -join ' ') -Verb RunAs -ErrorAction Stop
-            $elevated = $true
-        } catch { Write-Host 'Administrator approval was not granted.' -ForegroundColor Yellow }
-    }
-    if ($elevated) { exit 0 }
-    if ($Mode -ne 'Interactive') { Write-Host '[x] This mode needs Administrator rights.' -ForegroundColor Red; exit 1 }
-}
-if ($script:UiOn) { Initialize-Ui }
-if ($script:IsAdmin) { Initialize-Store }
-Import-UserConfig
-$script:State = Get-State
-$exitCode = 0
-try {
-    if ($script:UiOn -and $Mode -ne 'Interactive') { Write-Banner ("{0}{1}" -f $Mode, $(if ($script:IsDry) { ' (dry run)' } else { '' })) }
-    switch ($Mode) {
-        'AutoHeal' { [void](Invoke-AutoHeal) }
-        'Omnifix'      { Invoke-SupremeOmnifix }
-        'FullNetReset' { Invoke-UltraSystemReset }
-        'UltraReset'   { Invoke-UltraSystemReset }
-        'SetRouteProfile' { Set-RouteProfileMode $RouteProfile }
-        'Heal' {
-            $sw = [System.Diagnostics.Stopwatch]::StartNew()
-            $r = Pick-Hash (Invoke-WithLock { Invoke-HealPipeline })
-            $sw.Stop()
-            Write-HealSummary $r $sw
-            if ($r -and $r.Conn -eq 'Captive' -and -not $script:IsDry) {
-                [void](Invoke-WithLock { [void](Open-Portal); Save-State })
-                if ((Get-InternetState -NoCache).State -eq 'Captive') {
-                    if (Wait-ForAuthentication 120) { [void](Invoke-WithLock { Complete-Authentication }) }
-                }
-            }
-        }
-        'Diagnose'   { Show-Diagnostics }
-        'Report'     { New-SupportReport }
-        'QuickProbe' { Run-QuickProbe }
-        'FlushCache' { [void](Invoke-WithLock { Flush-NetworkCache }) }
-        'InstallWatchdog'   { [void](Invoke-WithLock { Install-Watchdog }) }
-        'InstallShield'     { [void](Invoke-WithLock { Install-Watchdog }) }
-        'UninstallWatchdog' { [void](Invoke-WithLock { Uninstall-Watchdog }) }
-        'UninstallShield'   { [void](Invoke-WithLock { Uninstall-Watchdog }) }
-        'ResetFactory'      { [void](Invoke-WithLock { Restore-Everything }) }
-        'LaunchPortal'      { [void](Invoke-WithLock { Open-Portal -Force }) }
-        'SetDnsProfile'     { Set-DnsProfileMode $DnsProfile }
-        'SelfTest'          { Invoke-SelfTest; if ($script:TestFail -gt 0) { $exitCode = 1 } }
-        'Daemon'            { Start-AutonomousDaemon }
-        'Interactive'       { Start-Interactive }
-    }
-} catch {
-    Write-Log 'FAIL' ("Unhandled error: " + $_.Exception.Message)
-    Write-Log 'FAIL' ([string]$_.ScriptStackTrace)
-    $exitCode = 1
-} finally {
-    try {
-        $intFile = Join-Path $script:StoreDir 'interactive.json'
-        if (Test-Path -LiteralPath $intFile) {
-            $meta = ConvertFrom-Json (Get-Content -LiteralPath $intFile -Raw -ErrorAction SilentlyContinue)
-            if ($meta -and $meta.Pid -eq $PID) { Remove-Item -LiteralPath $intFile -Force -ErrorAction SilentlyContinue }
-        }
-    } catch {}
-    Save-State
-    Exit-Lock
-    if ($script:UiOn) { Exit-Screen }
-}
-if ($exitCode -eq 0 -and $script:FailCount -gt 0 -and (@('AutoHeal', 'Heal', 'Omnifix', 'FullNetReset', 'UltraReset') -contains $Mode)) { $exitCode = 2 }
-if ($exitCode -ne 0 -and -not $NoPause -and $Host.Name -eq 'ConsoleHost') {
-    Write-Host ''
-    Write-Host 'LanFixer closed with an exit code. Press any key to close...' -ForegroundColor Gray
-    Wait-AnyKey
-} elseif ($script:UiOn -and $Mode -ne 'Interactive' -and -not $NoPause -and $Host.Name -eq 'ConsoleHost') {

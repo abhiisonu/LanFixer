@@ -1,3 +1,5 @@
+        $ok = Invoke-Change 'IPv4 preferred over IPv6 (IPv6 is advertised on this LAN but unreachable); applies after the next restart' {
+            if (-not (Test-Path -LiteralPath $script:Tcpip6Key)) { New-Item -Path $script:Tcpip6Key -Force -ErrorAction Stop | Out-Null }
             New-ItemProperty -LiteralPath $script:Tcpip6Key -Name DisabledComponents -Value $new -PropertyType DWord -Force -ErrorAction Stop | Out-Null
         }
         if ($ok -and -not $script:IsDry) { $script:State.Misc['Ipv4PrecedenceManaged'] = $true }
@@ -591,21 +593,21 @@ function Invoke-SupremeOmnifix {
 }
 
 # ==============================================================================
-# ULTRA SYSTEM RESET - THE SUPREME THERMONUCLEAR REMEDIATION ENGINE
+# ULTRA SYSTEM RESET - THE SUPREME HYPER-NUCLEAR REMEDIATION ENGINE
 # ==============================================================================
 function Invoke-UltraSystemReset {
     if (-not (Assert-Admin)) { return }
     $swUltra = [System.Diagnostics.Stopwatch]::StartNew()
-    Write-Section 'ULTRA SYSTEM RESET (9-STAGE THERMONUCLEAR STACK RESUSCITATION)'
+    Write-Section 'ULTRA SYSTEM RESET (10-STAGE HYPER-NUCLEAR STACK RESUSCITATION)'
     $r = Pick-Hash (Invoke-WithLock {
         # ----------------------------------------------------------------------
-        # STAGE 1/9: PRE-FLIGHT ACID SNAPSHOT & 8-SERVICE TOPOLOGICAL TEARDOWN
+        # STAGE 1/10: PRE-FLIGHT ACID SNAPSHOT & 10-SERVICE REVERSE TEARDOWN
         # ----------------------------------------------------------------------
-        Write-Log 'STEP' 'STAGE 1/9  Snapshotting pre-flight state & suspending 8 dependent network services'
+        Write-Log 'STEP' 'STAGE 1/10  Snapshotting pre-flight state & suspending 10 dependent network services'
         $script:ConnCache = $null
         $script:EnvCache = @{}
         if ($script:IsDry) {
-            Write-Log 'DRY' 'Would capture pre-flight snapshots and stop dependent network services (netprofm, NlaSvc, Dnscache, Dhcp, iphlpsvc, dot3svc, WlanSvc, mpssvc)'
+            Write-Log 'DRY' 'Would capture pre-flight snapshots and stop dependent network services (BITS, netprofm, NlaSvc, Dnscache, Dhcp, iphlpsvc, dot3svc, WlanSvc, CryptSvc, mpssvc)'
         } else {
             foreach ($ea in @(Get-EthernetAdapters)) {
                 try { [void](Capture-PreflightSnapshot $ea) } catch {}
@@ -618,17 +620,17 @@ function Invoke-UltraSystemReset {
             $script:State.Misc.Remove('DiscoveredPortalIp')
             $script:State.Misc.Remove('DiscoveredPortalUrl')
             
-            # Teardown dependent services in reverse topological order to release kernel sockets and registry handles
-            $downSvcs = @('netprofm', 'NlaSvc', 'Dnscache', 'Dhcp', 'iphlpsvc', 'dot3svc', 'WlanSvc', 'mpssvc')
+            # Teardown dependent services in strict reverse topological order to release kernel sockets, handles, and crypto locks
+            $downSvcs = @('BITS', 'netprofm', 'NlaSvc', 'Dnscache', 'Dhcp', 'iphlpsvc', 'dot3svc', 'WlanSvc', 'CryptSvc', 'mpssvc')
             foreach ($s in $downSvcs) {
                 try { Stop-Service -Name $s -Force -ErrorAction SilentlyContinue } catch {}
             }
         }
 
         # ----------------------------------------------------------------------
-        # STAGE 2/9: DUAL-ARCHITECTURE WINSOCK CATALOG OBLITERATION (64-BIT & 32-BIT)
+        # STAGE 2/10: DUAL-ARCHITECTURE WINSOCK CATALOG OBLITERATION (64-BIT & 32-BIT)
         # ----------------------------------------------------------------------
-        Write-Log 'STEP' 'STAGE 2/9  Dual-architecture Winsock LSP/NSP catalog wipe (64-bit System32 & 32-bit SysWOW64)'
+        Write-Log 'STEP' 'STAGE 2/10  Dual-architecture Winsock LSP/NSP catalog wipe (64-bit System32 & 32-bit SysWOW64)'
         if ($script:IsDry) {
             Write-Log 'DRY' 'Would execute 64-bit and 32-bit: netsh winsock reset catalog & netsh winsock reset'
             Write-Log 'DRY' 'Would reset Winsock AutodialFlags to 0 in registry'
@@ -654,13 +656,14 @@ function Invoke-UltraSystemReset {
         }
 
         # ----------------------------------------------------------------------
-        # STAGE 3/9: DUAL-STACK TCP/IP FACTORY RESTORATION & GLOBAL HEURISTICS NORMALIZATION
+        # STAGE 3/10: DUAL-STACK TCP/IP FACTORY RESTORATION & GLOBAL HEURISTICS NORMALIZATION
         # ----------------------------------------------------------------------
-        Write-Log 'STEP' 'STAGE 3/9  Dual-stack TCP/IP stack restoration, global heuristics reset & tunnel defeat'
+        Write-Log 'STEP' 'STAGE 3/10  Dual-stack TCP/IP stack restoration, global heuristics reset, tunnel defeat & HTTP flush'
         if ($script:IsDry) {
             Write-Log 'DRY' 'Would execute: netsh int ip reset & netsh int ipv6 reset'
             Write-Log 'DRY' 'Would execute: netsh int tcp reset & normalize autotuning/RSS/RSC/timestamps'
             Write-Log 'DRY' 'Would disable transition tunnels: Teredo, ISATAP, 6to4'
+            Write-Log 'DRY' 'Would flush HTTP driver log buffers'
         } else {
             $ipLog = Join-Path $env:TEMP ('netsh_ip_reset_' + [Guid]::NewGuid().ToString('N').Substring(0,8) + '.log')
             $ipv6Log = Join-Path $env:TEMP ('netsh_ipv6_reset_' + [Guid]::NewGuid().ToString('N').Substring(0,8) + '.log')
@@ -696,12 +699,13 @@ function Invoke-UltraSystemReset {
         }
 
         # ----------------------------------------------------------------------
-        # STAGE 4/9: ROUTING TABLE PURGE, DESTINATION CACHES & ACCIDENTAL BRIDGE DESTRUCTION
+        # STAGE 4/10: ROUTING TABLE PURGE, PORTPROXY RESET & ACCIDENTAL BRIDGE DESTRUCTION
         # ----------------------------------------------------------------------
-        Write-Log 'STEP' 'STAGE 4/9  Purging routing table (route -f), destination caches & destroying rogue bridges'
+        Write-Log 'STEP' 'STAGE 4/10  Purging routing table (route -f), portproxy, destination caches & rogue bridges'
         if ($script:IsDry) {
             Write-Log 'DRY' 'Would execute: route -f (purge all routes and gateways)'
             Write-Log 'DRY' 'Would delete IPv4 & IPv6 destination caches'
+            Write-Log 'DRY' 'Would execute: netsh interface portproxy reset & netsh interface httpstunnel reset'
             Write-Log 'DRY' 'Would destroy accidental network bridges via netsh bridge'
             Write-Log 'DRY' 'Would execute: netsh advfirewall reset & enable all profiles'
         } else {
@@ -711,6 +715,10 @@ function Invoke-UltraSystemReset {
             # Delete IPv4 and IPv6 kernel destination caches
             [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'ip', 'delete', 'destinationcache') 5000)
             [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'ipv6', 'delete', 'destinationcache') 5000)
+
+            # Reset Windows port forwarding (PortProxy) and IP-HTTPS tunnels to defeat hijacked developer/emulator port redirects
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('interface', 'portproxy', 'reset') 5000)
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('interface', 'httpstunnel', 'reset') 5000)
 
             # Destroy accidental/rogue network bridges that create packet loops or isolate the physical NIC
             try {
@@ -730,21 +738,34 @@ function Invoke-UltraSystemReset {
         }
 
         # ----------------------------------------------------------------------
-        # STAGE 5/9: ENCRYPTED DNS (DOH/DOT) WIPE, WPAD AUTOPROXY & WFP FILTER SWEEP
+        # STAGE 5/10: ENCRYPTED DNS (DOH/DOT/DDR) WIPE, WPAD AUTOPROXY & BITS JOB PURGE
         # ----------------------------------------------------------------------
-        Write-Log 'STEP' 'STAGE 5/9  Resetting DNS-over-HTTPS (DoH), WinHTTP autoproxy & neutralizing WFP filters'
+        Write-Log 'STEP' 'STAGE 5/10  Resetting global/interface DoH, WinHTTP autoproxy, BITS transfers & WFP filters'
         if ($script:IsDry) {
-            Write-Log 'DRY' 'Would execute: netsh dnsclient delete global all'
+            Write-Log 'DRY' 'Would execute: netsh dnsclient delete global all & netsh dnsclient delete interface name=$ea.Name setting=all'
             Write-Log 'DRY' 'Would execute: netsh winhttp reset proxy, reset autoproxy & tracing'
+            Write-Log 'DRY' 'Would cancel all active BITS transfer jobs via Get-BitsTransfer'
             Write-Log 'DRY' 'Would sanitize WinINet user/machine proxies and flush SSL session cache'
         } else {
-            # Reset Windows 11 encrypted DNS (DoH, DoT, DDR) and global settings to factory defaults
+            # Reset Windows 11 encrypted DNS (DoH, DoT, DDR) globally to factory defaults
             [void](Invoke-Native (Get-SysExe 'netsh.exe') @('dnsclient', 'delete', 'global', 'all') 5000)
+
+            # Reset per-interface DNS encryption and DDR settings across physical adapters
+            foreach ($ea in @(Get-EthernetAdapters)) {
+                try {
+                    [void](Invoke-Native (Get-SysExe 'netsh.exe') @('dnsclient', 'delete', 'interface', "name=$($ea.Name)", 'setting=all') 5000)
+                } catch {}
+            }
 
             # WinHTTP proxy and autoproxy (WPAD) complete reset
             [void](Invoke-Native (Get-SysExe 'netsh.exe') @('winhttp', 'reset', 'proxy') 5000)
             [void](Invoke-Native (Get-SysExe 'netsh.exe') @('winhttp', 'reset', 'autoproxy') 5000)
             [void](Invoke-Native (Get-SysExe 'netsh.exe') @('winhttp', 'reset', 'tracing') 5000)
+
+            # Purge hung background BITS jobs holding TCP sockets open
+            try {
+                Get-BitsTransfer -AllUsers -ErrorAction SilentlyContinue | Remove-BitsTransfer -Confirm:$false -ErrorAction SilentlyContinue
+            } catch {}
         }
         # WinINet proxy sanitization across machine and user hives
         Shield-Proxies
@@ -756,45 +777,24 @@ function Invoke-UltraSystemReset {
         Shield-SystemStack -Aggressive
 
         # ----------------------------------------------------------------------
-        # STAGE 6/9: CACHE EVICTION, NEIGHBOR TABLE PURGE & NETBIOS RELEASE
+        # STAGE 6/10: NCSI CALIBRATION, KERBEROS PURGE & SMB SESSION SWEEP
         # ----------------------------------------------------------------------
-        Write-Log 'STEP' 'STAGE 6/9  Purging ARP/NDP/NetBIOS caches & flushing DNS resolver'
+        Write-Log 'STEP' 'STAGE 6/10  Calibrating NCSI active probes, purging Kerberos tickets & clearing SMB sessions'
         if ($script:IsDry) {
-            Write-Log 'DRY' 'Would execute: netsh interface ip delete arpcache, arp -d *, and delete neighbors'
-            Write-Log 'DRY' 'Would execute: nbtstat -R & nbtstat -RR'
-            Write-Log 'DRY' 'Would execute: ipconfig /flushdns, Clear-DnsClientCache, and clear suffix search list'
+            Write-Log 'DRY' 'Would calibrate NCSI active probing parameters in registry to Microsoft defaults'
+            Write-Log 'DRY' 'Would execute: klist purge & net use * /delete /y'
+            Write-Log 'DRY' 'Would purge orphaned unmanaged NLM network signatures'
         } else {
-            # Low-level ARP & neighbor cache deletion across all interfaces
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('interface', 'ip', 'delete', 'arpcache') 5000)
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'ip', 'delete', 'neighbors') 5000)
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'ipv6', 'delete', 'neighbors') 5000)
-            [void](Invoke-Native (Get-SysExe 'arp.exe') @('-d', '*') 5000)
-            Get-NetNeighbor -AddressFamily IPv4 -ErrorAction SilentlyContinue | Remove-NetNeighbor -Confirm:$false -ErrorAction SilentlyContinue
-            Get-NetNeighbor -AddressFamily IPv6 -ErrorAction SilentlyContinue | Remove-NetNeighbor -Confirm:$false -ErrorAction SilentlyContinue
+            # Calibrate NCSI active web and DNS probing parameters to Microsoft standard endpoints
+            try {
+                $ncsiKey = 'HKLM:\SYSTEM\CurrentControlSet\Services\NlaSvc\Parameters\Internet'
+                if (Test-Path -LiteralPath $ncsiKey) {
+                    Set-ItemProperty -LiteralPath $ncsiKey -Name 'EnableActiveProbing' -Value 1 -Type DWord -ErrorAction SilentlyContinue
+                    Set-ItemProperty -LiteralPath $ncsiKey -Name 'ActiveWebProbeHost' -Value 'www.msftconnecttest.com' -ErrorAction SilentlyContinue
+                    Set-ItemProperty -LiteralPath $ncsiKey -Name 'ActiveWebProbePath' -Value 'connecttest.txt' -ErrorAction SilentlyContinue
+                    Set-ItemProperty -LiteralPath $ncsiKey -Name 'ActiveWebProbeContent' -Value 'Microsoft Connect Test' -ErrorAction SilentlyContinue
+                    Set-ItemProperty -LiteralPath $ncsiKey -Name 'ActiveDnsProbeHost' -Value 'dns.msftncsi.com' -ErrorAction SilentlyContinue
+                    Set-ItemProperty -LiteralPath $ncsiKey -Name 'ActiveDnsProbeContent' -Value '131.107.0.89' -ErrorAction SilentlyContinue
+                }
+            } catch {}
 
-            # Flush NetBIOS remote name cache and broadcast name release/refresh
-            [void](Invoke-Native (Get-SysExe 'nbtstat.exe') @('-R') 5000)
-            [void](Invoke-Native (Get-SysExe 'nbtstat.exe') @('-RR') 5000)
-
-            # Flush DNS resolver cache and clear global suffix search lists
-            Clear-DnsClientCache -ErrorAction SilentlyContinue
-            [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/flushdns') 5000)
-            try { Set-DnsClientGlobalSetting -SuffixSearchList @() -ErrorAction SilentlyContinue } catch {}
-        }
-
-        # ----------------------------------------------------------------------
-        # STAGE 7/9: PHY HARDWARE TRANSCEIVER CYCLE, PROTOCOL BINDINGS & DHCP REGISTRY ZEROING
-        # ----------------------------------------------------------------------
-        Write-Log 'STEP' 'STAGE 7/9  Cycling PHY hardware, enforcing DHCP broadcast flag & zeroing lease registry'
-        Shield-Aspm
-        foreach ($ea in @(Get-EthernetAdapters)) {
-            if ($script:IsDry) {
-                Write-Log 'DRY' "Would cycle transceiver, restore bindings, zero lease, and set DhcpConnForceBroadcastFlag on $($ea.Name)"
-            } else {
-                Reset-PhysicalAdapterHardware $ea
-                Release-ArpLocks $ea
-                [void](Shield-TcpOffloads $ea)
-                [void](Shield-Dot3Svc $ea)
-
-                # Ensure core protocol bindings are active
-                foreach ($comp in @('ms_tcpip', 'ms_tcpip6', 'ms_rspndr', 'ms_lltdio', 'ms_msclient', 'ms_server', 'ms_pacer')) {

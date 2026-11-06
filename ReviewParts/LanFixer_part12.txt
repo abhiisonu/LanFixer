@@ -1,3 +1,74 @@
+                else { $parts += ('-' + $kv.Key); $parts += [string]$kv.Value }
+            }
+            Start-Process -FilePath $script:SelfPath -ArgumentList ($parts -join ' ') -Verb RunAs -ErrorAction Stop
+            $elevated = $true
+        } catch { Write-Host 'Administrator approval was not granted.' -ForegroundColor Yellow }
+    }
+    if ($elevated) { exit 0 }
+    if ($Mode -ne 'Interactive') { Write-Host '[x] This mode needs Administrator rights.' -ForegroundColor Red; exit 1 }
+}
+if ($script:UiOn) { Initialize-Ui }
+if ($script:IsAdmin) { Initialize-Store }
+Import-UserConfig
+$script:State = Get-State
+$exitCode = 0
+try {
+    if ($script:UiOn -and $Mode -ne 'Interactive') { Write-Banner ("{0}{1}" -f $Mode, $(if ($script:IsDry) { ' (dry run)' } else { '' })) }
+    switch ($Mode) {
+        'AutoHeal' { [void](Invoke-AutoHeal) }
+        'Omnifix'      { Invoke-SupremeOmnifix }
+        'FullNetReset' { Invoke-UltraSystemReset }
+        'UltraReset'   { Invoke-UltraSystemReset }
+        'SetRouteProfile' { Set-RouteProfileMode $RouteProfile }
+        'Heal' {
+            $sw = [System.Diagnostics.Stopwatch]::StartNew()
+            $r = Pick-Hash (Invoke-WithLock { Invoke-HealPipeline })
+            $sw.Stop()
+            Write-HealSummary $r $sw
+            if ($r -and $r.Conn -eq 'Captive' -and -not $script:IsDry) {
+                [void](Invoke-WithLock { [void](Open-Portal); Save-State })
+                if ((Get-InternetState -NoCache).State -eq 'Captive') {
+                    if (Wait-ForAuthentication 120) { [void](Invoke-WithLock { Complete-Authentication }) }
+                }
+            }
+        }
+        'Diagnose'   { Show-Diagnostics }
+        'Report'     { New-SupportReport }
+        'QuickProbe' { Run-QuickProbe }
+        'FlushCache' { [void](Invoke-WithLock { Flush-NetworkCache }) }
+        'InstallWatchdog'   { [void](Invoke-WithLock { Install-Watchdog }) }
+        'InstallShield'     { [void](Invoke-WithLock { Install-Watchdog }) }
+        'UninstallWatchdog' { [void](Invoke-WithLock { Uninstall-Watchdog }) }
+        'UninstallShield'   { [void](Invoke-WithLock { Uninstall-Watchdog }) }
+        'ResetFactory'      { [void](Invoke-WithLock { Restore-Everything }) }
+        'LaunchPortal'      { [void](Invoke-WithLock { Open-Portal -Force }) }
+        'SetDnsProfile'     { Set-DnsProfileMode $DnsProfile }
+        'SelfTest'          { Invoke-SelfTest; if ($script:TestFail -gt 0) { $exitCode = 1 } }
+        'Daemon'            { Start-AutonomousDaemon }
+        'Interactive'       { Start-Interactive }
+    }
+} catch {
+    Write-Log 'FAIL' ("Unhandled error: " + $_.Exception.Message)
+    Write-Log 'FAIL' ([string]$_.ScriptStackTrace)
+    $exitCode = 1
+} finally {
+    try {
+        $intFile = Join-Path $script:StoreDir 'interactive.json'
+        if (Test-Path -LiteralPath $intFile) {
+            $meta = ConvertFrom-Json (Get-Content -LiteralPath $intFile -Raw -ErrorAction SilentlyContinue)
+            if ($meta -and $meta.Pid -eq $PID) { Remove-Item -LiteralPath $intFile -Force -ErrorAction SilentlyContinue }
+        }
+    } catch {}
+    Save-State
+    Exit-Lock
+    if ($script:UiOn) { Exit-Screen }
+}
+if ($exitCode -eq 0 -and $script:FailCount -gt 0 -and (@('AutoHeal', 'Heal', 'Omnifix', 'FullNetReset', 'UltraReset') -contains $Mode)) { $exitCode = 2 }
+if ($exitCode -ne 0 -and -not $NoPause -and $Host.Name -eq 'ConsoleHost') {
+    Write-Host ''
+    Write-Host 'LanFixer closed with an exit code. Press any key to close...' -ForegroundColor Gray
+    Wait-AnyKey
+} elseif ($script:UiOn -and $Mode -ne 'Interactive' -and -not $NoPause -and $Host.Name -eq 'ConsoleHost') {
     Write-Host ''
     Write-Host 'Press any key to close...' -ForegroundColor Gray
     Wait-AnyKey
