@@ -200,7 +200,7 @@ function Get-Advice($t) {
                 $r.Key = '2'; $r.KeyLabel = 'arm the watchdog'
             } else {
                 $r.Status = 'Connected to network with background watchdog active.'
-                if ($t.LastFull) { $r.Status += (' Last repair ' + ([datetime]$t.LastFull).ToString('ddd HH:mm') + '.') }
+                if ($t.LastFull) { $r.Status += (' Last repair ' + ([datetime]$t.LastFull).ToString('ddd yyyy-MM-dd HH:mm') + '.') }
                 $r.Action = 'No action needed.'
             }
         }
