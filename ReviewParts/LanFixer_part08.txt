@@ -1,3 +1,11 @@
+}
+function Get-CredentialPortalUrl([string]$Location) {
+    if (-not $Location) { return '' }
+    $u = $null
+    try { $u = [uri]$Location } catch { return '' }
+    if (-not $u.IsAbsoluteUri) { return '' }
+    if ($u.Scheme -ne 'http' -and $u.Scheme -ne 'https') { return '' }
+    if ($u.UserInfo) { return '' }
     if (-not (Test-CredentialPortalHost $u.Host)) { return '' }
     return [string]$u.AbsoluteUri
 }
@@ -790,11 +798,3 @@ function Restore-Everything {
                     [void](Invoke-Change "Static IPv4 configuration ($($val.IPAddress)/$($val.PrefixLength)) restored on $($ad.Name)" {
                         Set-NetIPInterface -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -Dhcp Disabled -ErrorAction Stop
                         Get-NetIPAddress -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue
-                        if ($val.DefaultGateway) {
-                            Remove-NetRoute -InterfaceIndex $ad.ifIndex -DestinationPrefix '0.0.0.0/0' -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue
-                            Remove-NetRoute -InterfaceIndex $ad.ifIndex -DestinationPrefix '0.0.0.0/0' -PolicyStore PersistentStore -Confirm:$false -ErrorAction SilentlyContinue
-                            New-NetIPAddress -InterfaceIndex $ad.ifIndex -IPAddress $val.IPAddress -PrefixLength $val.PrefixLength -DefaultGateway $val.DefaultGateway -ErrorAction SilentlyContinue | Out-Null
-                        } else {
-                            New-NetIPAddress -InterfaceIndex $ad.ifIndex -IPAddress $val.IPAddress -PrefixLength $val.PrefixLength -ErrorAction SilentlyContinue | Out-Null
-                        }
-                    })

@@ -2533,6 +2533,7 @@ function Show-Advisory {
         @('Cable in, no IP / APIPA (169.254.x.x)',       '1', 'Quick Heal'),
         @('Campus portal login required for internet',   'A', 'Portal Login Vault'),
         @('Auto-repair on cable plug or system wake',    '2', 'Arm Background Watchdog'),
+        @('Autonomous continuous sentinel monitoring',   'B', 'Autonomous Sentinel Daemon'),
         # 2. DNS & Everyday Browsing
         @('University ERP or intranet unreachable',      '3', 'Campus DHCP DNS Profile'),
         @('Balance traffic: Ethernet vs Wi-Fi',          'M', 'Routing Priority Engine'),
@@ -2702,6 +2703,12 @@ function Invoke-DashboardKey([string]$Key, $adv) {
     if ($aliases.ContainsKey($Key)) { $Key = $aliases[$Key] }
     switch ($Key) {
         '0' { Show-Advisory }
+        'b' {
+            Show-View 'autonomous sentinel daemon' {
+                if (-not (Assert-Admin)) { return }
+                Start-AutonomousDaemon
+            }
+        }
         '1' { Start-Repair 'quick heal' }
         'm' { Show-View 'routing priority' { Show-RouteMenu } -NoWait }
         'x' {
@@ -5269,6 +5276,7 @@ function Invoke-SupremeOmnifix {
             Get-NetNeighbor -AddressFamily IPv4 -ErrorAction SilentlyContinue | Remove-NetNeighbor -Confirm:$false -ErrorAction SilentlyContinue
             Get-NetNeighbor -AddressFamily IPv6 -ErrorAction SilentlyContinue | Remove-NetNeighbor -Confirm:$false -ErrorAction SilentlyContinue
             [void](Invoke-Native (Get-SysExe 'nbtstat.exe') @('-R') 5000)
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('winsock', 'reset') 5000)
             Restart-Service -Name Dhcp -Force -ErrorAction SilentlyContinue
             Restart-Service -Name NlaSvc -Force -ErrorAction SilentlyContinue
             Start-Service -Name netprofm -ErrorAction SilentlyContinue
@@ -6695,6 +6703,8 @@ function Show-Diagnostics {
         Write-KV '  MAC Address' ([string]$a.MacAddress)
         Write-KV '  Link speed' ([string]$a.LinkSpeed)
         Write-KV '  Driver version' ([string]$a.DriverVersionString)
+        $lh = Test-NdisLinkHealth $a
+        Write-KV '  NDIS link health' $lh.Reason $(if ($lh.Healthy) { 'Green' } else { 'Yellow' })
         $sd = Get-NetAdapterAdvancedProperty -Name $a.Name -RegistryKeyword '*SpeedDuplex' -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($sd) {
             $dv = [string]$sd.DisplayValue
@@ -6722,6 +6732,14 @@ function Show-Diagnostics {
         foreach ($x in $e.Evidence) { Write-KV '  evidence' ([string]$x) 'DarkGray' }
         Write-KV 'IPv4' $(if ($h.Ip) { [string]$h.Ip } else { 'NONE (APIPA/unassigned)' }) $(if ($h.Ip) { 'Green' } else { 'Red' })
         if (-not $h.Ip) { [void]$issues.Add('No valid IPv4 lease (APIPA)') }
+        $sub = Get-SubnetInfoFromLease $a
+        if ($sub) {
+            Write-KV '  Subnet Mask' ("{0} (/{1})" -f $sub.SubnetMask, $sub.PrefixLength)
+            Write-KV '  Network / Bcast' ("{0} / {1}" -f $sub.NetworkAddress, $sub.Broadcast)
+            Write-KV '  Usable Hosts' ("{0} to {1} ({2} hosts)" -f $sub.MinHost, $sub.MaxHost, $sub.TotalHosts)
+        }
+        $optMtu = Find-OptimalPathMtu $a
+        Write-KV '  Optimal Path MTU' ("{0} bytes" -f $optMtu) $(if ($optMtu -lt 1500) { 'Yellow' } else { 'White' })
         Write-KV 'Gateway' $(if ($h.Gateway) { "{0} ({1})" -f $h.Gateway, $(if ($null -ne $h.GwRtt) { "$($h.GwRtt) ms" } elseif ($h.GwAlive) { 'ARP ok, ping filtered' } else { 'no reply' }) } else { 'none' })
         $ipif = Get-IPv4Interface $a
         if ($ipif) { Write-KV 'Duplicate-address probes' ([string]$ipif.DadTransmits) }
@@ -7627,6 +7645,12 @@ function Invoke-LogicTests {
 
     Write-Check 'Logic: Daemon mode exists in ValidateSet' ($srcTxt -match "ValidateSet\([^)]*'Daemon'")
     Write-Check 'Logic: Start-AutonomousDaemon is defined' ($null -ne (Get-Command Start-AutonomousDaemon -ErrorAction SilentlyContinue))
+    $idkDef = [string](Get-Command Invoke-DashboardKey -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Invoke-DashboardKey handles key B for autonomous daemon' ($idkDef.IndexOf("Start-AutonomousDaemon") -ge 0)
+    $omniWinsock = [string](Get-Command Invoke-SupremeOmnifix -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Invoke-SupremeOmnifix resets Winsock catalog' ($omniWinsock.IndexOf("winsock") -ge 0)
+    $diagDef = [string](Get-Command Show-Diagnostics -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Show-Diagnostics displays subnet calculus and NDIS health' ($diagDef.IndexOf("Get-SubnetInfoFromLease") -ge 0 -and $diagDef.IndexOf("Test-NdisLinkHealth") -ge 0)
 
     $script:State = $stSave
 }

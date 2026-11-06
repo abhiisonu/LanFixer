@@ -1,3 +1,10 @@
+        Save-Original 'Global' 'EnableMDNS' $cur
+        $ok = Invoke-Change 'mDNS broadcast disabled on campus (shields against multicast spoofing & hostname leaks on hostel /22)' {
+            if (-not (Test-Path -LiteralPath $script:DnsParamKey)) { New-Item -Path $script:DnsParamKey -Force -ErrorAction Stop | Out-Null }
+            New-ItemProperty -LiteralPath $script:DnsParamKey -Name EnableMDNS -Value 0 -PropertyType DWord -Force -ErrorAction Stop | Out-Null
+        }
+        if ($ok -and -not $script:IsDry) { $script:State.Misc['MdnsManaged'] = $true }
+    } elseif ($anyOther) {
         Restore-MdnsIfManaged 'Non-campus network: mDNS setting restored'
     }
 }
@@ -469,6 +476,7 @@ function Invoke-SupremeOmnifix {
             Get-NetNeighbor -AddressFamily IPv4 -ErrorAction SilentlyContinue | Remove-NetNeighbor -Confirm:$false -ErrorAction SilentlyContinue
             Get-NetNeighbor -AddressFamily IPv6 -ErrorAction SilentlyContinue | Remove-NetNeighbor -Confirm:$false -ErrorAction SilentlyContinue
             [void](Invoke-Native (Get-SysExe 'nbtstat.exe') @('-R') 5000)
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('winsock', 'reset') 5000)
             Restart-Service -Name Dhcp -Force -ErrorAction SilentlyContinue
             Restart-Service -Name NlaSvc -Force -ErrorAction SilentlyContinue
             Start-Service -Name netprofm -ErrorAction SilentlyContinue
@@ -790,11 +798,3 @@ function Test-CredentialPortalHost([string]$HostName) {
     if ([System.Net.IPAddress]::TryParse($h, [ref]$tmpIp)) { return [bool](Test-AllowedPortalIp $h) }
     $dom = ([string]$script:Cfg.CampusDomain).ToLowerInvariant().Trim('.')
     return [bool]($dom -and ($h -eq $dom -or $h.EndsWith('.' + $dom)))
-}
-function Get-CredentialPortalUrl([string]$Location) {
-    if (-not $Location) { return '' }
-    $u = $null
-    try { $u = [uri]$Location } catch { return '' }
-    if (-not $u.IsAbsoluteUri) { return '' }
-    if ($u.Scheme -ne 'http' -and $u.Scheme -ne 'https') { return '' }
-    if ($u.UserInfo) { return '' }

@@ -1,3 +1,21 @@
+                switch ($variant) {
+                    'ArpPending' { $tv.ArpPending = $true }
+                    'Limited'    { $tv.Admin = $false; $tv.Problem = 'Captive' }
+                    'Protected'  { $tv.Routing = 'Wi-Fi Protected' }
+                }
+                $mdlT = Get-DashboardModel $tv (Get-Advice $tv) $cwT
+                foreach ($lnT in $mdlT.Lines) {
+                    if ((Get-SegsLength $lnT) -gt ($cwT + 2)) { $okTrans = $false }
+                    if (-not $uniT) { foreach ($sgT in $lnT) { if ([string]$sgT.T -match '[^\x20-\x7E]') { $okTrans = $false } } }
+                }
+            }
+        }
+    }
+    Set-UiGlyphs $saveUniT
+    Write-Check 'UI: pending-MAC, Limited Mode and Wi-Fi Protected layouts fit 60/76/100 in both glyph modes' $okTrans
+    # The [K] offer must survive every supported width: dock row when the full layout is used, legend cell when compact.
+    $mdlTxt2 = { param($m) @($m.Lines | ForEach-Object { ((@($_) | ForEach-Object { [string]$_.T }) -join '') }) }
+    $arpFit = $true
     foreach ($cwK in 60, 76, 100) {
         $tk = New-Telemetry; $tk.Admin = $true; $tk.Problem = 'Healthy'; $tk.LinkUp = $true; $tk.ArpPending = $true
         $txtK = @((& $mdlTxt2 (Get-DashboardModel $tk (Get-Advice $tk) $cwK)))
@@ -427,6 +445,12 @@
 
     Write-Check 'Logic: Daemon mode exists in ValidateSet' ($srcTxt -match "ValidateSet\([^)]*'Daemon'")
     Write-Check 'Logic: Start-AutonomousDaemon is defined' ($null -ne (Get-Command Start-AutonomousDaemon -ErrorAction SilentlyContinue))
+    $idkDef = [string](Get-Command Invoke-DashboardKey -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Invoke-DashboardKey handles key B for autonomous daemon' ($idkDef.IndexOf("Start-AutonomousDaemon") -ge 0)
+    $omniWinsock = [string](Get-Command Invoke-SupremeOmnifix -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Invoke-SupremeOmnifix resets Winsock catalog' ($omniWinsock.IndexOf("winsock") -ge 0)
+    $diagDef = [string](Get-Command Show-Diagnostics -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Show-Diagnostics displays subnet calculus and NDIS health' ($diagDef.IndexOf("Get-SubnetInfoFromLease") -ge 0 -and $diagDef.IndexOf("Test-NdisLinkHealth") -ge 0)
 
     $script:State = $stSave
 }
@@ -773,28 +797,4 @@ function Capture-PreflightSnapshot($Ad) {
         if ($ipif) {
             $snap.Metric = [int]$ipif.InterfaceMetric
             $snap.Mtu    = [int]$ipif.NlMtu
-        }
-    } catch {}
-    try {
-        $routes = @(Get-NetRoute -InterfaceIndex $Ad.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue)
-        foreach ($rt in $routes) {
-            $snap.Routes += @{
-                DestinationPrefix = [string]$rt.DestinationPrefix
-                NextHop           = [string]$rt.NextHop
-                RouteMetric       = [int]$rt.RouteMetric
-            }
-        }
-    } catch {}
-    return $snap
-}
-
-function Restore-PreflightSnapshot($Snapshot) {
-    if (-not $Snapshot -or -not $Snapshot.ifIndex) { return $false }
-    $ifIdx = [int]$Snapshot.ifIndex
-    $adName = [string]$Snapshot.Name
-    Write-Log 'WARN' ("Rolling back configuration on {0} to pre-flight snapshot..." -f $adName)
-    $restored = $true
-    try {
-        if ($null -ne $Snapshot.Metric) {
-            Set-NetIPInterface -InterfaceIndex $ifIdx -AddressFamily IPv4 -InterfaceMetric ([int]$Snapshot.Metric) -ErrorAction SilentlyContinue
         }

@@ -1,3 +1,11 @@
+                        if ($val.DefaultGateway) {
+                            Remove-NetRoute -InterfaceIndex $ad.ifIndex -DestinationPrefix '0.0.0.0/0' -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue
+                            Remove-NetRoute -InterfaceIndex $ad.ifIndex -DestinationPrefix '0.0.0.0/0' -PolicyStore PersistentStore -Confirm:$false -ErrorAction SilentlyContinue
+                            New-NetIPAddress -InterfaceIndex $ad.ifIndex -IPAddress $val.IPAddress -PrefixLength $val.PrefixLength -DefaultGateway $val.DefaultGateway -ErrorAction SilentlyContinue | Out-Null
+                        } else {
+                            New-NetIPAddress -InterfaceIndex $ad.ifIndex -IPAddress $val.IPAddress -PrefixLength $val.PrefixLength -ErrorAction SilentlyContinue | Out-Null
+                        }
+                    })
                 }
             } elseif ($key -eq 'Dad4') {
                 $n = [int]$val
@@ -295,6 +303,8 @@ function Show-Diagnostics {
         Write-KV '  MAC Address' ([string]$a.MacAddress)
         Write-KV '  Link speed' ([string]$a.LinkSpeed)
         Write-KV '  Driver version' ([string]$a.DriverVersionString)
+        $lh = Test-NdisLinkHealth $a
+        Write-KV '  NDIS link health' $lh.Reason $(if ($lh.Healthy) { 'Green' } else { 'Yellow' })
         $sd = Get-NetAdapterAdvancedProperty -Name $a.Name -RegistryKeyword '*SpeedDuplex' -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($sd) {
             $dv = [string]$sd.DisplayValue
@@ -322,6 +332,14 @@ function Show-Diagnostics {
         foreach ($x in $e.Evidence) { Write-KV '  evidence' ([string]$x) 'DarkGray' }
         Write-KV 'IPv4' $(if ($h.Ip) { [string]$h.Ip } else { 'NONE (APIPA/unassigned)' }) $(if ($h.Ip) { 'Green' } else { 'Red' })
         if (-not $h.Ip) { [void]$issues.Add('No valid IPv4 lease (APIPA)') }
+        $sub = Get-SubnetInfoFromLease $a
+        if ($sub) {
+            Write-KV '  Subnet Mask' ("{0} (/{1})" -f $sub.SubnetMask, $sub.PrefixLength)
+            Write-KV '  Network / Bcast' ("{0} / {1}" -f $sub.NetworkAddress, $sub.Broadcast)
+            Write-KV '  Usable Hosts' ("{0} to {1} ({2} hosts)" -f $sub.MinHost, $sub.MaxHost, $sub.TotalHosts)
+        }
+        $optMtu = Find-OptimalPathMtu $a
+        Write-KV '  Optimal Path MTU' ("{0} bytes" -f $optMtu) $(if ($optMtu -lt 1500) { 'Yellow' } else { 'White' })
         Write-KV 'Gateway' $(if ($h.Gateway) { "{0} ({1})" -f $h.Gateway, $(if ($null -ne $h.GwRtt) { "$($h.GwRtt) ms" } elseif ($h.GwAlive) { 'ARP ok, ping filtered' } else { 'no reply' }) } else { 'none' })
         $ipif = Get-IPv4Interface $a
         if ($ipif) { Write-KV 'Duplicate-address probes' ([string]$ipif.DadTransmits) }
@@ -780,21 +798,3 @@ function Invoke-LogicTests {
                 $tv.Ip = '10.114.230.187'; $tv.GwIp = '10.114.230.1'; $tv.GwAlive = $true
                 $tv.DnsPrimary = '172.16.1.2'; $tv.DnsProfile = 'Adaptive'; $tv.Env = 'Campus'; $tv.EnvScore = 4
                 $tv.Watchdog = $true; $tv.Vault = $true; $tv.Paused = $true
-                switch ($variant) {
-                    'ArpPending' { $tv.ArpPending = $true }
-                    'Limited'    { $tv.Admin = $false; $tv.Problem = 'Captive' }
-                    'Protected'  { $tv.Routing = 'Wi-Fi Protected' }
-                }
-                $mdlT = Get-DashboardModel $tv (Get-Advice $tv) $cwT
-                foreach ($lnT in $mdlT.Lines) {
-                    if ((Get-SegsLength $lnT) -gt ($cwT + 2)) { $okTrans = $false }
-                    if (-not $uniT) { foreach ($sgT in $lnT) { if ([string]$sgT.T -match '[^\x20-\x7E]') { $okTrans = $false } } }
-                }
-            }
-        }
-    }
-    Set-UiGlyphs $saveUniT
-    Write-Check 'UI: pending-MAC, Limited Mode and Wi-Fi Protected layouts fit 60/76/100 in both glyph modes' $okTrans
-    # The [K] offer must survive every supported width: dock row when the full layout is used, legend cell when compact.
-    $mdlTxt2 = { param($m) @($m.Lines | ForEach-Object { ((@($_) | ForEach-Object { [string]$_.T }) -join '') }) }
-    $arpFit = $true

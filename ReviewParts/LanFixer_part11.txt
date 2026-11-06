@@ -1,3 +1,27 @@
+    } catch {}
+    try {
+        $routes = @(Get-NetRoute -InterfaceIndex $Ad.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue)
+        foreach ($rt in $routes) {
+            $snap.Routes += @{
+                DestinationPrefix = [string]$rt.DestinationPrefix
+                NextHop           = [string]$rt.NextHop
+                RouteMetric       = [int]$rt.RouteMetric
+            }
+        }
+    } catch {}
+    return $snap
+}
+
+function Restore-PreflightSnapshot($Snapshot) {
+    if (-not $Snapshot -or -not $Snapshot.ifIndex) { return $false }
+    $ifIdx = [int]$Snapshot.ifIndex
+    $adName = [string]$Snapshot.Name
+    Write-Log 'WARN' ("Rolling back configuration on {0} to pre-flight snapshot..." -f $adName)
+    $restored = $true
+    try {
+        if ($null -ne $Snapshot.Metric) {
+            Set-NetIPInterface -InterfaceIndex $ifIdx -AddressFamily IPv4 -InterfaceMetric ([int]$Snapshot.Metric) -ErrorAction SilentlyContinue
+        }
         if ($null -ne $Snapshot.Mtu) {
             Set-NetIPInterface -InterfaceIndex $ifIdx -AddressFamily IPv4 -NlMtuBytes ([int]$Snapshot.Mtu) -ErrorAction SilentlyContinue
         }

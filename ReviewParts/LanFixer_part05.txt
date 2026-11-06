@@ -1,3 +1,10 @@
+}
+function Get-ValidIPv4($Ad) {
+    $x = Get-NetIPAddress -InterfaceIndex $Ad.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+         Where-Object { $_.IPAddress -notlike '169.254.*' -and $_.AddressState -eq 'Preferred' } | Select-Object -First 1
+    if ($x) { return [string]$x.IPAddress }
+    return $null
+}
 
 # Scored fingerprinting. Strong evidence needs no network I/O (DHCP lease data survives APIPA),
 # and a sticky history stops a broken lease from being mistaken for "home network".
@@ -791,10 +798,3 @@ function Get-SubnetInfoFromLease($Ad) {
     return [PSCustomObject]@{
         IPAddress      = $ipStr
         PrefixLength   = $prefix
-        SubnetMask     = ($maskBytes -join '.')
-        NetworkAddress = ($netBytes -join '.')
-        Broadcast      = ($bcastBytes -join '.')
-        MinHost        = ($minHostBytes -join '.')
-        MaxHost        = ($maxHostBytes -join '.')
-        TotalHosts     = $totalHosts
-    }

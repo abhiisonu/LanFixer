@@ -1,3 +1,10 @@
+        SubnetMask     = ($maskBytes -join '.')
+        NetworkAddress = ($netBytes -join '.')
+        Broadcast      = ($bcastBytes -join '.')
+        MinHost        = ($minHostBytes -join '.')
+        MaxHost        = ($maxHostBytes -join '.')
+        TotalHosts     = $totalHosts
+    }
 }
 
 function Find-OptimalPathMtu($Ad, [string]$Target = '') {
@@ -791,10 +798,3 @@ function Shield-Mdns($Ctxs) {
     try { $cur = (Get-ItemProperty -LiteralPath $script:DnsParamKey -Name EnableMDNS -ErrorAction Stop).EnableMDNS } catch {}
     if ($anyCampus) {
         if ($null -ne $cur -and [int]$cur -eq 0) { return }
-        Save-Original 'Global' 'EnableMDNS' $cur
-        $ok = Invoke-Change 'mDNS broadcast disabled on campus (shields against multicast spoofing & hostname leaks on hostel /22)' {
-            if (-not (Test-Path -LiteralPath $script:DnsParamKey)) { New-Item -Path $script:DnsParamKey -Force -ErrorAction Stop | Out-Null }
-            New-ItemProperty -LiteralPath $script:DnsParamKey -Name EnableMDNS -Value 0 -PropertyType DWord -Force -ErrorAction Stop | Out-Null
-        }
-        if ($ok -and -not $script:IsDry) { $script:State.Misc['MdnsManaged'] = $true }
-    } elseif ($anyOther) {

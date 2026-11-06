@@ -133,6 +133,7 @@ function Show-Advisory {
         @('Cable in, no IP / APIPA (169.254.x.x)',       '1', 'Quick Heal'),
         @('Campus portal login required for internet',   'A', 'Portal Login Vault'),
         @('Auto-repair on cable plug or system wake',    '2', 'Arm Background Watchdog'),
+        @('Autonomous continuous sentinel monitoring',   'B', 'Autonomous Sentinel Daemon'),
         # 2. DNS & Everyday Browsing
         @('University ERP or intranet unreachable',      '3', 'Campus DHCP DNS Profile'),
         @('Balance traffic: Ethernet vs Wi-Fi',          'M', 'Routing Priority Engine'),
@@ -302,6 +303,12 @@ function Invoke-DashboardKey([string]$Key, $adv) {
     if ($aliases.ContainsKey($Key)) { $Key = $aliases[$Key] }
     switch ($Key) {
         '0' { Show-Advisory }
+        'b' {
+            Show-View 'autonomous sentinel daemon' {
+                if (-not (Assert-Admin)) { return }
+                Start-AutonomousDaemon
+            }
+        }
         '1' { Start-Repair 'quick heal' }
         'm' { Show-View 'routing priority' { Show-RouteMenu } -NoWait }
         'x' {
@@ -791,10 +798,3 @@ function Get-DhcpCaptiveUrl([string]$Guid) {
 function Get-GatewaysV4($Ad) {
     return @(Get-NetRoute -InterfaceIndex $Ad.ifIndex -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue |
         Where-Object { $_.NextHop -and $_.NextHop -ne '0.0.0.0' } | ForEach-Object { [string]$_.NextHop } | Select-Object -Unique)
-}
-function Get-ValidIPv4($Ad) {
-    $x = Get-NetIPAddress -InterfaceIndex $Ad.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-         Where-Object { $_.IPAddress -notlike '169.254.*' -and $_.AddressState -eq 'Preferred' } | Select-Object -First 1
-    if ($x) { return [string]$x.IPAddress }
-    return $null
-}
