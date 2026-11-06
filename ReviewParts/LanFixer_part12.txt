@@ -1,0 +1,5 @@
+    Write-Host ''
+    Write-Host 'Press any key to close...' -ForegroundColor Gray
+    Wait-AnyKey
+}
+exit $exitCode

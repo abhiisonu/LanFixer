@@ -1,3 +1,5 @@
+                }
+            }
             $memEnv = if ($script:State -is [hashtable] -and $script:State.Env -is [hashtable]) { $script:State.Env.Clone() } else { @{} }
             $script:State = Get-State
             if ($memMisc['LearnedDhcp'] -and -not $script:State.Misc['LearnedDhcp']) { $script:State.Misc['LearnedDhcp'] = $memMisc['LearnedDhcp'] }
@@ -796,5 +798,3 @@ function Invoke-TlsHttp {
         $connected = $iar.AsyncWaitHandle.WaitOne($TimeoutMs, $false)
         if (-not $connected) {
             try { $sock.Close() } catch {}
-            $r.Error = 'ConnectTimeout'; return $r
-        }

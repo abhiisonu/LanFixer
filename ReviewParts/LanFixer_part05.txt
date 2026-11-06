@@ -1,3 +1,6 @@
+            $_.Problem -notin @('CM_PROB_NONE', 'CM_PROB_DISABLED', 'CM_PROB_HARDWARE_DISABLED') })
+        foreach ($dev in ($sick | Select-Object -First 2)) {
+            Write-Log 'INFO' "Restarting faulted wired transceiver: $($dev.FriendlyName)"
             [void](Invoke-Native (Get-SysExe 'pnputil.exe') @('/restart-device', $dev.InstanceId) 10000)
         }
     } catch {
@@ -795,6 +798,3 @@ function Shield-GatewayArp($Ctx, [string]$ConnState) {
             $script:State.Misc['ArpCand'][$gw] = @{ Mac = $mac; Since = (Get-Date).ToString('o') }
             Write-Log 'ALERT' ("Gateway {0} now answers from {1}, but it used to answer from {2}. Not locking it. If IT did not replace the router, treat this network with suspicion." -f $gw, $mac, [string]$mem[$gw])
             continue
-        }
-        if ($dec -eq 'wait') { Write-Log 'WARN' ("Gateway {0} still answers from the new MAC {1}; it is locked only after 24 stable hours." -f $gw, $mac); continue }
-        $ip = $Ctx.Env.Ip

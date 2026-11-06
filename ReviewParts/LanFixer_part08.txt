@@ -1,13 +1,50 @@
+                    try { Enable-NetAdapterBinding -Name $ea.Name -ComponentID $comp -ErrorAction SilentlyContinue } catch {}
+                }
+
+                # Zero out cached DHCP lease keys in the Windows registry to force clean DHCP Discover broadcast
+                $guid = [string]$ea.InterfaceGuid
+                if ($guid) {
+                    $ifKey = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$guid"
+                    if (Test-Path -LiteralPath $ifKey) {
+                        try {
+                            Set-ItemProperty -LiteralPath $ifKey -Name 'DhcpIPAddress' -Value '0.0.0.0' -ErrorAction SilentlyContinue
+                            Set-ItemProperty -LiteralPath $ifKey -Name 'DhcpDefaultGateway' -Value @() -ErrorAction SilentlyContinue
+                            Set-ItemProperty -LiteralPath $ifKey -Name 'DhcpServer' -Value '255.255.255.255' -ErrorAction SilentlyContinue
+                            Set-ItemProperty -LiteralPath $ifKey -Name 'DhcpSubnetMask' -Value '0.0.0.0' -ErrorAction SilentlyContinue
+                            Set-ItemProperty -LiteralPath $ifKey -Name 'DhcpNameServer' -Value '' -ErrorAction SilentlyContinue
+                            # Enforce RFC 2131 Broadcast Flag so campus switches/relays do not drop unicast offers
+                            Set-ItemProperty -LiteralPath $ifKey -Name 'DhcpConnForceBroadcastFlag' -Value 1 -Type DWord -ErrorAction SilentlyContinue
+                        } catch {}
+                    }
+                }
+
+                # Re-enable DHCP, reset MTU to standard 1500, set automatic metric, and reset DNS servers
+                try {
+                    Set-NetIPInterface -InterfaceIndex $ea.ifIndex -AddressFamily IPv4 -Dhcp Enabled -NlMtuBytes 1500 -AutomaticMetric Enabled -ErrorAction SilentlyContinue
+                    Set-NetIPInterface -InterfaceIndex $ea.ifIndex -AddressFamily IPv6 -Dhcp Enabled -ErrorAction SilentlyContinue
+                    Set-DnsClientServerAddress -InterfaceIndex $ea.ifIndex -ResetServerAddresses -ErrorAction SilentlyContinue
+                } catch {}
+
+                # Defeat energy-saving / Green Ethernet traps on the PHY
+                try {
+                    Set-NetAdapterAdvancedProperty -Name $ea.Name -RegistryKeyword '*EEE' -RegistryValue 0 -ErrorAction SilentlyContinue
+                    Set-NetAdapterAdvancedProperty -Name $ea.Name -RegistryKeyword '*EnergyEfficientEthernet' -RegistryValue 0 -ErrorAction SilentlyContinue
+                    Set-NetAdapterAdvancedProperty -Name $ea.Name -RegistryKeyword '*GreenEthernet' -RegistryValue 0 -ErrorAction SilentlyContinue
+                } catch {}
+            }
+        }
+        if (-not $script:IsDry) {
             [void](Invoke-Native (Get-SysExe 'pnputil.exe') @('/scan-devices') 5000)
         }
         Restore-InterfaceMetrics 'Ultra System Reset metrics restore'
 
         # ----------------------------------------------------------------------
-        # STAGE 7/8: SYSTEM SERVICE STACK RESUSCITATION (TOPOLOGICAL STARTUP)
+        # STAGE 8/9: SYSTEM SERVICE STACK RESUSCITATION (TOPOLOGICAL STARTUP)
         # ----------------------------------------------------------------------
-        Write-Log 'STEP' 'STAGE 7/8  Resuscitating core networking services in topological dependency order'
+        Write-Log 'STEP' 'STAGE 8/9  Resuscitating core networking services in topological dependency order'
         if ($script:IsDry) {
             Write-Log 'DRY' 'Would start services in topological order: BFE -> mpssvc -> Dhcp -> Dnscache -> iphlpsvc -> dot3svc -> WlanSvc -> NlaSvc -> netprofm'
+            Write-Log 'DRY' 'Would execute: netsh lan reconnect'
         } else {
             $upSvcs = @('BFE', 'mpssvc', 'Dhcp', 'Dnscache', 'iphlpsvc', 'dot3svc', 'WlanSvc', 'NlaSvc', 'netprofm')
             foreach ($s in $upSvcs) {
@@ -20,9 +57,9 @@
         }
 
         # ----------------------------------------------------------------------
-        # STAGE 8/8: DHCP DISCOVER CYCLE, DYNAMIC DNS, STP CONVERGENCE & 7-LAYER HEAL
+        # STAGE 9/9: DHCP DISCOVER CYCLE, DYNAMIC DNS, STP CONVERGENCE & 7-LAYER HEAL
         # ----------------------------------------------------------------------
-        Write-Log 'STEP' 'STAGE 8/8  Executing DHCP discover cycle, registering dynamic DNS & verifying 7-layer heal'
+        Write-Log 'STEP' 'STAGE 9/9  Executing DHCP discover cycle, registering dynamic DNS & verifying 7-layer heal'
         if ($script:IsDry) {
             Write-Log 'DRY' 'Would execute: ipconfig /release *, /renew *, /registerdns'
             Write-Log 'DRY' 'Would await 802.1D Spanning Tree Protocol (STP) switch convergence'
@@ -86,7 +123,6 @@
         }
     }
 }
-
 function Shield-Services($Ctxs, [string]$ConnState) {
     if ((@($Ctxs | Where-Object { $_.Env.Env -eq 'Campus' })).Count -eq 0 -and (@($Ctxs | Where-Object { $_.Env.Env -eq 'Other' })).Count -gt 0) {
         Restore-NeutralizedInterceptors 'Non-campus Ethernet network'
@@ -762,39 +798,3 @@ function New-WatchdogXml([string]$CmdArgs, [string]$Start) {
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
     <Description>Lan Fixer autonomous Ethernet watchdog (link up, resume from sleep, address conflicts, boot, logon, heartbeat)</Description>
-    <Author>Lan Fixer</Author>
-  </RegistrationInfo>
-  <Triggers>
-    <EventTrigger>
-      <Enabled>true</Enabled>
-      <Subscription>&lt;QueryList&gt;&lt;Query Id="0" Path="Microsoft-Windows-NetworkProfile/Operational"&gt;&lt;Select Path="Microsoft-Windows-NetworkProfile/Operational"&gt;*[System[(EventID=10000 or EventID=10001)]]&lt;/Select&gt;&lt;/Query&gt;&lt;/QueryList&gt;</Subscription>
-      <Delay>PT10S</Delay>
-    </EventTrigger>
-    <EventTrigger>
-      <Enabled>true</Enabled>
-      <Subscription>&lt;QueryList&gt;&lt;Query Id="0" Path="System"&gt;&lt;Select Path="System"&gt;*[System[Provider[@Name='Microsoft-Windows-Power-Troubleshooter'] and (EventID=1)]]&lt;/Select&gt;&lt;/Query&gt;&lt;/QueryList&gt;</Subscription>
-      <Delay>PT10S</Delay>
-    </EventTrigger>
-    <EventTrigger>
-      <Enabled>true</Enabled>
-      <Subscription>&lt;QueryList&gt;&lt;Query Id="0" Path="System"&gt;&lt;Select Path="System"&gt;*[System[Provider[@Name='Microsoft-Windows-Kernel-Power'] and (EventID=107 or EventID=507)]]&lt;/Select&gt;&lt;/Query&gt;&lt;/QueryList&gt;</Subscription>
-      <Delay>PT10S</Delay>
-    </EventTrigger>
-    <EventTrigger>
-      <Enabled>true</Enabled>
-      <Subscription>&lt;QueryList&gt;&lt;Query Id="0" Path="System"&gt;&lt;Select Path="System"&gt;*[System[Provider[@Name='Tcpip'] and (EventID=4199)]]&lt;/Select&gt;&lt;/Query&gt;&lt;/QueryList&gt;</Subscription>
-      <Delay>PT5S</Delay>
-    </EventTrigger>
-    <BootTrigger>
-      <Enabled>true</Enabled>
-      <Delay>PT45S</Delay>
-    </BootTrigger>
-    <LogonTrigger>
-      <Enabled>true</Enabled>
-      <Delay>PT10S</Delay>
-    </LogonTrigger>
-    <TimeTrigger>
-      <Repetition>
-        <Interval>$hb</Interval>
-        <StopAtDurationEnd>false</StopAtDurationEnd>
-      </Repetition>

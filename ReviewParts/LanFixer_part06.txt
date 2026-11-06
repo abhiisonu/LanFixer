@@ -1,3 +1,6 @@
+        }
+        if ($dec -eq 'wait') { Write-Log 'WARN' ("Gateway {0} still answers from the new MAC {1}; it is locked only after 24 stable hours." -f $gw, $mac); continue }
+        $ip = $Ctx.Env.Ip
         $ok = Invoke-Change "Gateway ARP locked: $gw -> $mac" {
             Remove-NetNeighbor -InterfaceIndex $ad.ifIndex -IPAddress $gw -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue
             Remove-NetNeighbor -InterfaceIndex $ad.ifIndex -IPAddress $gw -PolicyStore PersistentStore -Confirm:$false -ErrorAction SilentlyContinue
@@ -795,6 +798,3 @@ function Shield-Ipv6Precedence($Ctxs, [string]$ConnState) {
         $new = Get-PreferIpv4Value $cur
         $ok = Invoke-Change 'IPv4 preferred over IPv6 (IPv6 is advertised on this LAN but unreachable); applies after the next restart' {
             if (-not (Test-Path -LiteralPath $script:Tcpip6Key)) { New-Item -Path $script:Tcpip6Key -Force -ErrorAction Stop | Out-Null }
-            New-ItemProperty -LiteralPath $script:Tcpip6Key -Name DisabledComponents -Value $new -PropertyType DWord -Force -ErrorAction Stop | Out-Null
-        }
-        if ($ok -and -not $script:IsDry) { $script:State.Misc['Ipv4PrecedenceManaged'] = $true }

@@ -1,3 +1,5 @@
+            $r.Error = 'ConnectTimeout'; return $r
+        }
         try { $sock.EndConnect($iar) } catch { $r.Error = 'ConnectFailure'; return $r }
         $ns = New-Object System.Net.Sockets.NetworkStream($sock, $false)
         $ns.ReadTimeout = $TimeoutMs; $ns.WriteTimeout = $TimeoutMs
@@ -796,5 +798,3 @@ function Get-DashboardModel($t, $adv, [int]$Width = 0) {
             $right = Fit $right $maxRightLen
         }
     }
-    $hp = ($w + 2) - (Get-SegsLength $heroL) - $right.Length
-    [void]$L.Add(@($heroL + (Seg 'text' (' ' * [Math]::Max(2, $hp))) + (Seg 'dim' $right)))

@@ -18,15 +18,17 @@ exit /b %errorlevel%
     Add -DryRun to see exactly what would change without changing anything.
     Every change is snapshotted first, so ResetFactory restores YOUR original values.
 .NOTES
-    6.5.0 (Omniscient Layer 1-7 Healer & Sovereign Supermost Ultra Weapon Reset Engine):
-      - Invoke-UltraSystemReset: 8-stage omnipotent nuclear stack resuscitation engine implementing full-spectrum low-level remediation.
-      - Dual-Architecture Winsock LSP & NSP Annihilation: wipes 64-bit System32 and 32-bit SysWOW64 Winsock catalogs (netsh winsock reset catalog & reset).
+    6.5.0 (Omniscient Layer 1-7 Healer & Sovereign Thermonuclear Hydrogen Weapon Reset Engine):
+      - Invoke-UltraSystemReset: 9-stage thermonuclear stack resuscitation engine implementing non-destructive full-spectrum remediation.
+      - Dual-Architecture Winsock LSP & NSP Annihilation: wipes 64-bit System32 and 32-bit SysWOW64 Winsock catalogs (netsh winsock reset catalog & reset), zeroes AutodialFlags.
       - Dual-Stack TCP/IP & Heuristics Normalization: netsh int ip/ipv6 reset, netsh int tcp reset, autotuninglevel=normal, RSS/RSC enabled, ECN/timestamps disabled, initialrto=3000.
       - Transition Tunnel Disablement: disables Teredo, ISATAP, and 6to4 transition tunnels to eliminate campus IPv6 routing sinkholes.
-      - Routing & Destination Cache Nuclear Purge: route -f (clears all gateways and non-interface routes), deletes IPv4/IPv6 destination caches.
-      - Firewall & Cache Factory Reset: netsh advfirewall reset & allprofiles on, netsh branchcache reset/flush, netsh winhttp reset proxy/autoproxy/tracing.
+      - Encrypted DNS (DoH/DoT) Factory Wipe: netsh dnsclient delete global all restores global DNS and removes dead DoH templates.
+      - Routing, Destination Cache & Accidental Bridge Purge: route -f (clears gateways), deletes destinationcache, destroys rogue bridges via netsh bridge.
+      - Firewall & WPAD Autoproxy Reset: netsh advfirewall reset & allprofiles on, netsh winhttp reset proxy/autoproxy/tracing, flushes HTTP log buffer.
       - Cache & NetBIOS Eviction: netsh interface ip delete arpcache, netsh int ip/ipv6 delete neighbors, arp -d *, nbtstat -R & -RR, Clear-DnsClientCache, ipconfig /flushdns.
-      - DHCP Registry Zeroing & Protocol Bindings: zeroes out cached DhcpIPAddress/DhcpServer keys in registry to force pure DHCP Discover, re-enables core protocol bindings, defeats PHY EEE/green power traps.
+      - DHCP Broadcast Flag Enforcement & Registry Zeroing: enforces DhcpConnForceBroadcastFlag=1 (RFC 2131), zeroes cached DhcpIPAddress/DhcpServer keys to force pure Discover.
+      - Hardware Transceiver Cycle & NDIS Bindings: pnputil /restart-device, re-binds ms_tcpip/ms_tcpip6/ms_rspndr/ms_lltdio/ms_pacer, defeats PHY EEE/green power traps.
       - Topological Service Stack Resuscitation: cleanly halts 8 dependent services before reset and restarts them in strict topological dependency order (BFE -> mpssvc -> Dhcp -> Dnscache -> iphlpsvc -> dot3svc -> WlanSvc -> NlaSvc -> netprofm).
       - 802.1X Wired AutoConfig Reconnection: issues netsh lan reconnect across wired LAN interfaces.
       - Full DHCP Stack Cycle & Dynamic DNS: ipconfig /release & /renew (IPv4/IPv6), ipconfig /registerdns, and 802.1D Spanning Tree Protocol (STP) convergence loop.
@@ -796,5 +798,3 @@ function Enter-Lock([int]$TimeoutMs = 1000) {
             if ($script:State -is [hashtable] -and $script:State.Misc -is [hashtable]) {
                 foreach ($mk in @('LearnedDhcp','DiscoveredDomain','DiscoveredPortalUrl','DiscoveredPortalIp','DiscoveryTime','InjectedHostRoutes')) {
                     if ($script:State.Misc.ContainsKey($mk)) { $memMisc[$mk] = $script:State.Misc[$mk] }
-                }
-            }
