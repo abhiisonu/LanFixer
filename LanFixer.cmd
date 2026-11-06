@@ -2752,7 +2752,7 @@ function Invoke-DashboardKey([string]$Key, $adv) {
                 Out-Line @()
                 $choice = ([string]$k.KeyChar).ToLowerInvariant()
                 if ($choice -eq '4' -or $choice -eq 'a' -or $choice -eq 'k') {
-                    if (Read-Confirm 'Execute ARMAGEDDON SYSTEM RESET (netcfg -d, requires reboot)?' 'no') {
+                    if (Read-Confirm 'Execute ARMAGEDDON SYSTEM RESET (netcfg -d, requires reboot)?' 'yes') {
                         $script:ChangeCount = 0; $script:FailCount = 0
                         Invoke-ArmageddonReset
                         $script:WdCache = $null
@@ -2760,7 +2760,7 @@ function Invoke-DashboardKey([string]$Key, $adv) {
                         Out-Line @((Seg 'dim' '  Operation cancelled. No changes made.'))
                     }
                 } elseif ($choice -eq '3' -or $choice -eq 'd') {
-                    if (Read-Confirm 'Execute DOOMSDAY SYSTEM RESET (Ultimate Universal Weapon)?' 'no') {
+                    if (Read-Confirm 'Execute DOOMSDAY SYSTEM RESET (Ultimate Universal Weapon)?' 'yes') {
                         $script:ChangeCount = 0; $script:FailCount = 0
                         Invoke-DoomsdayReset
                         $script:WdCache = $null
@@ -2768,7 +2768,7 @@ function Invoke-DashboardKey([string]$Key, $adv) {
                         Out-Line @((Seg 'dim' '  Operation cancelled. No changes made.'))
                     }
                 } elseif ($choice -eq '2' -or $choice -eq 'u') {
-                    if (Read-Confirm 'Execute ULTRA SYSTEM RESET (Hyper-Nuclear Antimatter Weapon)?' 'no') {
+                    if (Read-Confirm 'Execute ULTRA SYSTEM RESET (Hyper-Nuclear Antimatter Weapon)?' 'yes') {
                         $script:ChangeCount = 0; $script:FailCount = 0
                         Invoke-UltraSystemReset
                         $script:WdCache = $null
@@ -2795,7 +2795,7 @@ function Invoke-DashboardKey([string]$Key, $adv) {
                 Out-Wrapped 'faint' $script:G.mid 'text' 'Kernel-level removal and reinstallation of all network protocols, virtual adapters, and hardware stacks via netcfg -d.' 4
                 Out-Wrapped 'warn'  $script:G.mid 'warn' 'Requires an immediate system reboot to reconstruct the Windows networking stack.' 4
                 Out-Line @()
-                if (Read-Confirm 'Execute ARMAGEDDON SYSTEM RESET (netcfg -d, requires reboot)?' 'no') {
+                if (Read-Confirm 'Execute ARMAGEDDON SYSTEM RESET (netcfg -d, requires reboot)?' 'yes') {
                     $script:ChangeCount = 0; $script:FailCount = 0
                     Invoke-ArmageddonReset
                     $script:WdCache = $null
@@ -2822,7 +2822,7 @@ function Invoke-DashboardKey([string]$Key, $adv) {
                 Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 11: Universal DHCP re-enablement, MTU 1500, RFC 2131 broadcast flag & lease zeroing across ALL media' 4
                 Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 12: Topological 12-service resuscitation, 802.1X reconnect, STP convergence & multi-adapter verification' 4
                 Out-Line @()
-                if (Read-Confirm 'Execute DOOMSDAY SYSTEM RESET (Ultimate Universal Weapon)?' 'no') {
+                if (Read-Confirm 'Execute DOOMSDAY SYSTEM RESET (Ultimate Universal Weapon)?' 'yes') {
                     $script:ChangeCount = 0; $script:FailCount = 0
                     Invoke-DoomsdayReset
                     $script:WdCache = $null
@@ -2846,7 +2846,7 @@ function Invoke-DashboardKey([string]$Key, $adv) {
                 Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 9: DHCP lease registry obliteration, RFC 2131 broadcast flag enforcement & auto-metric lock' 4
                 Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 10: Topological 10-service resuscitation, 802.1X reconnect, STP convergence & 7-layer verification' 4
                 Out-Line @()
-                if (Read-Confirm 'Execute ULTRA SYSTEM RESET (Hyper-Nuclear Antimatter Weapon)?' 'no') {
+                if (Read-Confirm 'Execute ULTRA SYSTEM RESET (Hyper-Nuclear Antimatter Weapon)?' 'yes') {
                     $script:ChangeCount = 0; $script:FailCount = 0
                     Invoke-UltraSystemReset
                     $script:WdCache = $null
