@@ -1,3 +1,148 @@
+function Invoke-RecoveryToast([string]$Ip = '') {
+    if (-not (Test-Elapsed 'LastRecoveryToast' 600)) { return }
+    $title = 'Lan Fixer'
+    $msg   = if ($Ip) { "Ethernet is back online ($Ip)! You can turn off a mobile hotspot." } else { 'Ethernet is back online! You can turn off a mobile hotspot.' }
+    if (Test-IsSystem) {
+        $u = $null
+        try { $u = (Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).UserName } catch {}
+        if (-not $u) { return }
+        [void](Invoke-Native (Get-SysExe 'schtasks.exe') @('/run', '/tn', $script:Cfg.TaskNotify) 8000)
+    } else {
+        Show-NativeToast $title $msg
+    }
+    Set-StateTime 'LastRecoveryToast'
+}
+
+function New-PortalTaskXml([string]$Url) {
+    if (-not $Url) { $Url = [string]$script:Cfg.PortalUrl }
+    $url = [System.Security.SecurityElement]::Escape($Url)
+    return @"
+<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>Opens the campus login page in the signed-in user's browser. Started on demand by Lan Fixer.</Description>
+    <Author>Lan Fixer</Author>
+  </RegistrationInfo>
+  <Triggers />
+  <Principals>
+    <Principal id="Users">
+      <GroupId>S-1-5-32-545</GroupId>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <ExecutionTimeLimit>PT1M</ExecutionTimeLimit>
+  </Settings>
+  <Actions Context="Users">
+    <Exec>
+      <Command>%SystemRoot%\System32\rundll32.exe</Command>
+      <Arguments>url.dll,FileProtocolHandler $url</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+"@
+}
+function Register-LfTask([string]$Name, [string]$Xml, [string]$FileName) {
+    $xmlPath = Join-Path $script:StoreDir $FileName
+    return (Invoke-Change "Scheduled task '$Name' registered" {
+        [System.IO.File]::WriteAllText($xmlPath, $Xml, [System.Text.Encoding]::Unicode)
+        $r = Invoke-Native (Get-SysExe 'schtasks.exe') @('/create', '/tn', $Name, '/xml', $xmlPath, '/f') 20000
+        if ($r.ExitCode -ne 0) { throw ("schtasks said: " + $r.Output.Trim()) }
+    })
+}
+function Install-Watchdog {
+    if (-not (Assert-Admin)) { return $false }
+    if (-not $script:StoreReady -or -not $script:StoreSecure) { Write-Log 'FAIL' 'The protected store folder is not available, so Lan Fixer refuses to register a SYSTEM task (security).'; return $false }
+    if (-not $script:IsDry -and -not (Test-Path -LiteralPath $script:SelfCopy)) { Write-Log 'FAIL' 'Could not find the protected copy of Lan Fixer.'; return $false }
+    try {
+        $lg = Get-WinEvent -ListLog 'Microsoft-Windows-NetworkProfile/Operational' -ErrorAction Stop
+        if (-not $lg.IsEnabled) { [void](Invoke-Change 'Windows network-connect event log enabled (watchdog trigger source)' { $lg.IsEnabled = $true; $lg.SaveChanges() }) }
+    } catch {}
+    $cmdArgs = '/c ""' + $script:SelfCopy + '" -Mode AutoHeal"'
+    $start = (Get-Date).ToString('yyyy-MM-ddTHH:mm:ss')
+    $ok1 = Register-LfTask $script:Cfg.TaskWatchdog (New-WatchdogXml $cmdArgs $start) 'LanFixer_Watchdog.xml'
+    $ok2 = Register-LfTask $script:Cfg.TaskPortal (New-PortalTaskXml) 'LanFixer_Portal.xml'
+    $ok3 = Register-LfTask $script:Cfg.TaskNotify (New-NotifyTaskXml) 'LanFixer_Notify.xml'
+    if ($ok2 -and -not $script:IsDry) { $script:State.Misc['PortalTaskUrl'] = [string]$script:Cfg.PortalUrl }
+    if ($script:IsDry) { return $true }
+    $script:WatchdogOn = Test-WatchdogInstalled
+    if ($ok1 -and $script:WatchdogOn) {
+        Write-Log 'OK' 'Watchdog active. It reacts to: cable connect, wake from sleep, address conflicts, boot, logon, and a heartbeat every few minutes.'
+        if (-not $ok2) { Write-Log 'WARN' 'Portal helper task failed; the login page will not auto-open in background runs.' }
+        $script:State.Misc['WatchdogSince'] = (Get-Date).ToString('o')
+        foreach ($old in 'Lan Fixer.cmd', 'LanFixer_v2.cmd') { Remove-Item -LiteralPath (Join-Path $script:StoreDir $old) -Force -ErrorAction SilentlyContinue }   # old mirror names (only after the task points at the new copy)
+        Save-State
+        return $true
+    }
+    Write-Log 'FAIL' 'Watchdog task could not be verified after registration.'
+    return $false
+}
+# Pure (unit-tested): schtasks /xml reports <Settings><Enabled>false</Enabled> for a task disabled in Task Scheduler.
+function Test-WatchdogDisabled([string]$Enabled) {
+    if ([string]::IsNullOrEmpty($Enabled)) { return $false }
+    return ($Enabled.Trim().ToLowerInvariant() -eq 'false')
+}
+function Get-WatchdogArguments {
+    $task = Get-WatchdogTask
+    if ($null -eq $task) { return $null }
+    return [string]$task.Actions.Exec.Arguments
+}
+function Get-WatchdogExpectedArguments { return ('/c ""' + $script:SelfCopy + '" -Mode AutoHeal"') }
+# A task registered by v1/v2.x runs an older copy. Re-point it once, automatically, at the current protected copy.
+function Update-WatchdogIfStale {
+    if (-not $script:IsAdmin -or $script:IsDry) { return }
+    if (-not $script:StoreReady -or -not $script:StoreSecure) { return }
+    if (-not (Test-Path -LiteralPath $script:SelfCopy)) { return }
+    if (-not $script:WatchdogOn -and $script:State.Misc['WatchdogSince']) {
+        if (Test-Elapsed 'Repoint' 600) {
+            Set-StateTime 'Repoint'
+            Write-Log 'WARN' 'Self-healing watchdog: background guard task was missing despite being armed; re-registering automatically.'
+            [void](Install-Watchdog)
+        }
+        return
+    }
+    if (-not $script:WatchdogOn) { return }
+    if (-not (Test-Elapsed 'Repoint' 3600)) { return }   # never loop if the comparison cannot settle
+    $task = Get-WatchdogTask
+    if ($null -eq $task) { return }
+    $taskOff = [bool]($script:State.Misc['WatchdogSince'] -and (Test-WatchdogDisabled ([string]$task.Settings.Enabled)))
+    if (-not $taskOff -and -not (Test-WatchdogStale ([string]$task.Actions.Exec.Arguments) (Get-WatchdogExpectedArguments) ([string]$task.Settings.MultipleInstancesPolicy))) { return }
+    Set-StateTime 'Repoint'
+    if ($taskOff) { Write-Log 'WARN' 'Self-healing watchdog: the background guard task was disabled in Task Scheduler while armed; re-registering it enabled.' }
+    else { Write-Log 'INFO' 'The watchdog task is out of date (older copy or unsafe restart policy). Re-registering it.' }
+    [void](Install-Watchdog)
+}
+function Uninstall-Watchdog {
+    if (-not (Assert-Admin)) { return }
+    foreach ($n in @($script:Cfg.TaskWatchdog, $script:Cfg.TaskPortal, $script:Cfg.TaskNotify, 'A07_NetShield')) {
+        [void](Invoke-Change "Scheduled task '$n' removed (if present)" { [void](Invoke-Native (Get-SysExe 'schtasks.exe') @('/delete', '/tn', $n, '/f') 8000) })
+    }
+    if (-not $script:IsDry -and $script:State.Misc -is [hashtable]) { $script:State.Misc.Remove('WatchdogSince') }
+    $script:WatchdogOn = $false
+    Remove-CampusNrpt   # nothing would auto-remove it off campus any more
+    Remove-CampusHostRoutes
+    if (Test-MetricsManaged) { Restore-InterfaceMetrics 'Watchdog disarmed' }
+    Restore-NeutralizedInterceptors 'Watchdog disarmed'
+    [void](Restore-ManagedAdapterDns 'Watchdog disarmed')
+    Write-Log 'INFO' 'Watchdog removed and any temporary route, DNS, or service holds released.'
+}
+
+# ==============================================================================
+# RESTORE: puts back YOUR snapshotted originals (not assumed "factory" values)
+# ==============================================================================
+function Restore-Everything {
+    if (-not (Assert-Admin)) { return }
+    Write-Log 'INFO' 'Restoring from the snapshot taken before Lan Fixer changed anything...'
+    $restartNames = @{}
+    $present = @(Get-NetAdapter -IncludeHidden -ErrorAction SilentlyContinue)
+    foreach ($guid in @($script:State.Snapshot.Keys)) {
+        $snap = $script:State.Snapshot[$guid]
         if ($guid -eq 'NetProfiles') {
             foreach ($k in @($snap.Keys)) {
                 if ($k -like 'Cat:*') {
@@ -653,148 +798,3 @@ function ConvertTo-ReportText($Records) {
         elseif ($null -ne $r) { [void]$sb.Append(([string]$r) + "`r`n") }
     }
     return $sb.ToString()
-}
-# Saves the full audit (adapters, MAC, lease, resolvers, events) plus the last log lines as a text file.
-# Output is CAPTURED and written with one atomic file write: no Start-Transcript (host-dependent, fails when a
-# transcript is already running or the console is wrapped/redirected).
-function New-SupportReport {
-    $dir = [Environment]::GetFolderPath('Desktop')
-    if (-not $dir -or -not (Test-Path -LiteralPath $dir)) { $dir = $env:TEMP }
-    $path = Join-Path $dir ("LanFixer-Report-{0}.txt" -f (Get-Date).ToString('yyyyMMdd-HHmmss'))
-    $text = ''
-    $script:Ui.Plain = $true
-    try {
-        $recs = & {
-            try { Show-Diagnostics } catch { Write-Host ('[audit stopped early: ' + $_.Exception.Message + ']') }
-            Write-Section 'RECENT LAN FIXER LOG (last 40 lines)'
-            try { Get-Content -LiteralPath $script:LogFile -Tail 40 -ErrorAction Stop | ForEach-Object { Write-Host ('  ' + $_) } } catch { Write-Host '  (no log yet)' }
-        } *>&1
-        $text = ConvertTo-ReportText $recs
-    } catch { $text = 'Report generation failed: ' + $_.Exception.Message }
-    $script:Ui.Plain = $false
-    Write-Host $text
-    try {
-        $tmp = $path + '.tmp'
-        [System.IO.File]::WriteAllText($tmp, $text, (New-Object System.Text.UTF8Encoding($true)))
-        Move-Item -LiteralPath $tmp -Destination $path -Force -ErrorAction Stop
-        Write-Log 'OK' "Report saved: $path  (contains your MAC, IP and PC name: read it before sharing)"
-    } catch { Write-Log 'WARN' ("Could not write the report file (" + $_.Exception.Message + "). The text is shown above: copy it manually.") }
-}
-
-function Invoke-LogIntelligence($Ads) {
-    if ($script:IsDry) { return }
-    # 1. Check Windows DNS Client Event 1014 (DNS resolution timeout in last 10 minutes) -> invalidate stale DNS speed cache
-    try {
-        $dnsEv = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Microsoft-Windows-DNS-Client'; Id = 1014; StartTime = (Get-Date).AddMinutes(-10) } -MaxEvents 1 -ErrorAction SilentlyContinue)
-        if ($dnsEv.Count -gt 0) {
-            foreach ($k in @($script:State.Dns.Keys)) {
-                if ($script:State.Dns[$k] -is [hashtable] -and $script:State.Dns[$k].ContainsKey('OrderTime')) {
-                    $script:State.Dns[$k].Remove('OrderTime')
-                }
-            }
-            Clear-DnsClientCache -ErrorAction SilentlyContinue
-            Write-Log 'INFO' 'Log intelligence: Windows logged DNS timeout (Event 1014); invalidated cached resolver order for fresh measurement.'
-        }
-    } catch {}
-    # 2. Check NIC driver/NDIS hardware reset or hang events (EventIDs 27, 32, 5002, 10400 in last 10 minutes)
-    try {
-        $nicEv = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; Id = @(27, 32, 5002, 10400); StartTime = (Get-Date).AddMinutes(-10) } -MaxEvents 5 -ErrorAction SilentlyContinue | Where-Object {
-            $_.ProviderName -match 'ndis|rt640|rtcx21|e1r|e1d|e2f|Netwtw|realtek|intel'
-        })
-        if ($nicEv.Count -gt 0 -and $Ads) {
-            foreach ($a in @($Ads | Where-Object { $_.Status -eq 'Up' })) {
-                $ipNow = Get-ValidIPv4 $a
-                if (-not $ipNow -or (Get-InternetState -SourceIp $ipNow).State -eq 'Offline') {
-                    $script:PendingRestart[[string]$a.InterfaceGuid] = $a.Name
-                    Write-Log 'WARN' ("Log intelligence: NIC driver hardware reset/hang event detected in System log; scheduled link reset on {0}." -f $a.Name)
-                }
-            }
-        }
-    } catch {}
-}
-
-function Flush-NetworkCache {
-    if (-not (Assert-Admin)) { return }
-    Write-Banner 'FLUSH DNS, ARP & NETBIOS CACHES'
-    $script:ConnCache = $null
-    $script:EnvCache = @{}
-    $script:DhcpDiagCache = $null
-    if ($script:State.Misc -is [hashtable]) { $script:State.Misc['FailStreak'] = 0 }
-    if ($script:State.Dns -is [hashtable]) {
-        foreach ($dk in @($script:State.Dns.Keys)) {
-            if ($script:State.Dns[$dk] -is [hashtable] -and $script:State.Dns[$dk].ContainsKey('OrderTime')) {
-                $script:State.Dns[$dk].Remove('OrderTime')
-            }
-        }
-    }
-    [void](Invoke-Change 'DNS resolver cache & internal speed-test cache cleared' {
-        Clear-DnsClientCache -ErrorAction SilentlyContinue
-        [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/flushdns') 5000)
-    })
-    [void](Invoke-Change 'Dynamic IPv4 & IPv6 ARP/neighbor entries cleared (locked gateway entry is kept)' {
-        Get-NetNeighbor -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.State -ne 'Permanent' } | Remove-NetNeighbor -Confirm:$false -ErrorAction SilentlyContinue
-        Get-NetNeighbor -AddressFamily IPv6 -ErrorAction SilentlyContinue | Where-Object { $_.State -ne 'Permanent' } | Remove-NetNeighbor -Confirm:$false -ErrorAction SilentlyContinue
-    })
-    [void](Invoke-Change 'NetBIOS name cache purged & re-registered' {
-        [void](Invoke-Native (Get-SysExe 'nbtstat.exe') @('-R') 8000)
-        [void](Invoke-Native (Get-SysExe 'nbtstat.exe') @('-RR') 8000)
-    })
-    [void](Invoke-Change 'Network List service refreshed (clears a stuck "no internet" icon)' {
-        Restart-Service -Name NlaSvc -Force -ErrorAction Stop
-        Start-Service -Name netprofm -ErrorAction SilentlyContinue
-    })
-    Save-State
-    Write-Log 'OK' 'Network resolver, internal telemetry, and neighbor caches flushed successfully.'
-}
-
-# ==============================================================================
-# SELF TEST (verifies this machine supports everything; changes nothing)
-# ==============================================================================
-$script:TestFail = 0
-$script:TestWarn = 0
-function Write-Check([string]$Label, [bool]$Ok, [bool]$WarnOnly = $false, [string]$Detail = '') {
-    $gl = $script:G.ok; $role = 'ok'
-    if (-not $Ok) { if ($WarnOnly) { $gl = $script:G.warn; $role = 'warn'; $script:TestWarn++ } else { $gl = $script:G.bad; $role = 'bad'; $script:TestFail++ } }
-    $segs = @((Seg $role ('  ' + $gl + ' ')), (Seg 'text' $Label))
-    if ($Detail) { $segs += (Seg 'dim' ('  ' + $script:G.mid + ' ' + $Detail)) }
-    Out-Line $segs
-}
-function Invoke-LogicTests {
-    Write-Check 'Logic: argument quoting, plain' ((ConvertTo-ArgString @('/renew', 'Ethernet')) -ceq '/renew Ethernet')
-    Write-Check 'Logic: argument quoting, space' ((ConvertTo-ArgString @('a b')) -ceq '"a b"')
-    Write-Check 'Logic: argument quoting, trailing backslash' ((ConvertTo-ArgString @('C:\x y\')) -ceq '"C:\x y\\"')
-    Write-Check 'Logic: argument quoting, embedded quote' ((ConvertTo-ArgString @('say "hi"')) -ceq '"say \"hi\""')
-    Write-Check 'Logic: argument quoting, empty' ((ConvertTo-ArgString @('')) -ceq '""')
-    $h = ConvertFrom-HttpResponse ("HTTP/1.1 302 Found`r`nLocation: https://gw.example:8003/login?z=1`r`nContent-Length: 0`r`n`r`n")
-    Write-Check 'Logic: HTTP 302 + Location parsed' (($h.Code -eq 302) -and ($h.Location -ceq 'https://gw.example:8003/login?z=1'))
-    $h = ConvertFrom-HttpResponse ("HTTP/1.0 200 OK`r`nContent-Type: text/plain`r`n`r`nMicrosoft Connect Test")
-    Write-Check 'Logic: HTTP 200 body parsed' (($h.Code -eq 200) -and ($h.Body -ceq 'Microsoft Connect Test'))
-    Write-Check 'Logic: garbage is not a response' ((ConvertFrom-HttpResponse 'not http').Code -eq 0)
-    $n = @{ Code = 0; Body = ''; Location = ''; Error = '' }
-    $ok204 = @{ Code = 204; Body = ''; Location = ''; Error = '' }
-    $okMs = @{ Code = 200; Body = 'Microsoft Connect Test'; Location = ''; Error = '' }
-    $r302 = @{ Code = 302; Body = ''; Location = 'http://x/'; Error = '' }
-    $r200x = @{ Code = 200; Body = '<html>login</html>'; Location = ''; Error = '' }
-    $r503 = @{ Code = 503; Body = ''; Location = ''; Error = '' }
-    $dns = @{ Code = 0; Body = ''; Location = ''; Error = 'DnsFail' }
-    $tmo = @{ Code = 0; Body = ''; Location = ''; Error = 'Timeout' }
-    Write-Check 'Logic: verdict 204 = Online' ((Get-ProbeVerdict $ok204 $n) -eq 'Online')
-    Write-Check 'Logic: verdict MS body = Online' ((Get-ProbeVerdict $r503 $okMs) -eq 'Online')
-    Write-Check 'Logic: verdict 302 = Captive' ((Get-ProbeVerdict $r302 $tmo) -eq 'Captive')
-    Write-Check 'Logic: verdict login page 200 = Captive' ((Get-ProbeVerdict $r200x $r200x) -eq 'Captive')
-    Write-Check 'Logic: verdict 503 = Offline (not Captive)' ((Get-ProbeVerdict $r503 $r503) -eq 'Offline')
-    Write-Check 'Logic: verdict timeouts = Offline' ((Get-ProbeVerdict $tmo $tmo) -eq 'Offline')
-    Write-Check 'Logic: verdict DNS failures = NoDns' ((Get-ProbeVerdict $dns $dns) -eq 'NoDns')
-    [byte[]]$q = New-DnsQueryPacket 'a.bc' 4660
-    $want = [byte[]](0x12,0x34,1,0,0,1,0,0,0,0,0,0,1,0x61,2,0x62,0x63,0,0,1,0,1)
-    Write-Check 'Logic: DNS query packet layout' (($q.Length -eq $want.Length) -and (-not (Compare-Object $q $want)))
-    Write-Check 'Logic: learnable DHCP server (campus-like)' (Test-LearnableDhcpServer '172.16.1.5')
-    Write-Check 'Logic: DHCP server home router refused' (-not (Test-LearnableDhcpServer '192.168.1.1'))
-    Write-Check 'Logic: DHCP server hotspot refused' (-not (Test-LearnableDhcpServer '172.20.10.1'))
-    Write-Check 'Logic: DHCP server garbage refused' (-not (Test-LearnableDhcpServer 'not-an-ip'))
-    $save = $script:Cfg
-    try {
-        $script:Cfg = @{ PortalHost = 'gateway.nitjsr.ac.in'; PortalIp = '10.114.0.5'; CampusDomain = 'nitjsr.ac.in'; PortalUrl = 'https://gateway.nitjsr.ac.in:8003/index.php?zone=nitjsr' }
-        Write-Check 'Logic: host bounded trims trailing dots' ((Resolve-HostBounded 'gateway.nitjsr.ac.in.') -eq '10.114.0.5')
-        Write-Check 'Logic: host bounded trims whitespace' ((Resolve-HostBounded '  gateway.nitjsr.ac.in.  ') -eq '10.114.0.5')
-        Write-Check 'Logic: allowed portal IP includes configured IP' (Test-AllowedPortalIp '10.114.0.5')

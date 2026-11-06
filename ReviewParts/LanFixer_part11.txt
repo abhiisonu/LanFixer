@@ -1,3 +1,148 @@
+}
+# Saves the full audit (adapters, MAC, lease, resolvers, events) plus the last log lines as a text file.
+# Output is CAPTURED and written with one atomic file write: no Start-Transcript (host-dependent, fails when a
+# transcript is already running or the console is wrapped/redirected).
+function New-SupportReport {
+    $dir = [Environment]::GetFolderPath('Desktop')
+    if (-not $dir -or -not (Test-Path -LiteralPath $dir)) { $dir = $env:TEMP }
+    $path = Join-Path $dir ("LanFixer-Report-{0}.txt" -f (Get-Date).ToString('yyyyMMdd-HHmmss'))
+    $text = ''
+    $script:Ui.Plain = $true
+    try {
+        $recs = & {
+            try { Show-Diagnostics } catch { Write-Host ('[audit stopped early: ' + $_.Exception.Message + ']') }
+            Write-Section 'RECENT LAN FIXER LOG (last 40 lines)'
+            try { Get-Content -LiteralPath $script:LogFile -Tail 40 -ErrorAction Stop | ForEach-Object { Write-Host ('  ' + $_) } } catch { Write-Host '  (no log yet)' }
+        } *>&1
+        $text = ConvertTo-ReportText $recs
+    } catch { $text = 'Report generation failed: ' + $_.Exception.Message }
+    $script:Ui.Plain = $false
+    Write-Host $text
+    try {
+        $tmp = $path + '.tmp'
+        [System.IO.File]::WriteAllText($tmp, $text, (New-Object System.Text.UTF8Encoding($true)))
+        Move-Item -LiteralPath $tmp -Destination $path -Force -ErrorAction Stop
+        Write-Log 'OK' "Report saved: $path  (contains your MAC, IP and PC name: read it before sharing)"
+    } catch { Write-Log 'WARN' ("Could not write the report file (" + $_.Exception.Message + "). The text is shown above: copy it manually.") }
+}
+
+function Invoke-LogIntelligence($Ads) {
+    if ($script:IsDry) { return }
+    # 1. Check Windows DNS Client Event 1014 (DNS resolution timeout in last 10 minutes) -> invalidate stale DNS speed cache
+    try {
+        $dnsEv = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Microsoft-Windows-DNS-Client'; Id = 1014; StartTime = (Get-Date).AddMinutes(-10) } -MaxEvents 1 -ErrorAction SilentlyContinue)
+        if ($dnsEv.Count -gt 0) {
+            foreach ($k in @($script:State.Dns.Keys)) {
+                if ($script:State.Dns[$k] -is [hashtable] -and $script:State.Dns[$k].ContainsKey('OrderTime')) {
+                    $script:State.Dns[$k].Remove('OrderTime')
+                }
+            }
+            Clear-DnsClientCache -ErrorAction SilentlyContinue
+            Write-Log 'INFO' 'Log intelligence: Windows logged DNS timeout (Event 1014); invalidated cached resolver order for fresh measurement.'
+        }
+    } catch {}
+    # 2. Check NIC driver/NDIS hardware reset or hang events (EventIDs 27, 32, 5002, 10400 in last 10 minutes)
+    try {
+        $nicEv = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; Id = @(27, 32, 5002, 10400); StartTime = (Get-Date).AddMinutes(-10) } -MaxEvents 5 -ErrorAction SilentlyContinue | Where-Object {
+            $_.ProviderName -match 'ndis|rt640|rtcx21|e1r|e1d|e2f|Netwtw|realtek|intel'
+        })
+        if ($nicEv.Count -gt 0 -and $Ads) {
+            foreach ($a in @($Ads | Where-Object { $_.Status -eq 'Up' })) {
+                $ipNow = Get-ValidIPv4 $a
+                if (-not $ipNow -or (Get-InternetState -SourceIp $ipNow).State -eq 'Offline') {
+                    $script:PendingRestart[[string]$a.InterfaceGuid] = $a.Name
+                    Write-Log 'WARN' ("Log intelligence: NIC driver hardware reset/hang event detected in System log; scheduled link reset on {0}." -f $a.Name)
+                }
+            }
+        }
+    } catch {}
+}
+
+function Flush-NetworkCache {
+    if (-not (Assert-Admin)) { return }
+    Write-Banner 'FLUSH DNS, ARP & NETBIOS CACHES'
+    $script:ConnCache = $null
+    $script:EnvCache = @{}
+    $script:DhcpDiagCache = $null
+    if ($script:State.Misc -is [hashtable]) { $script:State.Misc['FailStreak'] = 0 }
+    if ($script:State.Dns -is [hashtable]) {
+        foreach ($dk in @($script:State.Dns.Keys)) {
+            if ($script:State.Dns[$dk] -is [hashtable] -and $script:State.Dns[$dk].ContainsKey('OrderTime')) {
+                $script:State.Dns[$dk].Remove('OrderTime')
+            }
+        }
+    }
+    [void](Invoke-Change 'DNS resolver cache & internal speed-test cache cleared' {
+        Clear-DnsClientCache -ErrorAction SilentlyContinue
+        [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/flushdns') 5000)
+    })
+    [void](Invoke-Change 'Dynamic IPv4 & IPv6 ARP/neighbor entries cleared (locked gateway entry is kept)' {
+        Get-NetNeighbor -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.State -ne 'Permanent' } | Remove-NetNeighbor -Confirm:$false -ErrorAction SilentlyContinue
+        Get-NetNeighbor -AddressFamily IPv6 -ErrorAction SilentlyContinue | Where-Object { $_.State -ne 'Permanent' } | Remove-NetNeighbor -Confirm:$false -ErrorAction SilentlyContinue
+    })
+    [void](Invoke-Change 'NetBIOS name cache purged & re-registered' {
+        [void](Invoke-Native (Get-SysExe 'nbtstat.exe') @('-R') 8000)
+        [void](Invoke-Native (Get-SysExe 'nbtstat.exe') @('-RR') 8000)
+    })
+    [void](Invoke-Change 'Network List service refreshed (clears a stuck "no internet" icon)' {
+        Restart-Service -Name NlaSvc -Force -ErrorAction Stop
+        Start-Service -Name netprofm -ErrorAction SilentlyContinue
+    })
+    Save-State
+    Write-Log 'OK' 'Network resolver, internal telemetry, and neighbor caches flushed successfully.'
+}
+
+# ==============================================================================
+# SELF TEST (verifies this machine supports everything; changes nothing)
+# ==============================================================================
+$script:TestFail = 0
+$script:TestWarn = 0
+function Write-Check([string]$Label, [bool]$Ok, [bool]$WarnOnly = $false, [string]$Detail = '') {
+    $gl = $script:G.ok; $role = 'ok'
+    if (-not $Ok) { if ($WarnOnly) { $gl = $script:G.warn; $role = 'warn'; $script:TestWarn++ } else { $gl = $script:G.bad; $role = 'bad'; $script:TestFail++ } }
+    $segs = @((Seg $role ('  ' + $gl + ' ')), (Seg 'text' $Label))
+    if ($Detail) { $segs += (Seg 'dim' ('  ' + $script:G.mid + ' ' + $Detail)) }
+    Out-Line $segs
+}
+function Invoke-LogicTests {
+    Write-Check 'Logic: argument quoting, plain' ((ConvertTo-ArgString @('/renew', 'Ethernet')) -ceq '/renew Ethernet')
+    Write-Check 'Logic: argument quoting, space' ((ConvertTo-ArgString @('a b')) -ceq '"a b"')
+    Write-Check 'Logic: argument quoting, trailing backslash' ((ConvertTo-ArgString @('C:\x y\')) -ceq '"C:\x y\\"')
+    Write-Check 'Logic: argument quoting, embedded quote' ((ConvertTo-ArgString @('say "hi"')) -ceq '"say \"hi\""')
+    Write-Check 'Logic: argument quoting, empty' ((ConvertTo-ArgString @('')) -ceq '""')
+    $h = ConvertFrom-HttpResponse ("HTTP/1.1 302 Found`r`nLocation: https://gw.example:8003/login?z=1`r`nContent-Length: 0`r`n`r`n")
+    Write-Check 'Logic: HTTP 302 + Location parsed' (($h.Code -eq 302) -and ($h.Location -ceq 'https://gw.example:8003/login?z=1'))
+    $h = ConvertFrom-HttpResponse ("HTTP/1.0 200 OK`r`nContent-Type: text/plain`r`n`r`nMicrosoft Connect Test")
+    Write-Check 'Logic: HTTP 200 body parsed' (($h.Code -eq 200) -and ($h.Body -ceq 'Microsoft Connect Test'))
+    Write-Check 'Logic: garbage is not a response' ((ConvertFrom-HttpResponse 'not http').Code -eq 0)
+    $n = @{ Code = 0; Body = ''; Location = ''; Error = '' }
+    $ok204 = @{ Code = 204; Body = ''; Location = ''; Error = '' }
+    $okMs = @{ Code = 200; Body = 'Microsoft Connect Test'; Location = ''; Error = '' }
+    $r302 = @{ Code = 302; Body = ''; Location = 'http://x/'; Error = '' }
+    $r200x = @{ Code = 200; Body = '<html>login</html>'; Location = ''; Error = '' }
+    $r503 = @{ Code = 503; Body = ''; Location = ''; Error = '' }
+    $dns = @{ Code = 0; Body = ''; Location = ''; Error = 'DnsFail' }
+    $tmo = @{ Code = 0; Body = ''; Location = ''; Error = 'Timeout' }
+    Write-Check 'Logic: verdict 204 = Online' ((Get-ProbeVerdict $ok204 $n) -eq 'Online')
+    Write-Check 'Logic: verdict MS body = Online' ((Get-ProbeVerdict $r503 $okMs) -eq 'Online')
+    Write-Check 'Logic: verdict 302 = Captive' ((Get-ProbeVerdict $r302 $tmo) -eq 'Captive')
+    Write-Check 'Logic: verdict login page 200 = Captive' ((Get-ProbeVerdict $r200x $r200x) -eq 'Captive')
+    Write-Check 'Logic: verdict 503 = Offline (not Captive)' ((Get-ProbeVerdict $r503 $r503) -eq 'Offline')
+    Write-Check 'Logic: verdict timeouts = Offline' ((Get-ProbeVerdict $tmo $tmo) -eq 'Offline')
+    Write-Check 'Logic: verdict DNS failures = NoDns' ((Get-ProbeVerdict $dns $dns) -eq 'NoDns')
+    [byte[]]$q = New-DnsQueryPacket 'a.bc' 4660
+    $want = [byte[]](0x12,0x34,1,0,0,1,0,0,0,0,0,0,1,0x61,2,0x62,0x63,0,0,1,0,1)
+    Write-Check 'Logic: DNS query packet layout' (($q.Length -eq $want.Length) -and (-not (Compare-Object $q $want)))
+    Write-Check 'Logic: learnable DHCP server (campus-like)' (Test-LearnableDhcpServer '172.16.1.5')
+    Write-Check 'Logic: DHCP server home router refused' (-not (Test-LearnableDhcpServer '192.168.1.1'))
+    Write-Check 'Logic: DHCP server hotspot refused' (-not (Test-LearnableDhcpServer '172.20.10.1'))
+    Write-Check 'Logic: DHCP server garbage refused' (-not (Test-LearnableDhcpServer 'not-an-ip'))
+    $save = $script:Cfg
+    try {
+        $script:Cfg = @{ PortalHost = 'gateway.nitjsr.ac.in'; PortalIp = '10.114.0.5'; CampusDomain = 'nitjsr.ac.in'; PortalUrl = 'https://gateway.nitjsr.ac.in:8003/index.php?zone=nitjsr' }
+        Write-Check 'Logic: host bounded trims trailing dots' ((Resolve-HostBounded 'gateway.nitjsr.ac.in.') -eq '10.114.0.5')
+        Write-Check 'Logic: host bounded trims whitespace' ((Resolve-HostBounded '  gateway.nitjsr.ac.in.  ') -eq '10.114.0.5')
+        Write-Check 'Logic: allowed portal IP includes configured IP' (Test-AllowedPortalIp '10.114.0.5')
         Write-Check 'Logic: portal host trusted (configured)' (Test-TrustedPortalHost 'gateway.nitjsr.ac.in')
         Write-Check 'Logic: portal host trusted (campus subdomain)' (Test-TrustedPortalHost 'Portal.NITJSR.ac.in.')
         Write-Check 'Logic: portal host trusted (portal IP)' (Test-TrustedPortalHost '10.114.0.5')
@@ -584,8 +729,16 @@
     $doomDef = [string](Get-Command Invoke-DoomsdayReset -ErrorAction SilentlyContinue).Definition
     Write-Check 'Logic: Doomsday Reset resets Wi-Fi WLAN autoconfig' ($doomDef.IndexOf('wlan') -ge 0 -and $doomDef.IndexOf('autoconfig') -ge 0)
     Write-Check 'Logic: Doomsday Reset purges user and machine proxy registry' ($doomDef.IndexOf('HKEY_USERS') -ge 0 -and $doomDef.IndexOf('ProxyEnable') -ge 0)
-    Write-Check 'Logic: Doomsday Reset resuscitates 12 services including WlanSvc, bthserv, and WwanSvc' ($doomDef.IndexOf('WlanSvc') -ge 0 -and $doomDef.IndexOf('bthserv') -ge 0 -and $doomDef.IndexOf('WwanSvc') -ge 0)
+    Write-Check 'Logic: Doomsday Reset resuscitates 13 services including WlanSvc, bthserv, and WwanSvc' ($doomDef.IndexOf('WlanSvc') -ge 0 -and $doomDef.IndexOf('bthserv') -ge 0 -and $doomDef.IndexOf('WwanSvc') -ge 0)
     Write-Check 'Logic: Doomsday Reset cycles all physical adapters across media' ($doomDef.IndexOf('Restart-NetAdapter') -ge 0)
+    Write-Check 'Logic: Doomsday Reset deactivates rogue 3rd-party NDIS filter bindings' ($doomDef.IndexOf('Disable-NetAdapterBinding') -ge 0)
+    Write-Check 'Logic: Doomsday Reset performs PnP silicon hardware restart via pnputil' ($doomDef.IndexOf('/restart-device') -ge 0)
+    Write-Check 'Logic: Doomsday Reset unlocks Modern Standby Airplane Mode in registry' ($doomDef.IndexOf('RadioManagement') -ge 0)
+    Write-Check 'Logic: Doomsday Reset eradicates manual static IP address conflicts' ($doomDef.IndexOf('PrefixOrigin') -ge 0 -and $doomDef.IndexOf('Manual') -ge 0)
+    Write-Check 'Logic: ArmageddonReset mode exists in ValidateSet' ($srcTxt -match "ValidateSet\([^)]*'ArmageddonReset'")
+    Write-Check 'Logic: Invoke-ArmageddonReset is defined' ($null -ne (Get-Command Invoke-ArmageddonReset -ErrorAction SilentlyContinue))
+    $armDef = [string](Get-Command Invoke-ArmageddonReset -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Armageddon Reset invokes netcfg -d kernel network cleanup' ($armDef.IndexOf('netcfg.exe') -ge 0 -and $armDef.IndexOf('-d') -ge 0)
     $idkDefNow = [string](Get-Command Invoke-DashboardKey -ErrorAction SilentlyContinue).Definition
     Write-Check 'Logic: Invoke-DashboardKey handles key U for Ultra System Reset' ($idkDefNow.IndexOf("Invoke-UltraSystemReset") -ge 0)
     Write-Check 'Logic: Invoke-DashboardKey handles key D for Doomsday Reset' ($idkDefNow.IndexOf("Invoke-DoomsdayReset") -ge 0)
@@ -645,156 +798,3 @@ $script:WdCache = $null
 # Wi-Fi to 15, and reporting "Ethernet First" then is a plain lie (the traffic is going out over the hotspot).
 function Get-RoutingLabel([bool]$Managed, [int]$Metric, [bool]$LinkUp, [bool]$UplinkActive = $true, [string]$Profile = '') {
     if (-not $Profile -and $script:State -is [hashtable] -and $script:State.Misc -is [hashtable]) {
-        $Profile = [string]$script:State.Misc['RouteProfile']
-    }
-    if ($Profile -eq 'Windows') { return 'automatic' }
-    if ($Profile -eq 'Wifi') {
-        if ($UplinkActive) { return 'Wi-Fi First' }
-        return 'Wi-Fi Standby'
-    }
-    if ($Profile -eq 'Ethernet') {
-        if (-not $LinkUp) { return 'Ethernet Down' }
-        if (-not $Managed) { return 'Ethernet (unmanaged)' }
-        if ($Metric -le 15) { return 'Ethernet First' }
-        return 'Ethernet (metric drifted)'
-    }
-    if (-not $Managed) { return 'automatic' }
-    if (-not $LinkUp) { return $(if ($UplinkActive) { 'Wi-Fi Protected' } else { 'automatic' }) }
-    if ($Metric -ge 45) { return $(if ($UplinkActive) { 'Wi-Fi Protected' } else { 'Ethernet Demoted' }) }
-    if ($Metric -le 15) { return 'Ethernet First' }
-    return 'Ethernet First'
-}
-function Get-Telemetry {
-    $t = New-Telemetry
-    $t.Problem = 'NoAdapter'
-    $ads = @(Get-EthernetAdapters)
-    $ad = $ads | Where-Object { $_.Status -eq 'Up' } | Select-Object -First 1
-    if (-not $ad) { $ad = $ads | Select-Object -First 1 }
-    $others = @(Get-OtherUplinkAdapters)
-    if ($others.Count -gt 0) {
-        $t.UplinkActive = $true
-        $t.UplinkName = [string]$others[0].Name
-        if (-not $script:UplinkProfileCache -or (((Get-Date) - $script:UplinkProfileCache.Time).TotalSeconds -gt 15)) {
-            $prof = ''
-            try { $prof = [string](Get-NetConnectionProfile -InterfaceIndex $others[0].ifIndex -ErrorAction SilentlyContinue).Name } catch {}
-            $script:UplinkProfileCache = @{ Time = (Get-Date); Val = $prof }
-        }
-        $t.UplinkProfile = [string]$script:UplinkProfileCache.Val
-    }
-    if ($ad) {
-        $desc = [string]$ad.InterfaceDescription
-        $t.Nic = ($desc -replace ' Family Controller', '' -replace ' Gigabit Network Connection', ' GbE' -replace ' PCI-E NIC', '')
-        if ($ad.MacAddress) { $t.Mac = [string]$ad.MacAddress }
-        $t.Problem = 'NoLink'
-        if ($ad.Status -eq 'Up') {
-            $t.LinkUp = $true
-            $t.Speed = [string]$ad.LinkSpeed
-            $h = Get-AdapterHealth $ad
-            $t.Problem = [string]$h.Problem
-            $t.Conn = [string]$h.Conn
-            if ($h.Ip) { $t.Ip = [string]$h.Ip }
-            if ($h.Gateway) { $t.GwIp = [string]$h.Gateway; $t.GwRtt = if ($null -ne $script:LiveGwRtt) { $script:LiveGwRtt } else { $h.GwRtt }; $t.GwAlive = [bool]$h.GwAlive }
-            $e = Get-AdapterEnvironment $ad -UseCache
-            $t.Env = [string]$e.Env; $t.EnvScore = [int]$e.Score; $t.Sticky = [bool]$e.Sticky
-            $ipif = Get-IPv4Interface $ad
-            if ($ipif) {
-                $t.Mtu = [string]$ipif.NlMtu
-                $t.Routing = Get-RoutingLabel (Test-MetricsManaged) ([int]$ipif.InterfaceMetric) $true $t.UplinkActive
-            }
-            $raw = @((Get-DnsClientServerAddress -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses)
-            if ($raw.Count -gt 0) { $t.DnsPrimary = [string]$raw[0] }
-            $t.DnsProfile = Get-DnsProfileName
-        }
-    }
-    $t.RouteProfile = Get-RouteProfileName
-    if ($t.UplinkActive -and ($t.Routing -eq 'Wi-Fi Protected' -or ($t.Problem -ne 'Healthy' -and $t.Problem -ne 'Online') -or $t.RouteProfile -eq 'Wifi')) {
-        $t.UplinkIsPrimary = $true
-    }
-    if (-not $script:WdCache -or (((Get-Date) - $script:WdCache.Time).TotalSeconds -gt 30)) { $script:WdCache = @{ Time = (Get-Date); Val = (Test-WatchdogInstalled) } }
-    $t.Watchdog = [bool]$script:WdCache.Val
-    $t.Vault = [bool](Test-Path -LiteralPath $script:VaultFile)
-    $t.Pin = ([string]$script:State.Misc['PortalPin'] -ne '')
-    $t.Paused = ($script:State.Misc['PortalLoginSuspended'] -eq $true)
-    $t.ArpPending = (@(Get-PendingGatewayMacs).Count -gt 0)
-    if (-not $t.LinkUp -and (Test-MetricsManaged) -and (Test-OtherUplinkActive)) { $t.Routing = Get-RoutingLabel $true 0 $false }
-    $lf = Get-StateTime 'LastFull'
-    if ($lf -gt [datetime]'2001-01-01') { $t.LastFull = $lf }
-    return $t
-}
-# Headline, one plain sentence, and the single action Enter will run.
-function Get-Advice($t) {
-    $info = Get-StateInfo $t.Problem
-    $r = @{ Word = $info.Word; Role = $info.Role; Hops = $info.Hops; Status = ''; Action = ''; Text = ''; Key = ''; KeyLabel = '' }
-    if (-not $t.Admin -and $t.Problem) {
-        $r.Status = 'Running in read-only Limited Mode (without Administrator privileges).'
-        $r.Action = 'Press [ENTER] to relaunch as Administrator (or press E).'
-        $r.Key = 'e'; $r.KeyLabel = 'relaunch as Administrator'
-        $r.Text = ($r.Status + ' ' + $r.Action)
-        return $r
-    }
-    if ($t.ArpPending) {
-        $r.Status = 'Gateway MAC changed on switch. Candidate pending your review.'
-        $r.Action = 'Press [ENTER] to review & approve the new gateway MAC (or press K).'
-        $r.Key = 'k'; $r.KeyLabel = 'review the gateway MAC change'
-        $r.Text = ($r.Status + ' ' + $r.Action)
-        return $r
-    }
-    switch ($t.Problem) {
-        { $_ -eq 'Healthy' -or $_ -eq 'Online' } {
-            if ($t.UplinkIsPrimary -and $t.UplinkName) {
-                $uLabel = if ($t.UplinkProfile) { "$($t.UplinkName) ($($t.UplinkProfile))" } else { $t.UplinkName }
-                $r.Status = "Internet active via $uLabel. Ethernet link is in standby ($($t.Routing))."
-            } else {
-                $r.Status = 'Connected to network. All communication layers verified optimal.'
-            }
-            if (-not $t.Watchdog) {
-                $r.Action = 'Press [ENTER] to arm background watchdog guard (or press 2).'
-                $r.Key = '2'; $r.KeyLabel = 'arm the watchdog'
-            } else {
-                $r.Status = 'Connected to network with background watchdog active.'
-                if ($t.LastFull) { $r.Status += (' Last repair ' + ([datetime]$t.LastFull).ToString('ddd HH:mm') + '.') }
-                $r.Action = 'No action needed.'
-            }
-        }
-        'Captive' {
-            $r.Status = 'Connected to network, but captive portal sign-in is required.'
-            if ($t.Paused) {
-                $r.Action = 'Portal rejected saved password. Update credentials in vault (A).'
-                $r.Key = 'a'; $r.KeyLabel = 'open the vault'
-            } elseif ($t.Vault) {
-                $r.Action = 'Press [ENTER] to sign in automatically with saved vault login (or press G).'
-                $r.Key = 'g'; $r.KeyLabel = 'sign in with your saved login'
-            } else {
-                $r.Action = 'Press [ENTER] to open login page (or press 7), or press [A] to save login.'
-                $r.Key = '7'; $r.KeyLabel = 'open the login page'
-            }
-        }
-        'NoIp' {
-            $r.Status = ((Get-DhcpFailureText (Get-DhcpErrorCode) ([string]$t.Mac)))
-            $r.Action = 'Press [ENTER] to execute 7-layer heal and acquire DHCP lease (or press 1).'
-            $r.Key = '1'; $r.KeyLabel = 'repair now'
-        }
-        'GwUnreachable' {
-            if ($script:State.Misc['ArpCand'] -is [hashtable] -and $script:State.Misc['ArpCand'].Count -gt 0) {
-                $r.Status = 'Default gateway unreachable. New router MAC candidate pending approval.'
-                $r.Action = 'Press [ENTER] to approve new gateway MAC immediately (or press K).'
-                $r.Key = 'k'; $r.KeyLabel = 'review the gateway MAC change'
-            } else {
-                $r.Status = 'IPv4 address assigned, but default gateway is not responding.'
-                $r.Action = 'Press [ENTER] to refresh ARP table & restore route metrics (or press 1).'
-                $r.Key = '1'; $r.KeyLabel = 'repair now'
-            }
-        }
-        'NoDns' {
-            $r.Status = 'Local network reachable, but domain name resolution (DNS) is failing.'
-            $r.Action = 'Press [ENTER] to restore working DNS resolvers & flush cache (or press 1).'
-            $r.Key = '1'; $r.KeyLabel = 'repair now'
-        }
-        'Offline' {
-            $r.Status = 'Default gateway answers, but upstream internet access is blocked.'
-            $r.Action = 'Press [ENTER] to run 7-layer diagnostics & verify routing (or press 1).'
-            $r.Key = '1'; $r.KeyLabel = 'repair now'
-        }
-        'NoLink' {
-            $r.Status = 'Physical Ethernet link down. Cable unplugged or port inactive.'
-            if ($t.Watchdog) {

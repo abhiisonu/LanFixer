@@ -1,3 +1,15 @@
+            Write-Log 'DRY' 'Would sanitize WinINet user/machine proxies and flush SSL session cache'
+        } else {
+            # Reset Windows 11 encrypted DNS (DoH, DoT, DDR) globally to factory defaults
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('dnsclient', 'delete', 'global', 'all') 5000)
+
+            # Reset per-interface DNS encryption and DDR settings across physical adapters
+            foreach ($ea in @(Get-EthernetAdapters)) {
+                try {
+                    [void](Invoke-Native (Get-SysExe 'netsh.exe') @('dnsclient', 'delete', 'interface', "name=$($ea.Name)", 'setting=all') 5000)
+                } catch {}
+            }
+
             # WinHTTP proxy and autoproxy (WPAD) complete reset
             [void](Invoke-Native (Get-SysExe 'netsh.exe') @('winhttp', 'reset', 'proxy') 5000)
             [void](Invoke-Native (Get-SysExe 'netsh.exe') @('winhttp', 'reset', 'autoproxy') 5000)
@@ -239,14 +251,15 @@ function Invoke-DoomsdayReset {
     Write-Section 'DOOMSDAY SYSTEM RESET (12-STAGE UNIVERSAL STACK ERADICATION)'
     $r = Pick-Hash (Invoke-WithLock {
         # ----------------------------------------------------------------------
-        # STAGE 1/12: PRE-FLIGHT ACID GLOBAL SNAPSHOT & 12-SERVICE TOPOLOGICAL TEARDOWN
+        # STAGE 1/12: PRE-FLIGHT ACID SNAPSHOT, AIRPLANE UNLOCK & 13-SERVICE SUSPENSION
         # ----------------------------------------------------------------------
-        Write-Log 'STEP' 'STAGE 1/12 Snapshotting global state & suspending 12 dependent network services'
+        Write-Log 'STEP' 'STAGE 1/12 Snapshotting global state, unlocking Airplane mode & suspending 13 services'
         $script:ConnCache = $null
         $script:EnvCache = @{}
         if ($script:IsDry) {
             Write-Log 'DRY' 'Would capture pre-flight snapshots across all network adapters'
-            Write-Log 'DRY' 'Would stop: BITS, WwanSvc, bthserv, netprofm, NlaSvc, Dnscache, Dhcp, iphlpsvc, dot3svc, WlanSvc, CryptSvc, mpssvc'
+            Write-Log 'DRY' 'Would unlock RadioManagement Airplane Mode in registry'
+            Write-Log 'DRY' 'Would stop: BITS, WwanSvc, bthserv, RmSvc, netprofm, NlaSvc, Dnscache, Dhcp, iphlpsvc, dot3svc, WlanSvc, CryptSvc, mpssvc'
         } else {
             foreach ($a in @(Get-NetAdapter -ErrorAction SilentlyContinue)) {
                 try { [void](Capture-PreflightSnapshot $a) } catch {}
@@ -259,38 +272,68 @@ function Invoke-DoomsdayReset {
             $script:State.Misc.Remove('DiscoveredPortalIp')
             $script:State.Misc.Remove('DiscoveredPortalUrl')
 
-            # Reverse topological teardown of all 12 core networking services
-            $downSvcs = @('BITS', 'WwanSvc', 'bthserv', 'netprofm', 'NlaSvc', 'Dnscache', 'Dhcp', 'iphlpsvc', 'dot3svc', 'WlanSvc', 'CryptSvc', 'mpssvc')
+            # Unlock RadioManagement Airplane Mode deadlock in registry
+            try {
+                $rmKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\RadioManagement'
+                if (Test-Path -LiteralPath $rmKey) {
+                    Set-ItemProperty -LiteralPath $rmKey -Name 'SystemRadioState' -Value 0 -Type DWord -ErrorAction SilentlyContinue
+                }
+            } catch {}
+
+            # Reverse topological teardown of all 13 core networking services
+            $downSvcs = @('BITS', 'WwanSvc', 'bthserv', 'RmSvc', 'netprofm', 'NlaSvc', 'Dnscache', 'Dhcp', 'iphlpsvc', 'dot3svc', 'WlanSvc', 'CryptSvc', 'mpssvc')
             foreach ($s in $downSvcs) {
                 try { Stop-Service -Name $s -Force -ErrorAction SilentlyContinue } catch {}
             }
         }
 
         # ----------------------------------------------------------------------
-        # STAGE 2/12: UNIVERSAL ADAPTER CYCLE (LAN, WI-FI, USB, BT, WWAN) & WLAN AUTOCONFIG
+        # STAGE 2/12: NDIS FILTER DECONTAMINATION, SILICON D3 WAKE, WLAN & ADAPTER CYCLE
         # ----------------------------------------------------------------------
-        Write-Log 'STEP' 'STAGE 2/12 Universal adapter transceiver cycle & re-enabling WLAN AutoConfig'
+        Write-Log 'STEP' 'STAGE 2/12 Decontaminating NDIS filters, waking silicon (pnputil), WLAN & adapter cycle'
         if ($script:IsDry) {
-            Write-Log 'DRY' 'Would cycle all physical adapters: Ethernet, Wi-Fi, USB Tethering, Bluetooth & Cellular'
-            Write-Log 'DRY' 'Would execute: netsh wlan set autoconfig enabled=yes interface=*'
+            Write-Log 'DRY' 'Would teardown Wi-Fi hosted networks & re-enable WLAN AutoConfig'
+            Write-Log 'DRY' 'Would cycle all physical adapters and deactivate rogue 3rd-party NDIS filter drivers'
+            Write-Log 'DRY' 'Would issue hardware PnP bus restart (pnputil /restart-device) to wake PHY silicon'
         } else {
-            # Re-enable Wi-Fi AutoConfig
+            # Teardown Wi-Fi hosted networks & re-enable Wi-Fi AutoConfig
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('wlan', 'stop', 'hostednetwork') 5000)
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('wlan', 'set', 'hostednetwork', 'mode=disallow') 5000)
             [void](Invoke-Native (Get-SysExe 'netsh.exe') @('wlan', 'set', 'autoconfig', 'enabled=yes', 'interface=*') 5000)
 
-            # Cycle all physical network adapters
+            # Cycle all physical network adapters and neutralize 3rd-party NDIS filter drop traps
             $allPhys = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object {
                 ($_.HardwareInterface -or $_.ConnectorPresent) -and
                 $_.InterfaceDescription -notmatch 'Virtual|Hyper-V|WSL|Tailscale|ZeroTier|WireGuard|TAP|Loopback'
             })
             foreach ($ad in $allPhys) {
+                # Deactivate rogue 3rd-party NDIS filter drivers (Npcap, VirtualBox, VPN, Antivirus packet drop traps)
+                try {
+                    $bindings = @(Get-NetAdapterBinding -Name $ad.Name -ErrorAction SilentlyContinue)
+                    foreach ($b in $bindings) {
+                        if ($b.ComponentID -notmatch '^(ms_|vms_)' -and $b.Enabled) {
+                            Write-Log 'WARN' "Deactivating 3rd-party NDIS filter trap '$($b.DisplayName)' ($($b.ComponentID)) on $($ad.Name)..."
+                            try { Disable-NetAdapterBinding -Name $ad.Name -ComponentID $b.ComponentID -ErrorAction SilentlyContinue } catch {}
+                        }
+                    }
+                } catch {}
                 try {
                     Restart-NetAdapter -Name $ad.Name -Confirm:$false -ErrorAction SilentlyContinue
                 } catch {}
                 # Re-bind core NDIS protocols
-                foreach ($comp in @('ms_tcpip', 'ms_tcpip6', 'ms_rspndr', 'ms_lltdio', 'ms_msclient', 'ms_server', 'ms_pacer')) {
+                foreach ($comp in @('ms_tcpip', 'ms_tcpip6', 'ms_rspndr', 'ms_lltdio', 'ms_msclient', 'ms_server', 'ms_pacer', 'ms_lldp', 'ms_netbt')) {
                     try { Enable-NetAdapterBinding -Name $ad.Name -ComponentID $comp -ErrorAction SilentlyContinue } catch {}
                 }
             }
+
+            # Wake physical silicon from Modern Standby D3cold / PCIe ASPM hardware lockup
+            try {
+                $pnpDevs = @(Get-PnpDevice -Class Net -Status OK -ErrorAction SilentlyContinue | Where-Object { $_.InstanceId -match '^(PCI|USB)\\' })
+                foreach ($pdev in $pnpDevs) {
+                    Write-Log 'INFO' "Issuing hardware PnP bus restart to wake silicon: $($pdev.FriendlyName)..."
+                    [void](Invoke-Native (Get-SysExe 'pnputil.exe') @('/restart-device', "`"$($pdev.InstanceId)`"") 8000)
+                }
+            } catch {}
         }
 
         # ----------------------------------------------------------------------
@@ -356,21 +399,40 @@ function Invoke-DoomsdayReset {
         }
 
         # ----------------------------------------------------------------------
-        # STAGE 5/12: ROUTING TABLE PURGE, PORTPROXY RESET & ROGUE BRIDGE DESTRUCTION
+        # STAGE 5/12: ROUTE PURGE, GHOST GUID SCRUB, PORTPROXY & PERMISSIVE FIREWALL
         # ----------------------------------------------------------------------
-        Write-Log 'STEP' 'STAGE 5/12 Purging routing table (route -f), portproxy, destination caches & rogue bridges'
+        Write-Log 'STEP' 'STAGE 5/12 Purging routing table (route -f), ghost registry GUIDs & setting firewall outbound allow'
         if ($script:IsDry) {
             Write-Log 'DRY' 'Would execute: route -f (purge all routes and gateways)'
+            Write-Log 'DRY' 'Would scrub ghost GUIDs in Tcpip\Parameters\Interfaces'
             Write-Log 'DRY' 'Would delete IPv4 & IPv6 destination caches'
             Write-Log 'DRY' 'Would execute: netsh interface portproxy reset & netsh interface httpstunnel reset'
             Write-Log 'DRY' 'Would destroy accidental network bridges via netsh bridge'
-            Write-Log 'DRY' 'Would execute: netsh advfirewall reset & enable all profiles'
+            Write-Log 'DRY' 'Would execute: netsh advfirewall reset & set firewallpolicy blockinbound,allowoutbound'
         } else {
             [void](Invoke-Native (Get-SysExe 'route.exe') @('-f') 5000)
             [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'ip', 'delete', 'destinationcache') 5000)
             [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'ipv6', 'delete', 'destinationcache') 5000)
             [void](Invoke-Native (Get-SysExe 'netsh.exe') @('interface', 'portproxy', 'reset') 5000)
             [void](Invoke-Native (Get-SysExe 'netsh.exe') @('interface', 'httpstunnel', 'reset') 5000)
+
+            # Scrub orphaned interface GUIDs under Tcpip\Parameters\Interfaces to eliminate routing blackholes
+            try {
+                $activeGuids = @(Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object { [string]$_.InterfaceGuid })
+                $tcpipIfKey = 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces'
+                if (Test-Path -LiteralPath $tcpipIfKey) {
+                    $subkeys = @(Get-ChildItem -LiteralPath $tcpipIfKey -ErrorAction SilentlyContinue)
+                    foreach ($sk in $subkeys) {
+                        if ($sk.PSChildName -notin $activeGuids) {
+                            try {
+                                Set-ItemProperty -LiteralPath $sk.PSPath -Name 'DefaultGateway' -Value @() -ErrorAction SilentlyContinue
+                                Set-ItemProperty -LiteralPath $sk.PSPath -Name 'IPAddress' -Value @() -ErrorAction SilentlyContinue
+                                Set-ItemProperty -LiteralPath $sk.PSPath -Name 'SubnetMask' -Value @() -ErrorAction SilentlyContinue
+                            } catch {}
+                        }
+                    }
+                }
+            } catch {}
 
             try {
                 $brOut = Invoke-Native (Get-SysExe 'netsh.exe') @('bridge', 'list') 5000
@@ -384,6 +446,7 @@ function Invoke-DoomsdayReset {
             } catch {}
 
             [void](Invoke-Native (Get-SysExe 'netsh.exe') @('advfirewall', 'reset') 8000)
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('advfirewall', 'set', 'allprofiles', 'firewallpolicy', 'blockinbound,allowoutbound') 5000)
             [void](Invoke-Native (Get-SysExe 'netsh.exe') @('advfirewall', 'set', 'allprofiles', 'state', 'on') 5000)
         }
 
@@ -441,11 +504,18 @@ function Invoke-DoomsdayReset {
         }
 
         # ----------------------------------------------------------------------
-        # STAGE 8/12: HOSTS FILE SANITIZATION, NRPT WIPE & WFP FILTER DEFEAT
+        # STAGE 8/12: HOSTS FILE SANITIZATION, SYSTEM-WIDE NRPT WIPE & WFP DEFEAT
         # ----------------------------------------------------------------------
-        Write-Log 'STEP' 'STAGE 8/12 Sanitizing hosts file, removing NRPT rules & neutralizing rogue WFP filters'
+        Write-Log 'STEP' 'STAGE 8/12 Sanitizing hosts file, eradicating all NRPT rules & neutralizing rogue WFP filters'
         Remove-LegacyHostsEntries
         Remove-CampusNrpt
+        try {
+            Get-DnsClientNrptRule -ErrorAction SilentlyContinue | Remove-DnsClientNrptRule -Force -ErrorAction SilentlyContinue
+            $nrptPolKey = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DnsClient\DnsPolicyConfig'
+            if (Test-Path -LiteralPath $nrptPolKey) {
+                Remove-Item -LiteralPath $nrptPolKey -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        } catch {}
         Remove-CampusHostRoutes
         Shield-SystemStack -Aggressive
 
@@ -508,9 +578,9 @@ function Invoke-DoomsdayReset {
         }
 
         # ----------------------------------------------------------------------
-        # STAGE 11/12: UNIVERSAL DHCP RE-ENABLEMENT, MTU 1500, BROADCAST FLAG & LEASE ZEROING
+        # STAGE 11/12: STATIC IP CONFLICT PURGE, DHCP ENFORCEMENT, MTU 1500 & LEASE ZEROING
         # ----------------------------------------------------------------------
-        Write-Log 'STEP' 'STAGE 11/12 Enforcing DHCP, MTU 1500, RFC 2131 broadcast flag & lease zeroing on ALL media'
+        Write-Log 'STEP' 'STAGE 11/12 Purging static IP conflicts, enforcing DHCP, MTU 1500 & broadcast flag on ALL media'
         Shield-Aspm
         Set-UsbSuspendOff
         $allAdapters = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object {
@@ -518,11 +588,17 @@ function Invoke-DoomsdayReset {
         })
         foreach ($ad in $allAdapters) {
             if ($script:IsDry) {
-                Write-Log 'DRY' "Would zero DHCP lease, set broadcast flag, MTU 1500, and automatic metric on $($ad.Name)"
+                Write-Log 'DRY' "Would purge static IP conflicts, zero DHCP lease, set broadcast flag and MTU 1500 on $($ad.Name)"
             } else {
                 Release-ArpLocks $ad
                 try { Shield-Hardware $ad } catch {}
                 try { Shield-TcpOffloads $ad } catch {}
+
+                # Eradicate manual static IP addresses and default routes that cause blackholes
+                try {
+                    Get-NetIPAddress -InterfaceIndex $ad.ifIndex -ErrorAction SilentlyContinue | Where-Object { $_.PrefixOrigin -eq 'Manual' } | Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue
+                    Get-NetRoute -InterfaceIndex $ad.ifIndex -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Where-Object { $_.NextHop -ne '0.0.0.0' } | Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue
+                } catch {}
 
                 # Zero out cached DHCP lease keys in registry
                 $guid = [string]$ad.InterfaceGuid
@@ -561,18 +637,21 @@ function Invoke-DoomsdayReset {
         Restore-InterfaceMetrics 'Doomsday System Reset metrics restore'
 
         # ----------------------------------------------------------------------
-        # STAGE 12/12: TOPOLOGICAL 12-SERVICE RESUSCITATION, 802.1X RECONNECT & DUAL VERIFY
+        # STAGE 12/12: TOPOLOGICAL 13-SERVICE RESUSCITATION, 802.1X RECONNECT & VERIFY
         # ----------------------------------------------------------------------
-        Write-Log 'STEP' 'STAGE 12/12 Resuscitating 12 core networking services, 802.1X, running DHCP & verifying reachability'
+        Write-Log 'STEP' 'STAGE 12/12 Resuscitating 13 core networking services, 802.1X, running DHCP & verifying'
         if ($script:IsDry) {
-            Write-Log 'DRY' 'Would start services in topological order: BFE -> mpssvc -> CryptSvc -> WlanSvc -> dot3svc -> bthserv -> WwanSvc -> Dhcp -> Dnscache -> iphlpsvc -> NlaSvc -> netprofm -> BITS'
+            Write-Log 'DRY' 'Would start services in topological order: BFE -> mpssvc -> CryptSvc -> RmSvc -> WlanSvc -> dot3svc -> bthserv -> WwanSvc -> Dhcp -> Dnscache -> iphlpsvc -> NlaSvc -> netprofm -> BITS'
             Write-Log 'DRY' 'Would execute: netsh lan reconnect'
             Write-Log 'DRY' 'Would execute: ipconfig /release *, /renew *, /registerdns'
             Write-Log 'DRY' 'Would await STP convergence and execute 7-layer heal pipeline'
         } else {
-            $upSvcs = @('BFE', 'mpssvc', 'CryptSvc', 'WlanSvc', 'dot3svc', 'bthserv', 'WwanSvc', 'Dhcp', 'Dnscache', 'iphlpsvc', 'NlaSvc', 'netprofm', 'BITS')
+            $upSvcs = @('BFE', 'mpssvc', 'CryptSvc', 'RmSvc', 'WlanSvc', 'dot3svc', 'bthserv', 'WwanSvc', 'Dhcp', 'Dnscache', 'iphlpsvc', 'NlaSvc', 'netprofm', 'BITS')
             foreach ($s in $upSvcs) {
-                try { Start-Service -Name $s -ErrorAction SilentlyContinue } catch {}
+                try {
+                    Set-Service -Name $s -StartupType Automatic -ErrorAction SilentlyContinue
+                    Start-Service -Name $s -ErrorAction SilentlyContinue
+                } catch {}
             }
             Start-Sleep -Milliseconds 1500
 
@@ -643,6 +722,72 @@ function Invoke-DoomsdayReset {
     }
 }
 
+# ==============================================================================
+# ARMAGEDDON SYSTEM RESET - KERNEL PROTOCOL & NETWORK ADAPTER REINSTALL WEAPON
+# ==============================================================================
+function Invoke-ArmageddonReset([switch]$RebootNow) {
+    if (-not (Assert-Admin)) { return }
+    $swArm = [System.Diagnostics.Stopwatch]::StartNew()
+    Write-Section 'ARMAGEDDON SYSTEM RESET (KERNEL PROTOCOL & NETWORK ADAPTER REINSTALL)'
+    Write-Log 'WARN' 'ARMAGEDDON RESET is Microsoft Windows native nuclear reset (netcfg.exe -d).'
+    Write-Log 'WARN' 'This uninstalls ALL network adapters, removes virtual switches/filters, purges the TCP/IP stack registry, and requires a reboot to reinstall clean drivers.'
+
+    if ($script:IsDry) {
+        Write-Log 'DRY' 'Would capture global pre-flight snapshot across all adapters'
+        Write-Log 'DRY' 'Would execute: netcfg.exe -d (deep kernel device cleanup & protocol reinstallation)'
+        Write-Log 'DRY' 'Would execute post-cleanup: netsh winsock reset, netsh advfirewall reset, and reset RadioManagement'
+        Write-Log 'DRY' 'Would prompt or execute scheduled reboot'
+        return
+    }
+
+    # Pre-flight ACID snapshot
+    Write-Log 'STEP' 'STAGE 1/4 Capturing global pre-flight snapshot across all network adapters'
+    foreach ($a in @(Get-NetAdapter -ErrorAction SilentlyContinue)) {
+        try { [void](Capture-PreflightSnapshot $a) } catch {}
+    }
+
+    # Execute netcfg -d
+    Write-Log 'STEP' 'STAGE 2/4 Executing netcfg.exe -d (wiping network devices, virtual switches & protocol stacks)...'
+    $netcfgRes = Invoke-Native (Get-SysExe 'netcfg.exe') @('-d') 30000
+    if ($netcfgRes.Output) {
+        Write-Log 'INFO' ("netcfg output: {0}" -f $netcfgRes.Output.Trim())
+    }
+
+    # Post-cleanup pass
+    Write-Log 'STEP' 'STAGE 3/4 Running post-cleanup: resetting Winsock, Firewall & RadioManagement...'
+    [void](Invoke-Native (Get-SysExe 'netsh.exe') @('winsock', 'reset') 5000)
+    [void](Invoke-Native (Get-SysExe 'netsh.exe') @('advfirewall', 'reset') 5000)
+    try {
+        $rmKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\RadioManagement'
+        if (Test-Path -LiteralPath $rmKey) {
+            Set-ItemProperty -LiteralPath $rmKey -Name 'SystemRadioState' -Value 0 -Type DWord -ErrorAction SilentlyContinue
+        }
+    } catch {}
+
+    $swArm.Stop()
+    Write-Log 'OK' ("ARMAGEDDON SYSTEM RESET completed in {0}ms." -f $swArm.ElapsedMilliseconds)
+    Write-Log 'WARN' 'SYSTEM REBOOT IS REQUIRED: Windows PnP manager will redetect network hardware and reinstall factory drivers upon reboot.'
+
+    # Handle reboot
+    if ($RebootNow) {
+        Write-Log 'WARN' 'Initiating immediate system restart in 5 seconds...'
+        [void](Invoke-Native (Get-SysExe 'shutdown.exe') @('/r', '/t', '5', '/c', 'LanFixer Armageddon Reset: Rebooting to reinstall network drivers.') 5000)
+    } elseif ($script:UiOn) {
+        Write-Host ''
+        Write-Host '  ========================================================================' -ForegroundColor Red
+        Write-Host '  ARMAGEDDON RESET COMPLETE: SYSTEM RESTART REQUIRED' -ForegroundColor Yellow
+        Write-Host '  Windows will reinstall your network adapters and clean drivers upon reboot.' -ForegroundColor Gray
+        Write-Host '  ========================================================================' -ForegroundColor Red
+        Write-Host ''
+        if (Read-Confirm 'Would you like to restart your computer right now?' 'no') {
+            Write-Host '  Restarting system in 5 seconds...' -ForegroundColor Yellow
+            [void](Invoke-Native (Get-SysExe 'shutdown.exe') @('/r', '/t', '5', '/c', 'LanFixer Armageddon Reset: Rebooting to reinstall network drivers.') 5000)
+        } else {
+            Write-Host '  Restart postponed. Please reboot your computer manually to restore connectivity.' -ForegroundColor Gray
+        }
+    }
+}
+
 function Shield-Services($Ctxs, [string]$ConnState) {
     if ((@($Ctxs | Where-Object { $_.Env.Env -eq 'Campus' })).Count -eq 0 -and (@($Ctxs | Where-Object { $_.Env.Env -eq 'Other' })).Count -gt 0) {
         Restore-NeutralizedInterceptors 'Non-campus Ethernet network'
@@ -653,148 +798,3 @@ function Shield-Services($Ctxs, [string]$ConnState) {
     Shield-Mdns $Ctxs
     Shield-SmartDns $Ctxs
     Shield-TcpKeepAlive $Ctxs
-    Shield-TcpAutoTuning
-    foreach ($ctx in $Ctxs) {
-        $guid = [string]$ctx.Ad.InterfaceGuid
-        $tk = "HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters\Interfaces\Tcpip_$guid"
-        if (-not (Test-Path -LiteralPath $tk)) { continue }
-        $cur = (Get-ItemProperty -LiteralPath $tk -Name NetbiosOptions -ErrorAction SilentlyContinue).NetbiosOptions
-        if ($null -eq $cur) { $cur = 0 }
-        if ($ctx.Env.Env -eq 'Campus' -and [int]$cur -ne 2) {
-            Save-Original $guid 'NetBios' ([int]$cur)
-            [void](Invoke-Change "NetBIOS-over-TCP off on $($ctx.Ad.Name) (cuts broadcast chatter that hostel switches storm-limit)" {
-                Set-ItemProperty -LiteralPath $tk -Name NetbiosOptions -Value 2 -Type DWord -ErrorAction Stop
-            })
-        } elseif ($ctx.Env.Env -eq 'Other' -and [int]$cur -eq 2) {
-            $snap = Get-SubTable 'Snapshot' $guid
-            if ($snap.ContainsKey('NetBios')) {
-                $orig = [int]$snap['NetBios']
-                [void](Invoke-Change "Non-campus network: NetBIOS restored to $orig on $($ctx.Ad.Name)" {
-                    Set-ItemProperty -LiteralPath $tk -Name NetbiosOptions -Value $orig -Type DWord -ErrorAction Stop
-                })
-            }
-        }
-    }
-    # NCSI: only repair if something (a "tweak" tool) switched active probing off.
-    $nk = 'HKLM:\SYSTEM\CurrentControlSet\Services\NlaSvc\Parameters\Internet'
-    $probe = (Get-ItemProperty -LiteralPath $nk -Name EnableActiveProbing -ErrorAction SilentlyContinue).EnableActiveProbing
-    if ($null -ne $probe -and [int]$probe -eq 0) {
-        Save-Original 'Global' 'Ncsi' 0
-        [void](Invoke-Change 'Windows connectivity probing re-enabled (it was switched off)' { Set-ItemProperty -LiteralPath $nk -Name EnableActiveProbing -Value 1 -Type DWord -ErrorAction Stop })
-    }
-    # Internet works but Windows still says "no internet": nudge the Network List service (rate-limited).
-    if ($ConnState -eq 'Online' -and -not $script:IsDry -and (Test-Elapsed 'NlaNudge' 900)) {
-        foreach ($ctx in $Ctxs) {
-            $np = Get-NetConnectionProfile -InterfaceIndex $ctx.Ad.ifIndex -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($np -and [string]$np.IPv4Connectivity -ne 'Internet') {
-                Start-Sleep -Seconds 5
-                $np = Get-NetConnectionProfile -InterfaceIndex $ctx.Ad.ifIndex -ErrorAction SilentlyContinue | Select-Object -First 1
-                if ($np -and [string]$np.IPv4Connectivity -ne 'Internet') {
-                    Set-StateTime 'NlaNudge'
-                    [void](Invoke-Change 'Network List service refreshed (Windows showed "no internet" while it works)' { Restart-Service -Name NlaSvc -Force -ErrorAction Stop })
-                    break
-                }
-            }
-        }
-    }
-}
-
-# ==============================================================================
-# LEGACY CLEAN-UP (v1 left hosts pins, manual metrics, an old task)
-# ==============================================================================
-function Remove-LegacyHostsEntries {
-    $hp = Join-Path $script:Sys32 'drivers\etc\hosts'
-    if (-not (Test-Path -LiteralPath $hp)) { return }
-    try {
-        $raw = [System.IO.File]::ReadAllText($hp)
-        $lines = $raw -split "\r?\n"
-        $keep = @($lines | Where-Object {
-            $_ -notmatch [regex]::Escape($script:Cfg.PortalHost) -and
-            $_ -notmatch 'Lan Fixer Portal Immunization|A07 Portal Immunization' -and
-            $_ -notmatch '(?i)^\s*(?:127\.0\.0\.1|0\.0\.0\.0|::1)\s+(?:accounts\.google\.com|github\.com|connectivitycheck\.gstatic\.com)'
-        })
-        if ($keep.Count -eq $lines.Count) { return }
-        if ($script:StoreReady -and -not $script:IsDry) { Copy-Item -LiteralPath $hp -Destination (Join-Path $script:StoreDir 'hosts.before-cleanup.bak') -Force -ErrorAction SilentlyContinue }
-        $text = ($keep -join "`r`n")
-        [void](Invoke-Change 'Removed old Lan Fixer v1 entries from the hosts file (backup kept)' { [System.IO.File]::WriteAllText($hp, $text, (New-Object System.Text.UTF8Encoding($false))) })
-    } catch { Write-Log 'WARN' ("hosts cleanup skipped: " + $_.Exception.Message) }
-}
-function Invoke-LegacyMigration {
-    if (-not $script:IsAdmin -or $script:State.Misc['Migrated'] -eq $true) { return }
-    Remove-LegacyHostsEntries
-    if (-not $script:IsDry) {
-        try {
-            if (Test-Path -LiteralPath $script:DnsPolicyKey) {
-                Remove-ItemProperty -LiteralPath $script:DnsPolicyKey -Name DisableSmartNameResolution -ErrorAction SilentlyContinue
-            }
-        } catch {}
-    }
-    if (-not $script:IsDry) { [void](Invoke-Native (Get-SysExe 'schtasks.exe') @('/delete', '/tn', 'A07_NetShield', '/f') 8000) }
-    # v1 forced manual metrics 10/12/14/16/25 on adapters; hand them back to Windows.
-    foreach ($i in @(Get-NetIPInterface -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.AutomaticMetric -eq 'Disabled' -and $_.InterfaceAlias -match 'Ethernet|Wi-?Fi|Wireless|LAN' -and @(10,12,14,16,25) -contains [int]$_.InterfaceMetric })) {
-        [void](Invoke-Change "Automatic metric re-enabled on $($i.InterfaceAlias) (v1 had pinned it)" { Set-NetIPInterface -InterfaceIndex $i.ifIndex -AddressFamily IPv4 -AutomaticMetric Enabled -ErrorAction Stop })
-    }
-    # v1 wrote PnPCapabilities as a string (ignored by Windows); v2 rewrites it as a proper DWORD in Layer 1.
-    $legacy = Join-Path $env:ProgramData 'LanFixer\dns_profile.cfg'
-    if (Test-Path -LiteralPath $legacy) {
-        # A legacy file that says ResetDHCP records an action that already ran; importing it would freeze the profile
-        # on a value that can never apply again, so the reset's own outcome (Adaptive) is what gets migrated.
-        try { $p = (Get-Content -LiteralPath $legacy -Raw).Trim(); if ($p -eq 'ResetDHCP') { $p = 'Adaptive' }; if (@('Adaptive','DHCP','Hybrid','Cloudflare') -contains $p) { $script:State.Misc['DnsProfile'] = $p } } catch {}
-        if (-not $script:IsDry) { Remove-Item -LiteralPath $legacy -Force -ErrorAction SilentlyContinue; Remove-Item -LiteralPath (Join-Path $env:ProgramData 'LanFixer\dad_state.cfg') -Force -ErrorAction SilentlyContinue }
-    }
-    if (-not $script:IsDry) { $script:State.Misc['Migrated'] = $true; Save-State }
-}
-
-# ==============================================================================
-# THE PIPELINE
-# ==============================================================================
-function Invoke-HealPipeline([switch]$SkipSystemStack) {
-    $res = @{ Conn = 'Offline'; Campus = $false; AnyUp = $false; Problem = 'NoAdapter' }
-    Invoke-LegacyMigration
-    $script:WatchdogOn = Test-WatchdogInstalled
-    Update-WatchdogIfStale
-    if (@(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' }).Count -eq 0) { Invoke-RoamingCleanup }
-    if (-not $SkipSystemStack) { Shield-SystemStack }
-    $ads = @(Get-EthernetAdapters)
-    if ($ads.Count -gt 0) {
-        $anyUp = @($ads | Where-Object { $_.Status -eq 'Up' }).Count -gt 0
-        foreach ($a in $ads) {
-            if ($a.Status -eq 'Disabled' -and $Mode -ne 'AutoHeal' -and -not $anyUp) {   # a manual repair may re-enable it; the watchdog never overrides a choice you made
-                [void](Invoke-Change "Enabling disabled physical Ethernet adapter $($a.Name)" {
-                    Enable-NetAdapter -Name $a.Name -Confirm:$false -ErrorAction Stop
-                })
-            }
-        }
-    }
-    if ($ads.Count -eq 0) { Write-Log 'WARN' 'No physical Ethernet adapter found (Wi-Fi/system stack still shielded).'; Invoke-RoamingCleanup; Save-State; return $res }
-
-    Write-Log 'STEP' 'LAYER 1/7  Hardware interface & power state verification'
-    foreach ($a in $ads) { Shield-Hardware $a; [void](Resolve-DuplexFlap $a); [void](Optimize-PhySiliconBuffers $a) }
-    Invoke-LogIntelligence $ads
-    $didHwRestart = $false
-    if (-not $script:IsDry) {
-        foreach ($g in @($script:PendingRestart.Keys)) {
-            $nm = $script:PendingRestart[$g]
-            if (Test-Elapsed ("Restart:" + $g) 300) {
-                Set-StateTime ("Restart:" + $g)
-                if (Invoke-Change "Zero-reboot link reset on $nm to apply driver settings" { $rAd = Get-NetAdapter -Name $nm -ErrorAction SilentlyContinue; if ($rAd) { Reset-PhysicalAdapterHardware $rAd } else { Restart-NetAdapter -Name $nm -Confirm:$false -ErrorAction Stop } }) { $didHwRestart = $true }
-                $script:PendingRestart.Remove($g)
-            }
-        }
-    }
-    $needLongSettling = $didHwRestart
-    if (-not $needLongSettling) {
-        foreach ($a in $ads) {
-            if ($a.Status -eq 'Up' -and -not (Get-ValidIPv4 $a)) { $needLongSettling = $true; break }
-        }
-    }
-    Wait-LinkSettling $(if ($needLongSettling) { ([int]$script:Cfg.StpMaxSec * 1000) } else { 12000 })
-    $ups = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })
-    if ($ups.Count -eq 0) {
-        Write-Log 'WARN' 'Ethernet link is down: plug in the cable / wall port, then run again.'
-        $res.Problem = 'NoLink'
-        foreach ($a in $ads) { (Get-SubTable 'Env' ([string]$a.InterfaceGuid)).Up = $false }
-        Invoke-RoamingCleanup
-        Save-State
-        return $res
-    }

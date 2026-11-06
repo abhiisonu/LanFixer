@@ -1,3 +1,15 @@
+        [void](Test-Ping $Gw 700)
+        Start-Sleep -Milliseconds 200
+        $n = Get-NetNeighbor -InterfaceIndex $Ad.ifIndex -IPAddress $Gw -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+             Where-Object { $_.LinkLayerAddress -and $_.LinkLayerAddress -notmatch '^(00-)+00$' -and @('Unreachable','Incomplete') -notcontains [string]$_.State } | Select-Object -First 1
+        if ($n) { $macs += ([string]$n.LinkLayerAddress).ToUpper() }
+    }
+    return $macs
+}
+function Remove-GatewayLock($Ad, [string]$Gw) {
+    if ($script:IsDry) { Write-Log 'DRY' "Would release ARP lock for $Gw on $($Ad.Name)"; return }
+    Remove-NetNeighbor -InterfaceIndex $Ad.ifIndex -IPAddress $Gw -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue
+    Remove-NetNeighbor -InterfaceIndex $Ad.ifIndex -IPAddress $Gw -PolicyStore PersistentStore -Confirm:$false -ErrorAction SilentlyContinue
     Remove-NetNeighbor -InterfaceIndex $Ad.ifIndex -IPAddress $Gw -Confirm:$false -ErrorAction SilentlyContinue
     [void](Invoke-Native (Get-SysExe 'arp.exe') @('-d', $Gw) 5000)
     $t = Get-SubTable 'Arp' ([string]$Ad.InterfaceGuid)
@@ -786,15 +798,3 @@ function Restore-NeutralizedInterceptors([string]$Why = 'Non-campus network') {
                     }
                 })
             }
-        }
-        if (-not $script:IsDry) { $script:State.Misc.Remove('NeutralizedServices') }
-    }
-}
-$script:LlmnrKey = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient'
-function Restore-Llmnr($Orig) {
-    if ($null -eq $Orig) { Remove-ItemProperty -LiteralPath $script:LlmnrKey -Name EnableMulticast -ErrorAction SilentlyContinue }
-    else { New-ItemProperty -LiteralPath $script:LlmnrKey -Name EnableMulticast -Value ([int]$Orig) -PropertyType DWord -Force -ErrorAction Stop | Out-Null }
-}
-# LLMNR (like NetBIOS) lets any host on the hostel LAN answer "who is X?" and harvest credentials. Off on campus.
-function Shield-Llmnr($Ctxs) {
-    if (-not $script:Cfg.DisableLlmnr) { return }

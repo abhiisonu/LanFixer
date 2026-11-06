@@ -1,3 +1,156 @@
+        $Profile = [string]$script:State.Misc['RouteProfile']
+    }
+    if ($Profile -eq 'Windows') { return 'automatic' }
+    if ($Profile -eq 'Wifi') {
+        if ($UplinkActive) { return 'Wi-Fi First' }
+        return 'Wi-Fi Standby'
+    }
+    if ($Profile -eq 'Ethernet') {
+        if (-not $LinkUp) { return 'Ethernet Down' }
+        if (-not $Managed) { return 'Ethernet (unmanaged)' }
+        if ($Metric -le 15) { return 'Ethernet First' }
+        return 'Ethernet (metric drifted)'
+    }
+    if (-not $Managed) { return 'automatic' }
+    if (-not $LinkUp) { return $(if ($UplinkActive) { 'Wi-Fi Protected' } else { 'automatic' }) }
+    if ($Metric -ge 45) { return $(if ($UplinkActive) { 'Wi-Fi Protected' } else { 'Ethernet Demoted' }) }
+    if ($Metric -le 15) { return 'Ethernet First' }
+    return 'Ethernet First'
+}
+function Get-Telemetry {
+    $t = New-Telemetry
+    $t.Problem = 'NoAdapter'
+    $ads = @(Get-EthernetAdapters)
+    $ad = $ads | Where-Object { $_.Status -eq 'Up' } | Select-Object -First 1
+    if (-not $ad) { $ad = $ads | Select-Object -First 1 }
+    $others = @(Get-OtherUplinkAdapters)
+    if ($others.Count -gt 0) {
+        $t.UplinkActive = $true
+        $t.UplinkName = [string]$others[0].Name
+        if (-not $script:UplinkProfileCache -or (((Get-Date) - $script:UplinkProfileCache.Time).TotalSeconds -gt 15)) {
+            $prof = ''
+            try { $prof = [string](Get-NetConnectionProfile -InterfaceIndex $others[0].ifIndex -ErrorAction SilentlyContinue).Name } catch {}
+            $script:UplinkProfileCache = @{ Time = (Get-Date); Val = $prof }
+        }
+        $t.UplinkProfile = [string]$script:UplinkProfileCache.Val
+    }
+    if ($ad) {
+        $desc = [string]$ad.InterfaceDescription
+        $t.Nic = ($desc -replace ' Family Controller', '' -replace ' Gigabit Network Connection', ' GbE' -replace ' PCI-E NIC', '')
+        if ($ad.MacAddress) { $t.Mac = [string]$ad.MacAddress }
+        $t.Problem = 'NoLink'
+        if ($ad.Status -eq 'Up') {
+            $t.LinkUp = $true
+            $t.Speed = [string]$ad.LinkSpeed
+            $h = Get-AdapterHealth $ad
+            $t.Problem = [string]$h.Problem
+            $t.Conn = [string]$h.Conn
+            if ($h.Ip) { $t.Ip = [string]$h.Ip }
+            if ($h.Gateway) { $t.GwIp = [string]$h.Gateway; $t.GwRtt = if ($null -ne $script:LiveGwRtt) { $script:LiveGwRtt } else { $h.GwRtt }; $t.GwAlive = [bool]$h.GwAlive }
+            $e = Get-AdapterEnvironment $ad -UseCache
+            $t.Env = [string]$e.Env; $t.EnvScore = [int]$e.Score; $t.Sticky = [bool]$e.Sticky
+            $ipif = Get-IPv4Interface $ad
+            if ($ipif) {
+                $t.Mtu = [string]$ipif.NlMtu
+                $t.Routing = Get-RoutingLabel (Test-MetricsManaged) ([int]$ipif.InterfaceMetric) $true $t.UplinkActive
+            }
+            $raw = @((Get-DnsClientServerAddress -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses)
+            if ($raw.Count -gt 0) { $t.DnsPrimary = [string]$raw[0] }
+            $t.DnsProfile = Get-DnsProfileName
+        }
+    }
+    $t.RouteProfile = Get-RouteProfileName
+    if ($t.UplinkActive -and ($t.Routing -eq 'Wi-Fi Protected' -or ($t.Problem -ne 'Healthy' -and $t.Problem -ne 'Online') -or $t.RouteProfile -eq 'Wifi')) {
+        $t.UplinkIsPrimary = $true
+    }
+    if (-not $script:WdCache -or (((Get-Date) - $script:WdCache.Time).TotalSeconds -gt 30)) { $script:WdCache = @{ Time = (Get-Date); Val = (Test-WatchdogInstalled) } }
+    $t.Watchdog = [bool]$script:WdCache.Val
+    $t.Vault = [bool](Test-Path -LiteralPath $script:VaultFile)
+    $t.Pin = ([string]$script:State.Misc['PortalPin'] -ne '')
+    $t.Paused = ($script:State.Misc['PortalLoginSuspended'] -eq $true)
+    $t.ArpPending = (@(Get-PendingGatewayMacs).Count -gt 0)
+    if (-not $t.LinkUp -and (Test-MetricsManaged) -and (Test-OtherUplinkActive)) { $t.Routing = Get-RoutingLabel $true 0 $false }
+    $lf = Get-StateTime 'LastFull'
+    if ($lf -gt [datetime]'2001-01-01') { $t.LastFull = $lf }
+    return $t
+}
+# Headline, one plain sentence, and the single action Enter will run.
+function Get-Advice($t) {
+    $info = Get-StateInfo $t.Problem
+    $r = @{ Word = $info.Word; Role = $info.Role; Hops = $info.Hops; Status = ''; Action = ''; Text = ''; Key = ''; KeyLabel = '' }
+    if (-not $t.Admin -and $t.Problem) {
+        $r.Status = 'Running in read-only Limited Mode (without Administrator privileges).'
+        $r.Action = 'Press [ENTER] to relaunch as Administrator (or press E).'
+        $r.Key = 'e'; $r.KeyLabel = 'relaunch as Administrator'
+        $r.Text = ($r.Status + ' ' + $r.Action)
+        return $r
+    }
+    if ($t.ArpPending) {
+        $r.Status = 'Gateway MAC changed on switch. Candidate pending your review.'
+        $r.Action = 'Press [ENTER] to review & approve the new gateway MAC (or press K).'
+        $r.Key = 'k'; $r.KeyLabel = 'review the gateway MAC change'
+        $r.Text = ($r.Status + ' ' + $r.Action)
+        return $r
+    }
+    switch ($t.Problem) {
+        { $_ -eq 'Healthy' -or $_ -eq 'Online' } {
+            if ($t.UplinkIsPrimary -and $t.UplinkName) {
+                $uLabel = if ($t.UplinkProfile) { "$($t.UplinkName) ($($t.UplinkProfile))" } else { $t.UplinkName }
+                $r.Status = "Internet active via $uLabel. Ethernet link is in standby ($($t.Routing))."
+            } else {
+                $r.Status = 'Connected to network. All communication layers verified optimal.'
+            }
+            if (-not $t.Watchdog) {
+                $r.Action = 'Press [ENTER] to arm background watchdog guard (or press 2).'
+                $r.Key = '2'; $r.KeyLabel = 'arm the watchdog'
+            } else {
+                $r.Status = 'Connected to network with background watchdog active.'
+                if ($t.LastFull) { $r.Status += (' Last repair ' + ([datetime]$t.LastFull).ToString('ddd HH:mm') + '.') }
+                $r.Action = 'No action needed.'
+            }
+        }
+        'Captive' {
+            $r.Status = 'Connected to network, but captive portal sign-in is required.'
+            if ($t.Paused) {
+                $r.Action = 'Portal rejected saved password. Update credentials in vault (A).'
+                $r.Key = 'a'; $r.KeyLabel = 'open the vault'
+            } elseif ($t.Vault) {
+                $r.Action = 'Press [ENTER] to sign in automatically with saved vault login (or press G).'
+                $r.Key = 'g'; $r.KeyLabel = 'sign in with your saved login'
+            } else {
+                $r.Action = 'Press [ENTER] to open login page (or press 7), or press [A] to save login.'
+                $r.Key = '7'; $r.KeyLabel = 'open the login page'
+            }
+        }
+        'NoIp' {
+            $r.Status = ((Get-DhcpFailureText (Get-DhcpErrorCode) ([string]$t.Mac)))
+            $r.Action = 'Press [ENTER] to execute 7-layer heal and acquire DHCP lease (or press 1).'
+            $r.Key = '1'; $r.KeyLabel = 'repair now'
+        }
+        'GwUnreachable' {
+            if ($script:State.Misc['ArpCand'] -is [hashtable] -and $script:State.Misc['ArpCand'].Count -gt 0) {
+                $r.Status = 'Default gateway unreachable. New router MAC candidate pending approval.'
+                $r.Action = 'Press [ENTER] to approve new gateway MAC immediately (or press K).'
+                $r.Key = 'k'; $r.KeyLabel = 'review the gateway MAC change'
+            } else {
+                $r.Status = 'IPv4 address assigned, but default gateway is not responding.'
+                $r.Action = 'Press [ENTER] to refresh ARP table & restore route metrics (or press 1).'
+                $r.Key = '1'; $r.KeyLabel = 'repair now'
+            }
+        }
+        'NoDns' {
+            $r.Status = 'Local network reachable, but domain name resolution (DNS) is failing.'
+            $r.Action = 'Press [ENTER] to restore working DNS resolvers & flush cache (or press 1).'
+            $r.Key = '1'; $r.KeyLabel = 'repair now'
+        }
+        'Offline' {
+            $r.Status = 'Default gateway answers, but upstream internet access is blocked.'
+            $r.Action = 'Press [ENTER] to run 7-layer diagnostics & verify routing (or press 1).'
+            $r.Key = '1'; $r.KeyLabel = 'repair now'
+        }
+        'NoLink' {
+            $r.Status = 'Physical Ethernet link down. Cable unplugged or port inactive.'
+            if ($t.Watchdog) {
                 $r.Action = 'Connect Ethernet cable, or press [ENTER] / [X] to run Full Net Reset.'
                 $r.Key = 'x'; $r.KeyLabel = 'run Full Net Reset'
             } else {
@@ -418,7 +571,7 @@ function Start-Interactive {
     }
 }
 $script:IsAdmin = Test-IsAdmin
-$adminModes = @('Interactive', 'Heal', 'AutoHeal', 'Omnifix', 'FullNetReset', 'UltraReset', 'DoomsdayReset', 'Doomsday', 'FlushCache', 'InstallWatchdog', 'UninstallWatchdog', 'InstallShield', 'UninstallShield', 'ResetFactory', 'SetDnsProfile', 'SetRouteProfile', 'Daemon')
+$adminModes = @('Interactive', 'Heal', 'AutoHeal', 'Omnifix', 'FullNetReset', 'UltraReset', 'DoomsdayReset', 'Doomsday', 'ArmageddonReset', 'Armageddon', 'FlushCache', 'InstallWatchdog', 'UninstallWatchdog', 'InstallShield', 'UninstallShield', 'ResetFactory', 'SetDnsProfile', 'SetRouteProfile', 'Daemon')
 if ($Mode -eq 'Interactive') {
     $intFile = Join-Path $script:Cfg.StoreDir 'interactive.json'
     if (Test-Path -LiteralPath $intFile) {
@@ -483,6 +636,8 @@ try {
         'UltraReset'    { Invoke-UltraSystemReset }
         'DoomsdayReset' { Invoke-DoomsdayReset }
         'Doomsday'      { Invoke-DoomsdayReset }
+        'ArmageddonReset' { Invoke-ArmageddonReset }
+        'Armageddon'      { Invoke-ArmageddonReset }
         'SetRouteProfile' { Set-RouteProfileMode $RouteProfile }
         'Heal' {
             $sw = [System.Diagnostics.Stopwatch]::StartNew()
@@ -527,7 +682,7 @@ try {
     Exit-Lock
     if ($script:UiOn) { Exit-Screen }
 }
-if ($exitCode -eq 0 -and $script:FailCount -gt 0 -and (@('AutoHeal', 'Heal', 'Omnifix', 'FullNetReset', 'UltraReset') -contains $Mode)) { $exitCode = 2 }
+if ($exitCode -eq 0 -and $script:FailCount -gt 0 -and (@('AutoHeal', 'Heal', 'Omnifix', 'FullNetReset', 'UltraReset', 'DoomsdayReset', 'Doomsday', 'ArmageddonReset', 'Armageddon') -contains $Mode)) { $exitCode = 2 }
 if ($exitCode -ne 0 -and -not $NoPause -and $Host.Name -eq 'ConsoleHost') {
     Write-Host ''
     Write-Host 'LanFixer closed with an exit code. Press any key to close...' -ForegroundColor Gray

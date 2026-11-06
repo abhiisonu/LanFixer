@@ -18,25 +18,28 @@ exit /b %errorlevel%
     Add -DryRun to see exactly what would change without changing anything.
     Every change is snapshotted first, so ResetFactory restores YOUR original values.
 .NOTES
-    6.5.0 (Omniscient Layer 1-7 Healer, Hyper-Nuclear & Universal Doomsday Reset Engine):
-      - Invoke-DoomsdayReset: 12-stage universal doomsday network stack annihilation engine for total connectivity death across ALL media (Wi-Fi, Bluetooth, USB Tethering, Ethernet, Cellular).
-      - Universal Multi-Adapter Hardening: restarts all physical adapters, resets WLAN AutoConfig (netsh wlan set autoconfig enabled=yes interface=*), and binds core NDIS protocols.
-      - Dead VPN Killswitch & Universal Proxy Eradication: sweeps ProxyEnable, ProxyServer, AutoConfigURL across HKCU, HKLM, HKU\.DEFAULT, and all active user profiles.
-      - Invoke-UltraSystemReset: 10-stage hyper-nuclear stack resuscitation engine implementing non-destructive full-spectrum low-level eradication.
+    6.5.0 (Omniscient Layer 1-7 Healer, Doomsday Multi-Medium & Armageddon Deep OS Reset):
+      - Invoke-ArmageddonReset: 4-stage Microsoft Windows native kernel network stack wipe and reinstallation weapon (netcfg.exe -d). Uninstalls all adapters, clears virtual switches/filters, wipes TCP/IP registry stack, and triggers clean PnP driver reinstallation upon reboot.
+      - Invoke-DoomsdayReset: 12-stage universal doomsday network stack annihilation engine with 5 Deep Forensic Antidotes for total connectivity death across ALL media (Wi-Fi, Bluetooth, USB Tethering, Ethernet, Cellular).
+      - Rogue NDIS 6 Filter Driver Deactivation: automatically deactivates 3rd-party NDIS lightweight filter drivers (Npcap, VirtualBox, VPN, Antivirus packet drop traps) on physical adapters while preserving native Microsoft protocols.
+      - PnP Silicon Hardware Bus Restart: executes pnputil.exe /restart-device on physical PCI/USB device instances to wake transceivers from Modern Standby D3cold / PCIe ASPM hardware lockups without rebooting.
+      - RadioManagement / Airplane Mode Deadlock Eradication: sets SystemRadioState to 0 in registry and cycles RmSvc to unlock trapped hardware radios.
+      - Ghost Adapter Registry Scrub & Outbound Firewall Guarantee: scrubs orphaned GUIDs under Tcpip\Parameters\Interfaces and enforces netsh advfirewall blockinbound,allowoutbound.
+      - Universal Manual Static IP & Route Purge: strips conflicting manual static IPs and default routes across all physical adapters, enforcing pure DHCP Discover.
       - Dual-Architecture Winsock LSP & NSP Annihilation: wipes 64-bit System32 and 32-bit SysWOW64 Winsock catalogs (netsh winsock reset catalog & reset), zeroes AutodialFlags.
       - Dual-Stack TCP/IP & Heuristics Normalization: netsh int ip/ipv6 reset, netsh int tcp reset, autotuninglevel=normal, RSS/RSC enabled, ECN/timestamps disabled, initialrto=3000.
       - Transition Tunnel Disablement: disables Teredo, ISATAP, and 6to4 transition tunnels to eliminate campus IPv6 routing sinkholes.
-      - Routing, Destination Cache, PortProxy & Bridge Purge: route -f (clears gateways), deletes destinationcache, netsh int portproxy/httpstunnel reset, destroys rogue bridges via netsh bridge.
+      - Routing, Destination Cache, PortProxy & Bridge Purge: route -f (clears gateways), deletes destinationcache, netsh interface portproxy/httpstunnel reset, destroys rogue bridges via netsh bridge.
       - Encrypted DNS (DoH/DoT/DDR) Global & Per-Interface Factory Wipe: netsh dnsclient delete global all & delete interface all.
       - Firewall, WPAD Autoproxy & BITS Transfer Purge: netsh advfirewall reset & on, netsh winhttp reset proxy/autoproxy/tracing, flushes HTTP log buffer, cancels zombie BITS jobs.
       - NCSI Calibration, Kerberos Purge & SMB Session Sweep: calibrates ActiveWebProbe/ActiveDnsProbe, klist purge, net use * /delete /y, purges unmanaged NLM signatures.
       - Cache & NetBIOS Eviction: netsh interface ip delete arpcache, netsh int ip/ipv6 delete neighbors, arp -d *, nbtstat -R & -RR, Clear-DnsClientCache, ipconfig /flushdns.
       - Hardware Transceiver Cycle & Driver Power Lock: pnputil /restart-device, re-binds ms_tcpip/ms_tcpip6/ms_rspndr/ms_lltdio/ms_pacer, defeats PHY EEE/green power & selective suspend.
       - DHCP Broadcast Flag Enforcement & Registry Zeroing: enforces DhcpConnForceBroadcastFlag=1 (RFC 2131), zeroes cached DhcpIPAddress/DhcpServer keys to force pure Discover.
-      - Topological 12-Service Stack Resuscitation: cleanly halts 12 dependent services before reset and restarts them in strict topological order (BFE -> mpssvc -> CryptSvc -> WlanSvc -> dot3svc -> bthserv -> WwanSvc -> Dhcp -> Dnscache -> iphlpsvc -> NlaSvc -> netprofm -> BITS).
+      - Topological 13-Service Stack Resuscitation: cleanly halts 13 dependent services before reset and restarts them in strict topological order (BFE -> mpssvc -> CryptSvc -> RmSvc -> WlanSvc -> dot3svc -> bthserv -> WwanSvc -> Dhcp -> Dnscache -> iphlpsvc -> NlaSvc -> netprofm -> BITS).
       - 802.1X Wired AutoConfig Reconnection: issues netsh lan reconnect across wired LAN interfaces.
       - Full DHCP Stack Cycle & Dynamic DNS: ipconfig /release & /renew (IPv4/IPv6), ipconfig /registerdns, and 802.1D Spanning Tree Protocol (STP) convergence loop.
-      - Interactive TUI & CLI Integration: Key [D] for Doomsday, Key [U] for Ultra, 3-tier selector on [X], -Mode DoomsdayReset / UltraReset / FullNetReset CLI dispatch.
+      - Interactive TUI & CLI Integration: Key [D] for Doomsday, Key [U] for Ultra, 4-tier selector on [X], -Mode ArmageddonReset / DoomsdayReset / UltraReset / FullNetReset CLI dispatch.
     6.4.2 (Sovereign Grand Master Final Hardening & PnP Optimization):
       - PnP Rescan Rate-Limit & Narrowing: Rescue-DormantEthernetPnp stamps limiter before query, checks only present faulted physical wired NICs, and ignores disabled/ghost devices.
       - Interactive Session Timestamp Validation: Start-Interactive writes process StartTime in round-trippable ISO-8601 UTC format, eliminating false-positive session purges.
@@ -190,7 +193,7 @@ exit /b %errorlevel%
 
 [CmdletBinding()]
 param(
-    [ValidateSet('Interactive','Heal','AutoHeal','Omnifix','FullNetReset','UltraReset','DoomsdayReset','Doomsday','Diagnose','QuickProbe','FlushCache','InstallWatchdog','UninstallWatchdog','InstallShield','UninstallShield','ResetFactory','LaunchPortal','SetDnsProfile','SetRouteProfile','SelfTest','Report','Daemon')]
+    [ValidateSet('Interactive','Heal','AutoHeal','Omnifix','FullNetReset','UltraReset','DoomsdayReset','Doomsday','ArmageddonReset','Armageddon','Diagnose','QuickProbe','FlushCache','InstallWatchdog','UninstallWatchdog','InstallShield','UninstallShield','ResetFactory','LaunchPortal','SetDnsProfile','SetRouteProfile','SelfTest','Report','Daemon')]
     [string]$Mode = 'Interactive',
     [ValidateSet('Adaptive','DHCP','Hybrid','Cloudflare','ResetDHCP')]
     [string]$DnsProfile = 'Adaptive',
@@ -795,6 +798,3 @@ function Enter-Lock([int]$TimeoutMs = 1000) {
             $script:HasMutex = $true
             try {
                 $lf = Join-Path $script:StoreDir 'lock.json'
-                $meta = @{ Pid = $PID; Mode = ([string]$Mode); Time = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss'); User = [string]$env:USERNAME }
-                [System.IO.File]::WriteAllText($lf, (ConvertTo-Json -InputObject $meta -Compress))
-            } catch {}

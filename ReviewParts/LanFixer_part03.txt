@@ -1,3 +1,6 @@
+        if ($SourceIp) {
+            try { $sock.Bind((New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Parse($SourceIp), 0))) } catch { $r.Error = 'BindFailure'; return $r }
+        }
         $iar = $sock.BeginConnect([System.Net.IPAddress]::Parse($ip), [int]$Uri.Port, $null, $null)
         $connected = $iar.AsyncWaitHandle.WaitOne($TimeoutMs, $false)
         if (-not $connected) {
@@ -795,6 +798,3 @@ function Get-DashboardModel($t, $adv, [int]$Width = 0) {
     $maxRightLen = [Math]::Max(10, ($w + 2) - (Get-SegsLength $heroL) - 2)
     if ($right.Length -gt $maxRightLen) {
         if ($t.UplinkActive -and $t.UplinkName) {
-            $tag = if ($t.UplinkIsPrimary) { '(Standby)' } else { '(Primary)' }
-            $right = ('Eth ' + $t.Speed + ' ' + $tag + ' ' + $script:G.mid + ' ' + $t.UplinkName)
-        }

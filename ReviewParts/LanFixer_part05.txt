@@ -1,3 +1,15 @@
+    $res = @{ State = $state; Location = $loc; Via = $via }
+    $script:ConnCache = @{ Time = (Get-Date); Result = $res; Key = $ckey }
+    return $res
+}
+# "Gateway alive" no longer depends on ICMP alone: many campus gateways drop ping but still answer ARP.
+# Fresh evidence only: a cached neighbour entry proves nothing. 'Stale'/'Delay'/'Probe' are exactly what a DEAD gateway's
+# leftover entry looks like, and 'Permanent' is our own lock. Force a fresh ARP exchange and accept only a freshly
+# 'Reachable' entry (checked a few times, because the entry appears a moment after the probe).
+function Test-GatewayAlive($Ad, [string]$Gw) {
+    $rtt = Test-Ping $Gw 700
+    if ($null -ne $rtt) { return @{ Alive = $true; Rtt = $rtt; Via = 'icmp' } }
+    $ex = Get-NetNeighbor -InterfaceIndex $Ad.ifIndex -IPAddress $Gw -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($ex -and [string]$ex.State -eq 'Permanent' -and $ex.LinkLayerAddress -and $ex.LinkLayerAddress -notmatch '^(00-)+00$') {
         $homeAd = $true
         try { $eh = Get-AdapterEnvironment $Ad -UseCache; if ($null -ne $eh.Home) { $homeAd = [bool]$eh.Home } } catch {}
@@ -786,15 +798,3 @@ function Get-GatewayMacs($Ad, [string]$Gw, [int]$Samples = 3) {
         } else {
             Write-Log 'DRY' "Would refresh neighbour entry for $Gw on $($Ad.Name)"
         }
-        [void](Test-Ping $Gw 700)
-        Start-Sleep -Milliseconds 200
-        $n = Get-NetNeighbor -InterfaceIndex $Ad.ifIndex -IPAddress $Gw -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-             Where-Object { $_.LinkLayerAddress -and $_.LinkLayerAddress -notmatch '^(00-)+00$' -and @('Unreachable','Incomplete') -notcontains [string]$_.State } | Select-Object -First 1
-        if ($n) { $macs += ([string]$n.LinkLayerAddress).ToUpper() }
-    }
-    return $macs
-}
-function Remove-GatewayLock($Ad, [string]$Gw) {
-    if ($script:IsDry) { Write-Log 'DRY' "Would release ARP lock for $Gw on $($Ad.Name)"; return }
-    Remove-NetNeighbor -InterfaceIndex $Ad.ifIndex -IPAddress $Gw -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue
-    Remove-NetNeighbor -InterfaceIndex $Ad.ifIndex -IPAddress $Gw -PolicyStore PersistentStore -Confirm:$false -ErrorAction SilentlyContinue

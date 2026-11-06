@@ -1,3 +1,6 @@
+                $meta = @{ Pid = $PID; Mode = ([string]$Mode); Time = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss'); User = [string]$env:USERNAME }
+                [System.IO.File]::WriteAllText($lf, (ConvertTo-Json -InputObject $meta -Compress))
+            } catch {}
             $memMisc = @{}
             if ($script:State -is [hashtable] -and $script:State.Misc -is [hashtable]) {
                 foreach ($mk in @('LearnedDhcp','DiscoveredDomain','DiscoveredPortalUrl','DiscoveredPortalIp','DiscoveryTime','InjectedHostRoutes')) {
@@ -795,6 +798,3 @@ function Invoke-TlsHttp {
         # Verify IP is allowed campus IP (private RFC1918, CGNAT, configured portal IP, or local gateway)
         if (-not (Test-AllowedPortalIp $ip)) { $r.Error = 'NotPrivate'; return $r }
         $sock = New-Object System.Net.Sockets.Socket([System.Net.Sockets.AddressFamily]::InterNetwork, [System.Net.Sockets.SocketType]::Stream, [System.Net.Sockets.ProtocolType]::Tcp)
-        if ($SourceIp) {
-            try { $sock.Bind((New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Parse($SourceIp), 0))) } catch { $r.Error = 'BindFailure'; return $r }
-        }

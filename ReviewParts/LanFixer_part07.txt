@@ -1,3 +1,15 @@
+        }
+        if (-not $script:IsDry) { $script:State.Misc.Remove('NeutralizedServices') }
+    }
+}
+$script:LlmnrKey = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient'
+function Restore-Llmnr($Orig) {
+    if ($null -eq $Orig) { Remove-ItemProperty -LiteralPath $script:LlmnrKey -Name EnableMulticast -ErrorAction SilentlyContinue }
+    else { New-ItemProperty -LiteralPath $script:LlmnrKey -Name EnableMulticast -Value ([int]$Orig) -PropertyType DWord -Force -ErrorAction Stop | Out-Null }
+}
+# LLMNR (like NetBIOS) lets any host on the hostel LAN answer "who is X?" and harvest credentials. Off on campus.
+function Shield-Llmnr($Ctxs) {
+    if (-not $script:Cfg.DisableLlmnr) { return }
     $anyCampus = (@($Ctxs | Where-Object { $_.Env.Env -eq 'Campus' })).Count -gt 0
     $anyOther  = (@($Ctxs | Where-Object { $_.Env.Env -eq 'Other' })).Count -gt 0
     $cur = $null
@@ -786,15 +798,3 @@ function Invoke-UltraSystemReset {
             Write-Log 'DRY' 'Would execute: netsh dnsclient delete global all & netsh dnsclient delete interface name=$ea.Name setting=all'
             Write-Log 'DRY' 'Would execute: netsh winhttp reset proxy, reset autoproxy & tracing'
             Write-Log 'DRY' 'Would cancel all active BITS transfer jobs via Get-BitsTransfer'
-            Write-Log 'DRY' 'Would sanitize WinINet user/machine proxies and flush SSL session cache'
-        } else {
-            # Reset Windows 11 encrypted DNS (DoH, DoT, DDR) globally to factory defaults
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('dnsclient', 'delete', 'global', 'all') 5000)
-
-            # Reset per-interface DNS encryption and DDR settings across physical adapters
-            foreach ($ea in @(Get-EthernetAdapters)) {
-                try {
-                    [void](Invoke-Native (Get-SysExe 'netsh.exe') @('dnsclient', 'delete', 'interface', "name=$($ea.Name)", 'setting=all') 5000)
-                } catch {}
-            }
-
