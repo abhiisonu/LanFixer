@@ -9,7 +9,7 @@ exit /b %errorlevel%
 
 <#
 .SYNOPSIS
-    Lan Fixer 6.2.2 - Sovereign self-healing Ethernet stabilizer for campus/hostel LANs (Windows 10/11, Ethernet only).
+    Lan Fixer 6.3.0 - Sovereign self-healing Ethernet stabilizer for campus/hostel LANs (Windows 10/11, Ethernet only).
     Author: A.S.
 .DESCRIPTION
     Single file, ASCII only. Run it normally for the control center, or use -Mode:
@@ -131,7 +131,7 @@ try { Add-Type -AssemblyName System.Security -ErrorAction SilentlyContinue } cat
 # ==============================================================================
 # CONFIG (edit here, nowhere else)
 # ==============================================================================
-$script:Version = '6.2.2'
+$script:Version = '6.3.0'
 $script:Sys32   = Join-Path $env:SystemRoot 'System32'
 $script:SelfPath = if ($env:LANFIXER_SELF -and (Test-Path -LiteralPath $env:LANFIXER_SELF)) { $env:LANFIXER_SELF } elseif ($PSCommandPath -and (Test-Path -LiteralPath $PSCommandPath)) { $PSCommandPath } elseif ($MyInvocation.MyCommand.Path -and (Test-Path -LiteralPath $MyInvocation.MyCommand.Path)) { $MyInvocation.MyCommand.Path } elseif ($PSScriptRoot -and (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'LanFixer.cmd'))) { (Join-Path $PSScriptRoot 'LanFixer.cmd') } else { (Join-Path (Get-Location).Path 'LanFixer.cmd') }
 $script:IsDry   = [bool]$DryRun
@@ -1722,11 +1722,15 @@ function Ensure-CampusPortalPath([uri]$RedirectUri = $null) {
         if ([System.Net.IPAddress]::TryParse([string]$RedirectUri.Host, [ref]$hostIp) -and ($hostIp.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork)) {
             # Only a private/CGNAT/known-gateway literal: never add a host route for an arbitrary public address.
             if (Test-AllowedPortalIp ([string]$RedirectUri.Host)) { $baseTargets += [string]$RedirectUri.Host }
+        } else {
+            $resIp = Resolve-HostBounded ([string]$RedirectUri.Host) 1200
+            if ($resIp -and (Test-AllowedPortalIp $resIp)) { $baseTargets += $resIp }
         }
     }
     foreach ($a in @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })) {
         $e = Get-AdapterEnvironment $a -UseCache
-        if ($e.Env -ne 'Campus') { continue }
+        $isCaptiveOrCampus = ($e.Env -eq 'Campus' -or $baseTargets.Count -gt 0 -or [bool]$script:State.Misc['DiscoveredPortalUrl'])
+        if (-not $isCaptiveOrCampus) { continue }
         $gw4 = @(Get-GatewaysV4 $a) | Select-Object -First 1
         if (-not $gw4) { continue }
         $dhcpDns = @(Get-DhcpDnsServers ([string]$a.InterfaceGuid) | Where-Object { Test-PrivateIPv4 $_ })
@@ -3154,6 +3158,10 @@ function Get-AdapterEnvironment {
                             if ([System.Net.IPAddress]::TryParse($lu.Host, [ref]$tmpIp)) {
                                 if (Test-AllowedPortalIp $lu.Host) { $script:State.Misc['DiscoveredPortalIp'] = $lu.Host }
                             } else {
+                                $cleanHost = ([string]$lu.Host).Trim().Trim('.').ToLower()
+                                if ($cleanHost -match '\.' -and $cleanHost -notmatch '^(local|lan|home|arpa|localdomain|mshome\.net)$') {
+                                    $script:State.Misc['DiscoveredDomain'] = $cleanHost
+                                }
                                 $resIp = Resolve-HostBounded $lu.Host 1500 $ip
                                 if ($resIp -and (Test-AllowedPortalIp $resIp)) {
                                     $script:State.Misc['DiscoveredPortalIp'] = $resIp
@@ -3183,10 +3191,12 @@ function Get-AdapterEnvironment {
         $h.Env = $envName
         $h.Home = $homeVerdict
         $h.Time = (Get-Date).ToString('o')
-        if (-not $script:IsDry -and ($envName -eq 'Other' -or $homeVerdict)) {
-            $script:State.Misc.Remove('DiscoveredPortalIp')
-            $script:State.Misc.Remove('DiscoveredPortalUrl')
-            if ($envName -eq 'Other') { $script:State.Misc.Remove('DiscoveredDomain') }
+        if (-not $script:IsDry) {
+            if ($envName -eq 'Other' -and -not $script:State.Misc['DiscoveredPortalUrl']) {
+                $script:State.Misc.Remove('DiscoveredPortalIp')
+                $script:State.Misc.Remove('DiscoveredPortalUrl')
+                $script:State.Misc.Remove('DiscoveredDomain')
+            }
         }
     }
     $info = @{ Env = $envName; Score = $score; Evidence = @($ev); Sticky = $sticky; Ip = $ip; Gateways = $gws; Home = $homeVerdict }
@@ -4074,7 +4084,7 @@ function Shield-Dns($Ctx, [string]$ConnState) {
         'Hybrid'     { $order = @('9.9.9.9', '8.8.8.8') + $campus; $phase = 'Public' }
         'Cloudflare' { $order = @($script:Cfg.CfDns) + $campus; $phase = 'Public' }
         default {
-            if ($ConnState -eq 'Online') {
+            if ($ConnState -eq 'Online' -or $ConnState -eq 'NoDns' -or $ConnState -eq 'Offline') {
                 $order = @(Get-BestDnsOrder $guid $campus)
                 if (@($order | Where-Object { $campus -notcontains $_ }).Count -gt 0) { $phase = 'Public' } else { $phase = 'Campus' }
             } else {
@@ -4084,8 +4094,13 @@ function Shield-Dns($Ctx, [string]$ConnState) {
                 $scores = Measure-ResolversFast $cands 400
                 $live = @($cands | Where-Object { $null -ne $scores[$_] } | Sort-Object { $scores[$_] })
                 $dead = @($cands | Where-Object { $null -eq $scores[$_] })
-                $order = if ($live.Count -gt 0) { @($live + $dead) } else { @($cands) }
-                $phase = 'Campus'
+                if ($live.Count -gt 0) {
+                    $order = @($live + $dead)
+                    $phase = 'Campus'
+                } else {
+                    $order = @(Get-BestDnsOrder $guid $campus)
+                    if (@($order | Where-Object { $campus -notcontains $_ }).Count -gt 0) { $phase = 'Public' } else { $phase = 'Campus' }
+                }
             }
         }
     }
@@ -4690,12 +4705,29 @@ function Invoke-SupremeOmnifix {
             }
         }
         if ($anyVerifyFail -and -not $script:IsDry -and ($resHeal.Conn -ne 'Captive')) {
+            Write-Log 'WARN' 'DNS resolution failed for public endpoints. Deploying adaptive public DNS rescue...'
+            foreach ($ea in @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })) {
+                $rescueDns = @(Get-BestDnsOrder ([string]$ea.InterfaceGuid) @())
+                if ($rescueDns.Count -gt 0) {
+                    Write-Log 'INFO' "Applying active public DNS rescue on $($ea.Name): $($rescueDns -join ', ')..."
+                    [void](Set-AdapterDns $ea $rescueDns)
+                }
+            }
+            Clear-DnsClientCache -ErrorAction SilentlyContinue
+            [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/flushdns') 5000)
             [void](Invoke-Change 'Zero-reboot live network stack cycling (NDIS, DHCP & TCPIP state unfreeze)' {
                 Restart-Service -Name Dhcp -Force -ErrorAction SilentlyContinue
                 Restart-Service -Name NlaSvc -Force -ErrorAction SilentlyContinue
                 Start-Service -Name netprofm -ErrorAction SilentlyContinue
                 foreach ($ea in @(Get-EthernetAdapters)) { Reset-PhysicalAdapterHardware $ea }
             })
+            foreach ($testHost in @('github.com', 'accounts.google.com')) {
+                $ip = Resolve-HostBounded $testHost 3000
+                if ($ip) {
+                    $tcpOk = Test-TcpPort $ip 443 2500
+                    Write-Log ($(if ($tcpOk) { 'OK' } else { 'WARN' })) ("Re-verified {0} -> {1} (TCP/443: {2})" -f $testHost, $ip, $(if ($tcpOk) { 'OPEN' } else { 'BLOCKED' }))
+                }
+            }
         }
         Save-State
         $resHeal
