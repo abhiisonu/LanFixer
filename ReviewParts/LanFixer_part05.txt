@@ -1,3 +1,18 @@
+                        $state = 'Captive'; $via = 'system'
+                        $p1 = @{ Code = $c; Location = [string]$webResp.Headers['Location'] }
+                    }
+                    try { $webResp.Close() } catch {}
+                }
+            } catch {}
+        }
+    }
+    $loc = ''
+    if ($state -eq 'Captive') {
+        if ($p1.Location) { $loc = [string]$p1.Location } elseif ($p2.Location) { $loc = [string]$p2.Location }
+        if ($loc -and -not $script:IsDry -and $script:State -is [hashtable] -and $script:State.Misc -is [hashtable]) {
+            try {
+                $lu = [uri]$loc
+                if ($lu.IsAbsoluteUri -and ($lu.Scheme -eq 'http' -or $lu.Scheme -eq 'https')) {
                     $script:State.Misc['DiscoveredPortalUrl'] = [string]$lu.AbsoluteUri
                     $script:State.Misc['DiscoveryTime'] = (Get-Date).ToString('o')
                     $tmpIp = $null
@@ -120,6 +135,12 @@ function Get-DhcpCaptiveUrl([string]$Guid) {
 function Get-GatewaysV4($Ad) {
     return @(Get-NetRoute -InterfaceIndex $Ad.ifIndex -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue |
         Where-Object { $_.NextHop -and $_.NextHop -ne '0.0.0.0' } | ForEach-Object { [string]$_.NextHop } | Select-Object -Unique)
+}
+function Get-DefaultGateway($Ad) {
+    if (-not $Ad) { return $null }
+    $gws = @(Get-GatewaysV4 $Ad)
+    if ($gws.Count -gt 0) { return [string]$gws[0] }
+    return $null
 }
 function Get-ValidIPv4($Ad) {
     $x = Get-NetIPAddress -InterfaceIndex $Ad.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue |
@@ -621,7 +642,7 @@ function Wait-StpConvergence($Ad, [int]$MaxWaitSec = 45) {
                 }
             }
         }
-        Start-Sleep -Milliseconds 1000
+        Start-Sleep -Milliseconds 350
     }
     $sw.Stop()
     if ($converged) {
@@ -777,24 +798,3 @@ function Shield-DataLink($Ctx) {
                     $params = @{ InterfaceIndex = $ad.ifIndex; IPAddress = $origIpInfo.IPAddress; PrefixLength = $origIpInfo.PrefixLength; ErrorAction = 'Stop' }
                     if ($origIpInfo.DefaultGateway) { $params.DefaultGateway = $origIpInfo.DefaultGateway }
                     New-NetIPAddress @params -ErrorAction SilentlyContinue | Out-Null
-                })
-            }
-            $script:EnvCache.Remove($guid)
-            $Ctx.Env = Get-AdapterEnvironment $ad
-        }
-    }
-    if (-not (Get-ValidIPv4 $ad)) {
-        $Ctx.Repaired = (Repair-Dhcp $ad)
-        $script:EnvCache.Remove($guid)
-        $Ctx.Env = Get-AdapterEnvironment $ad
-    } elseif ($ipif -and [string]$ipif.Dhcp -eq 'Enabled') {
-        $curGw = @(Get-GatewaysV4 $ad) | Select-Object -First 1
-        $gwOk = if ($curGw) { (Test-GatewayAlive $ad $curGw).Alive } else { $false }
-        if (-not $gwOk) {
-            Write-Log 'WARN' "IPv4 lease is present on $($ad.Name), but default gateway is $(if ($curGw) { "$curGw (unreachable)" } else { 'missing' }). Refreshing DHCP lease..."
-            $Ctx.Repaired = (Repair-Dhcp $ad -ForceRelease)
-            $script:EnvCache.Remove($guid)
-            $Ctx.Env = Get-AdapterEnvironment $ad
-        }
-    }
-    $validIp = Get-ValidIPv4 $ad

@@ -1,3 +1,42 @@
+    $cmdArgs = '/c ""' + $script:SelfCopy + '" -Mode Daemon -Headless -NoPause"'
+    $xml = New-SentinelTaskXml $cmdArgs
+    $ok = Register-LfTask 'LanFixer_Sentinel' $xml 'LanFixer_Sentinel.xml'
+    if ($ok) {
+        $r = Invoke-Native (Get-SysExe 'schtasks.exe') @('/run', '/tn', 'LanFixer_Sentinel') 10000
+        Write-Log 'OK' 'Lan Fixer 24/7 Autonomous Sentinel task registered and activated.'
+        Write-Log 'INFO' 'The Sentinel is now guarding your network 24/7 in the background with zero window.'
+        return $true
+    }
+    Write-Log 'FAIL' 'Failed to register LanFixer_Sentinel scheduled task.'
+    return $false
+}
+
+function Uninstall-SentinelTask {
+    if (-not (Assert-Admin)) { return $false }
+    $r1 = Invoke-Native (Get-SysExe 'schtasks.exe') @('/end', '/tn', 'LanFixer_Sentinel') 5000
+    $r2 = Invoke-Native (Get-SysExe 'schtasks.exe') @('/delete', '/tn', 'LanFixer_Sentinel', '/f') 10000
+    if ($r2.ExitCode -eq 0) {
+        Write-Log 'OK' 'Lan Fixer 24/7 Autonomous Sentinel task terminated and removed.'
+        return $true
+    }
+    Write-Log 'WARN' 'LanFixer_Sentinel task was not found or already deleted.'
+    return $true
+}
+
+function Show-SentinelLogView {
+    $logPath = Join-Path $script:StoreDir 'sentinel.log'
+    if (-not (Test-Path -LiteralPath $logPath)) {
+        Write-Log 'INFO' 'No sentinel.log file found yet.'
+        Start-Sleep -Seconds 2
+        return
+    }
+    Clear-Screen
+    Write-Banner 'SENTINEL FLIGHT RECORDER LOG (LAST 40 LINES)'
+    $lines = @(Get-Content -LiteralPath $logPath -Tail 40 -ErrorAction SilentlyContinue)
+    foreach ($l in $lines) {
+        $c = 'dim'
+        if ($l -like '*[OK   ]*') { $c = 'ok' }
+        elseif ($l -like '*[WARN ]*') { $c = 'warn' }
         elseif ($l -like '*[FAIL ]*') { $c = 'bad' }
         elseif ($l -like '*[TIER*]*') { $c = 'cyan' }
         Out-Line @((Seg $c ("  " + $l)))
@@ -114,8 +153,8 @@ function Wait-SentinelCadence([int]$Seconds, [bool]$Interactive) {
             Write-SentinelLog 'EVENT' "Reactive event: Network change detected via .NET kernel event! Resuming immediately."
             break
         }
-        if ($Interactive -and [Console]::KeyAvailable) {
-            $k = [Console]::ReadKey($true)
+        if ($Interactive -and (Test-KeyAvailable)) {
+            $k = Read-KeyNow
             if ($k.KeyChar -eq 'q' -or $k.KeyChar -eq 'Q' -or $k.Key -eq [ConsoleKey]::Escape) {
                 $script:SentinelRunning = $false
                 break
@@ -262,9 +301,10 @@ function Start-AutonomousDaemon([int]$IntervalSec = 10, [switch]$Headless) {
             # Tier 1: Gateway ARP & Routing Priority Enforcement
             if (-not $gwOk -or (-not $script:State.Misc['RouteProfile'] -or $script:State.Misc['RouteProfile'] -eq 'Adaptive')) {
                 Write-SentinelLog 'TIER1' "Executing Tier 1: Locking gateway ARP binding and asserting Ethernet routing priority..."
+                $ctxT1 = @{ Ad = $ad; Env = (Get-AdapterEnvironment $ad) }
                 [void](Invoke-WithLock -WaitMs 3000 {
-                    if ($script:Cfg.ArpLock) { Lock-GatewayArp $ad }
-                    Shield-RouteMetrics $ad
+                    if ($script:Cfg.ArpLock) { Shield-GatewayArp $ctxT1 $state.State }
+                    Shield-RouteMetrics $ctxT1 $state.State
                     Save-State
                 })
                 $st1 = (Get-InternetState -NoCache).State
@@ -320,15 +360,16 @@ function Start-AutonomousDaemon([int]$IntervalSec = 10, [switch]$Headless) {
             # Tier 4: DHCP Lease Re-acquisition & STP Switch Convergence
             $ip = Get-ValidIPv4 $ad
             if (-not $recovered -and (-not $ip -or $ip -like '169.254*')) {
-                Write-SentinelLog 'TIER4' ("Executing Tier 4: DHCP lease invalid (IP={0}). Forcing DHCP renew and awaiting STP convergence..." -f $(if ($ip) { $ip } else { 'None' }))
+                Write-SentinelLog 'TIER4' ("Executing Tier 4: IP lease invalid (IP={0}). Re-securing data link and awaiting STP convergence..." -f $(if ($ip) { $ip } else { 'None' }))
                 [void](Invoke-WithLock -WaitMs 10000 {
-                    Repair-Dhcp $ad
+                    $dlCtx = @{ Ad = $ad; Env = (Get-AdapterEnvironment $ad); Repaired = $false }
+                    Shield-DataLink $dlCtx
                     Wait-StpConvergence $ad ([int]$script:Cfg.StpMaxSec)
                     Save-State
                 })
                 $st4 = (Get-InternetState -NoCache).State
                 if ($st4 -eq 'Online') {
-                    $recovered = $true; $remedTier = 'Tier 4 (DHCP/STP)'
+                    $recovered = $true; $remedTier = 'Tier 4 (DataLink/STP)'
                     $script:SentinelStats.T4_Dhcp++
                 }
             }

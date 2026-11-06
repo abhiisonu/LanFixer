@@ -1,3 +1,42 @@
+    $edText = { param($b) [System.Text.Encoding]::UTF8.GetString([byte[]]$b) }
+    $edOk = ((& $edText (Expand-HttpBody $edGzBytes 'gzip')) -ceq '<form>portal-ok</form>') -and ((& $edText (Expand-HttpBody $edGzBytes '')) -ceq '<form>portal-ok</form>') -and ((& $edText (Expand-HttpBody $edRaw 'deflate')) -ceq '<form>portal-ok</form>') -and ((& $edText (Expand-HttpBody $edZlib 'deflate')) -ceq '<form>portal-ok</form>')
+    $edI = Expand-HttpBody $edPlain 'identity'
+    $edG = Expand-HttpBody ([byte[]](1, 2, 3, 4, 5)) 'gzip'
+    $edB = Expand-HttpBody $edBomb 'gzip'
+    $edSafe = ($edI.Length -eq $edPlain.Length) -and ($edG.Length -eq 5) -and ($edB.Length -eq $edBomb.Length)
+    Write-Check 'Logic: Expand-HttpBody decodes gzip, deflate and zlib bodies' $edOk
+    Write-Check 'Logic: Expand-HttpBody leaves identity or undecodable data alone and refuses a decompression bomb' $edSafe
+    $rcDef = [string](Get-Command Remove-CampusHostRoutes -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Remove-CampusHostRoutes also removes the host routes added for discovered / DHCP addresses (metric 5 only)' (($rcDef.IndexOf('InjectedHostRoutes') -ge 0) -and ($rcDef.IndexOf('RouteMetric -eq 5') -ge 0))
+    $ecDef = [string](Get-Command Ensure-CampusPortalPath -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: host routes to the configured portal/resolver are added only on the home campus and are tracked' (($ecDef.IndexOf('$cfgTargets') -ge 0) -and ($ecDef.IndexOf('$e.Home') -ge 0) -and ($ecDef.IndexOf('Add-TrackedHostRoute') -ge 0))
+    $aeDef = [string](Get-Command Get-AdapterEnvironment -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Get-AdapterEnvironment records whether the lease is the configured campus' (($aeDef.IndexOf('Get-HomeCampusVerdict') -ge 0) -and ($aeDef.IndexOf('$portalHit') -ge 0) -and ($aeDef.IndexOf('Home = $homeVerdict') -ge 0))
+    $ncDef = [string](Get-Command Set-CampusNrpt -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Set-CampusNrpt maps the configured campus domain only for the home campus' (($ncDef.IndexOf('$HomeNet') -ge 0) -and ($ncDef.IndexOf('$wantNs.Count -eq 0') -ge 0))
+    $pmDef = [string](Get-Command Shield-PathMtu -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Shield-PathMtu only measures a path that really leaves through this adapter' (($pmDef.IndexOf('Get-PathMtuForAdapter') -ge 0) -and ($pmDef.IndexOf("Get-PathMtu '9.9.9.9'") -lt 0))
+    $ovGood = ConvertTo-CfgOverride ('{"PortalIp":"10.20.30.40","CampusDns":"10.20.0.2","PortalPort":8443,"PortalHost":"Portal.Univ.EDU.","CampusDomain":"univ.edu","PortalUrl":"https://portal.univ.edu:8443/login","GwRegex":"^10\\.20\\.\\d+\\.1$","ProfileRegex":"univ|hostel"}' | ConvertFrom-Json)
+    Write-Check 'Logic: config override accepts well-formed values (and normalises host names)' (($ovGood.Count -eq 8) -and ($ovGood['PortalHost'] -ceq 'portal.univ.edu') -and ($ovGood['PortalPort'] -eq 8443) -and ($ovGood['CampusDns'] -ceq '10.20.0.2'))
+    $ovBad = ConvertTo-CfgOverride ('{"PortalIp":"999.1.1.1","CampusDns":"127.0.0.1","PortalPort":70000,"PortalHost":"not a host","CampusDomain":"","PortalUrl":"http://portal.univ.edu/","GwRegex":"([unclosed","ProfileRegex":"","Unknown":"x"}' | ConvertFrom-Json)
+    Write-Check 'Logic: config override rejects malformed, blank, non-https and unknown values' ($ovBad.Count -eq 0)
+    Write-Check 'Logic: config override can never blank a setting (empty input yields nothing)' ((ConvertTo-CfgOverride $null).Count -eq 0 -and (ConvertTo-CfgOverride ('{}' | ConvertFrom-Json)).Count -eq 0)
+    # v6.0.0 Sovereign Peak: RFC 8910 DHCP Option 114 captive URL decoder check
+    $opt114Url = 'https://login.campus.edu/portal'
+    [byte[]]$opt114Bytes = @(252, 4, 1, 2, 3, 4, 114, $opt114Url.Length) + [System.Text.Encoding]::ASCII.GetBytes($opt114Url)
+    $fakeReg = [pscustomobject]@{ DhcpInterfaceOptions = $opt114Bytes }
+    $decodedOpt114 = $null
+    if ($fakeReg.DhcpInterfaceOptions -is [byte[]]) {
+        [byte[]]$fb = $fakeReg.DhcpInterfaceOptions; $fi = 0
+        while ($fi -lt ($fb.Length - 2)) {
+            $fopt = [int]$fb[$fi]; $flen = [int]$fb[$fi + 1]
+            if ($flen -le 0 -or ($fi + 2 + $flen) -gt $fb.Length) { break }
+            if ($fopt -eq 114 -or $fopt -eq 160) {
+                try { $fstr = [System.Text.Encoding]::ASCII.GetString($fb, $fi + 2, $flen); if ($fstr -match '^https?://[^\s]+$') { $decodedOpt114 = $fstr; break } } catch {}
+            }
+            $fi += (2 + $flen)
+        }
+    }
     Write-Check 'Logic: RFC 8910 DHCP option 114 binary decoder extracts captive portal URL' ($decodedOpt114 -ceq $opt114Url)
     Write-Check 'Logic: sinkhole detector catches 192.0.2.1 and unroutable test blocks' ((Test-IsSinkholeIp '192.0.2.1') -and (Test-IsSinkholeIp '198.51.100.25') -and (Test-IsSinkholeIp '203.0.113.8') -and (Test-IsSinkholeIp '127.0.0.1') -and (-not (Test-IsSinkholeIp '142.251.43.142')) -and (-not (Test-IsSinkholeIp '1.1.1.1')))
     Write-Check 'Logic: universal DNS verdict engine neutralizes unroutable or sinkholed IPv6 and preserves genuine dual-stack' (((Get-DnsVerdictDecision $false $false 2 $false) -eq 'Neutralize') -and ((Get-DnsVerdictDecision $true $true 2 $true) -eq 'Neutralize') -and ((Get-DnsVerdictDecision $true $true 2 $false) -eq 'Keep') -and ((Get-DnsVerdictDecision $false $false 0 $false) -eq 'None'))
@@ -759,42 +798,3 @@ function Install-SentinelTask {
         Write-Log 'FAIL' 'Protected store folder unavailable. Cannot register Sentinel task.'
         return $false
     }
-    $cmdArgs = '/c ""' + $script:SelfCopy + '" -Mode Daemon -Headless -NoPause"'
-    $xml = New-SentinelTaskXml $cmdArgs
-    $ok = Register-LfTask 'LanFixer_Sentinel' $xml 'LanFixer_Sentinel.xml'
-    if ($ok) {
-        $r = Invoke-Native (Get-SysExe 'schtasks.exe') @('/run', '/tn', 'LanFixer_Sentinel') 10000
-        Write-Log 'OK' 'Lan Fixer 24/7 Autonomous Sentinel task registered and activated.'
-        Write-Log 'INFO' 'The Sentinel is now guarding your network 24/7 in the background with zero window.'
-        return $true
-    }
-    Write-Log 'FAIL' 'Failed to register LanFixer_Sentinel scheduled task.'
-    return $false
-}
-
-function Uninstall-SentinelTask {
-    if (-not (Assert-Admin)) { return $false }
-    $r1 = Invoke-Native (Get-SysExe 'schtasks.exe') @('/end', '/tn', 'LanFixer_Sentinel') 5000
-    $r2 = Invoke-Native (Get-SysExe 'schtasks.exe') @('/delete', '/tn', 'LanFixer_Sentinel', '/f') 10000
-    if ($r2.ExitCode -eq 0) {
-        Write-Log 'OK' 'Lan Fixer 24/7 Autonomous Sentinel task terminated and removed.'
-        return $true
-    }
-    Write-Log 'WARN' 'LanFixer_Sentinel task was not found or already deleted.'
-    return $true
-}
-
-function Show-SentinelLogView {
-    $logPath = Join-Path $script:StoreDir 'sentinel.log'
-    if (-not (Test-Path -LiteralPath $logPath)) {
-        Write-Log 'INFO' 'No sentinel.log file found yet.'
-        Start-Sleep -Seconds 2
-        return
-    }
-    Clear-Screen
-    Write-Banner 'SENTINEL FLIGHT RECORDER LOG (LAST 40 LINES)'
-    $lines = @(Get-Content -LiteralPath $logPath -Tail 40 -ErrorAction SilentlyContinue)
-    foreach ($l in $lines) {
-        $c = 'dim'
-        if ($l -like '*[OK   ]*') { $c = 'ok' }
-        elseif ($l -like '*[WARN ]*') { $c = 'warn' }

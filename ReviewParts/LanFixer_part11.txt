@@ -1,3 +1,42 @@
+        $optMtu = Find-OptimalPathMtu $a
+        Write-KV '  Optimal Path MTU' ("{0} bytes" -f $optMtu) $(if ($optMtu -lt 1500) { 'Yellow' } else { 'White' })
+        Write-KV 'Gateway' $(if ($h.Gateway) { "{0} ({1})" -f $h.Gateway, $(if ($null -ne $h.GwRtt) { "$($h.GwRtt) ms" } elseif ($h.GwAlive) { 'ARP ok, ping filtered' } else { 'no reply' }) } else { 'none' })
+        $ipif = Get-IPv4Interface $a
+        if ($ipif) { Write-KV 'Duplicate-address probes' ([string]$ipif.DadTransmits) }
+        $reg = Get-IfaceReg $guid
+        if ($reg) {
+            if ($reg.DhcpServer) { Write-KV 'DHCP server' ([string]$reg.DhcpServer) }
+            try {
+                if ($reg.LeaseObtainedTime) { Write-KV 'Lease obtained' ([DateTimeOffset]::FromUnixTimeSeconds([long]$reg.LeaseObtainedTime).LocalDateTime.ToString('yyyy-MM-dd HH:mm:ss')) }
+                if ($reg.LeaseTerminatesTime) { Write-KV 'Lease expires' ([DateTimeOffset]::FromUnixTimeSeconds([long]$reg.LeaseTerminatesTime).LocalDateTime.ToString('yyyy-MM-dd HH:mm:ss')) }
+            } catch {}
+        }
+        $dnsNow = @((Get-DnsClientServerAddress -InterfaceIndex $a.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses) -join ', '
+        $isStatic = (Get-StaticDnsString $guid) -ne ''
+        Write-KV 'DNS in use' ("{0} ({1})" -f $dnsNow, $(if ($isStatic) { 'static/managed' } else { 'from DHCP' }))
+        Write-KV 'DNS profile / phase' ("{0} / {1}" -f (Get-DnsProfileName), $(if ((Get-SubTable 'Dns' $guid).Phase) { (Get-SubTable 'Dns' $guid).Phase } else { '-' }))
+        foreach ($gw in @(Get-GatewaysV4 $a)) {
+            $n = Get-NetNeighbor -InterfaceIndex $a.ifIndex -IPAddress $gw -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($n) { Write-KV 'Gateway ARP entry' ("{0} -> {1} [{2}]" -f $gw, $n.LinkLayerAddress, $n.State) }
+        }
+        $prof = Get-NetConnectionProfile -InterfaceIndex $a.ifIndex -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($prof) { Write-KV 'Network / firewall profile' ("{0} / {1}" -f $prof.Name, $prof.NetworkCategory) }
+
+        Write-Section 'CONNECTIVITY & INTERNET REACHABILITY'
+        $epDiag = Get-ActivePortalEndpoint
+        $tcp = Test-TcpPort $epDiag.Ip $epDiag.Port 900
+        Write-KV ("Portal {0}:{1}" -f $epDiag.Ip, $epDiag.Port) $(if ($tcp) { 'open' } else { 'closed/hidden' })
+        $conn = [string]$h.Conn
+        $cc = $(switch ($conn) { 'Online' { 'Green' } 'Captive' { 'Yellow' } default { 'Red' } })
+        Write-KV 'Internet' $conn $cc
+        if ($conn -eq 'NoDns') { [void]$issues.Add('DNS resolution fails') }
+        if ($conn -eq 'Captive') { [void]$issues.Add('Campus login (captive portal) required') }
+        if ($conn -eq 'Offline') { [void]$issues.Add('No Internet through the gateway') }
+        $g6 = @(Get-NetIPAddress -InterfaceIndex $a.ifIndex -AddressFamily IPv6 -ErrorAction SilentlyContinue | Where-Object { [string]$_.AddressState -eq 'Preferred' -and [string]$_.IPAddress -notmatch '^(fe80|fc|fd|::1)' })
+        $r6 = @(Get-NetRoute -InterfaceIndex $a.ifIndex -AddressFamily IPv6 -DestinationPrefix '::/0' -ErrorAction SilentlyContinue)
+        $reach6 = $false
+        if ($g6.Count -gt 0 -and $r6.Count -gt 0 -and $conn -eq 'Online') { $reach6 = Test-Ipv6Reach ([string]$g6[0].IPAddress) }
+        $v6 = Get-Ipv6Verdict ($g6.Count -gt 0) ($r6.Count -gt 0) $conn $reach6
         $v6txt = switch ($v6) {
             'None'      { 'no global IPv6 address (IPv4-only link: nothing to go wrong)' }
             'NoRoute'   { 'global address but no IPv6 default route (harmless)' }
@@ -759,42 +798,3 @@ function Invoke-LogicTests {
     $edBg = New-Object System.IO.Compression.GZipStream($edMs3, [System.IO.Compression.CompressionMode]::Compress)
     $edBg.Write($edBig, 0, $edBig.Length); $edBg.Close()
     $edBomb = $edMs3.ToArray()
-    $edText = { param($b) [System.Text.Encoding]::UTF8.GetString([byte[]]$b) }
-    $edOk = ((& $edText (Expand-HttpBody $edGzBytes 'gzip')) -ceq '<form>portal-ok</form>') -and ((& $edText (Expand-HttpBody $edGzBytes '')) -ceq '<form>portal-ok</form>') -and ((& $edText (Expand-HttpBody $edRaw 'deflate')) -ceq '<form>portal-ok</form>') -and ((& $edText (Expand-HttpBody $edZlib 'deflate')) -ceq '<form>portal-ok</form>')
-    $edI = Expand-HttpBody $edPlain 'identity'
-    $edG = Expand-HttpBody ([byte[]](1, 2, 3, 4, 5)) 'gzip'
-    $edB = Expand-HttpBody $edBomb 'gzip'
-    $edSafe = ($edI.Length -eq $edPlain.Length) -and ($edG.Length -eq 5) -and ($edB.Length -eq $edBomb.Length)
-    Write-Check 'Logic: Expand-HttpBody decodes gzip, deflate and zlib bodies' $edOk
-    Write-Check 'Logic: Expand-HttpBody leaves identity or undecodable data alone and refuses a decompression bomb' $edSafe
-    $rcDef = [string](Get-Command Remove-CampusHostRoutes -ErrorAction SilentlyContinue).Definition
-    Write-Check 'Logic: Remove-CampusHostRoutes also removes the host routes added for discovered / DHCP addresses (metric 5 only)' (($rcDef.IndexOf('InjectedHostRoutes') -ge 0) -and ($rcDef.IndexOf('RouteMetric -eq 5') -ge 0))
-    $ecDef = [string](Get-Command Ensure-CampusPortalPath -ErrorAction SilentlyContinue).Definition
-    Write-Check 'Logic: host routes to the configured portal/resolver are added only on the home campus and are tracked' (($ecDef.IndexOf('$cfgTargets') -ge 0) -and ($ecDef.IndexOf('$e.Home') -ge 0) -and ($ecDef.IndexOf('Add-TrackedHostRoute') -ge 0))
-    $aeDef = [string](Get-Command Get-AdapterEnvironment -ErrorAction SilentlyContinue).Definition
-    Write-Check 'Logic: Get-AdapterEnvironment records whether the lease is the configured campus' (($aeDef.IndexOf('Get-HomeCampusVerdict') -ge 0) -and ($aeDef.IndexOf('$portalHit') -ge 0) -and ($aeDef.IndexOf('Home = $homeVerdict') -ge 0))
-    $ncDef = [string](Get-Command Set-CampusNrpt -ErrorAction SilentlyContinue).Definition
-    Write-Check 'Logic: Set-CampusNrpt maps the configured campus domain only for the home campus' (($ncDef.IndexOf('$HomeNet') -ge 0) -and ($ncDef.IndexOf('$wantNs.Count -eq 0') -ge 0))
-    $pmDef = [string](Get-Command Shield-PathMtu -ErrorAction SilentlyContinue).Definition
-    Write-Check 'Logic: Shield-PathMtu only measures a path that really leaves through this adapter' (($pmDef.IndexOf('Get-PathMtuForAdapter') -ge 0) -and ($pmDef.IndexOf("Get-PathMtu '9.9.9.9'") -lt 0))
-    $ovGood = ConvertTo-CfgOverride ('{"PortalIp":"10.20.30.40","CampusDns":"10.20.0.2","PortalPort":8443,"PortalHost":"Portal.Univ.EDU.","CampusDomain":"univ.edu","PortalUrl":"https://portal.univ.edu:8443/login","GwRegex":"^10\\.20\\.\\d+\\.1$","ProfileRegex":"univ|hostel"}' | ConvertFrom-Json)
-    Write-Check 'Logic: config override accepts well-formed values (and normalises host names)' (($ovGood.Count -eq 8) -and ($ovGood['PortalHost'] -ceq 'portal.univ.edu') -and ($ovGood['PortalPort'] -eq 8443) -and ($ovGood['CampusDns'] -ceq '10.20.0.2'))
-    $ovBad = ConvertTo-CfgOverride ('{"PortalIp":"999.1.1.1","CampusDns":"127.0.0.1","PortalPort":70000,"PortalHost":"not a host","CampusDomain":"","PortalUrl":"http://portal.univ.edu/","GwRegex":"([unclosed","ProfileRegex":"","Unknown":"x"}' | ConvertFrom-Json)
-    Write-Check 'Logic: config override rejects malformed, blank, non-https and unknown values' ($ovBad.Count -eq 0)
-    Write-Check 'Logic: config override can never blank a setting (empty input yields nothing)' ((ConvertTo-CfgOverride $null).Count -eq 0 -and (ConvertTo-CfgOverride ('{}' | ConvertFrom-Json)).Count -eq 0)
-    # v6.0.0 Sovereign Peak: RFC 8910 DHCP Option 114 captive URL decoder check
-    $opt114Url = 'https://login.campus.edu/portal'
-    [byte[]]$opt114Bytes = @(252, 4, 1, 2, 3, 4, 114, $opt114Url.Length) + [System.Text.Encoding]::ASCII.GetBytes($opt114Url)
-    $fakeReg = [pscustomobject]@{ DhcpInterfaceOptions = $opt114Bytes }
-    $decodedOpt114 = $null
-    if ($fakeReg.DhcpInterfaceOptions -is [byte[]]) {
-        [byte[]]$fb = $fakeReg.DhcpInterfaceOptions; $fi = 0
-        while ($fi -lt ($fb.Length - 2)) {
-            $fopt = [int]$fb[$fi]; $flen = [int]$fb[$fi + 1]
-            if ($flen -le 0 -or ($fi + 2 + $flen) -gt $fb.Length) { break }
-            if ($fopt -eq 114 -or $fopt -eq 160) {
-                try { $fstr = [System.Text.Encoding]::ASCII.GetString($fb, $fi + 2, $flen); if ($fstr -match '^https?://[^\s]+$') { $decodedOpt114 = $fstr; break } } catch {}
-            }
-            $fi += (2 + $flen)
-        }
-    }

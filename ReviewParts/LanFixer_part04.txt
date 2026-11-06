@@ -1,3 +1,18 @@
+                $right = ('Eth ' + $t.Speed + ' (Primary) ' + $script:G.mid + ' Uplink: ' + $uLabel)
+            }
+        } else {
+            $right = ('Ethernet ' + $script:G.mid + ' ' + $t.Speed)
+        }
+    } elseif ($t.Problem) {
+        if ($t.UplinkActive -and $t.UplinkName) {
+            $uLabel = if ($t.UplinkProfile) { "$($t.UplinkName) ($($t.UplinkProfile))" } else { $t.UplinkName }
+            $right = ('Ethernet (Down) ' + $script:G.mid + ' Uplink: ' + $uLabel)
+        } else {
+            $right = 'Ethernet (Down)'
+        }
+    }
+    $heroL = @((Seg 'faint' '  ['), (Seg ($adv.Role + '!') (' ' + $script:G.dot + ' ' + $adv.Word.ToUpper() + ' ')), (Seg 'faint' ']'))
+    $maxRightLen = [Math]::Max(10, ($w + 2) - (Get-SegsLength $heroL) - 2)
     if ($right.Length -gt $maxRightLen) {
         if ($t.UplinkActive -and $t.UplinkName) {
             $tag = if ($t.UplinkIsPrimary) { '(Standby)' } else { '(Primary)' }
@@ -783,18 +798,3 @@ function Get-InternetState {
                 if ($webResp) {
                     $c = [int]$webResp.StatusCode
                     if (($c -ge 300 -and $c -le 399) -or $c -eq 401 -or $c -eq 407 -or $c -eq 511 -or [bool]$webResp.Headers['Location']) {
-                        $state = 'Captive'; $via = 'system'
-                        $p1 = @{ Code = $c; Location = [string]$webResp.Headers['Location'] }
-                    }
-                    try { $webResp.Close() } catch {}
-                }
-            } catch {}
-        }
-    }
-    $loc = ''
-    if ($state -eq 'Captive') {
-        if ($p1.Location) { $loc = [string]$p1.Location } elseif ($p2.Location) { $loc = [string]$p2.Location }
-        if ($loc -and -not $script:IsDry -and $script:State -is [hashtable] -and $script:State.Misc -is [hashtable]) {
-            try {
-                $lu = [uri]$loc
-                if ($lu.IsAbsoluteUri -and ($lu.Scheme -eq 'http' -or $lu.Scheme -eq 'https')) {

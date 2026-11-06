@@ -1,3 +1,17 @@
+
+# One HTTPS exchange. Source-bound to the Ethernet IP, TLS 1.2, bounded time and size, no proxy, no auto-redirect.
+function Invoke-TlsHttp {
+    param([uri]$Uri, [string]$Method = 'GET', [string]$Body = '', [string]$SourceIp = '', [string]$Pin = '', [hashtable]$Jar, [int]$TimeoutMs = 6000, [int]$MaxBytes = 262144, $Capture = $null, [switch]$HandshakeOnly)
+    $r = @{ Code = 0; Headers = @{}; Body = ''; Location = ''; Error = ''; Sha256 = ''; TlsErrors = '' }
+    $sock = $null; $ssl = $null
+    try {
+        $hostName = [string]$Uri.Host
+        $ip = ''
+        $tmp = $null
+        if ([System.Net.IPAddress]::TryParse($hostName, [ref]$tmp)) { $ip = $hostName } else { $ip = Resolve-HostBounded $hostName 2500 $SourceIp }
+        if (-not $ip) { $r.Error = 'DnsFail'; return $r }
+        # Verify IP is allowed campus IP (private RFC1918, CGNAT, configured portal IP, or local gateway)
+        if (-not (Test-AllowedPortalIp $ip)) { $r.Error = 'NotPrivate'; return $r }
         $sock = New-Object System.Net.Sockets.Socket([System.Net.Sockets.AddressFamily]::InterNetwork, [System.Net.Sockets.SocketType]::Stream, [System.Net.Sockets.ProtocolType]::Tcp)
         if ($SourceIp) {
             try { $sock.Bind((New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Parse($SourceIp), 0))) } catch { $r.Error = 'BindFailure'; return $r }
@@ -86,9 +100,10 @@
         }
     } catch { $r.Error = 'Error' }
     finally {
+        if ($iar -and $iar.AsyncWaitHandle) { try { $iar.AsyncWaitHandle.Close() } catch {} }
         if ($ms) { try { $ms.Dispose() } catch {} }
         if ($ssl) { try { $ssl.Dispose() } catch {} }
-        if ($sock) { try { $sock.Close() } catch {} }
+        if ($sock) { try { $sock.Close(); $sock.Dispose() } catch {} }
     }
     return $r
 }
@@ -783,18 +798,3 @@ function Get-DashboardModel($t, $adv, [int]$Width = 0) {
             if ($t.UplinkIsPrimary) {
                 $right = ('Eth ' + $t.Speed + ' (Standby) ' + $script:G.mid + ' Uplink: ' + $uLabel)
             } else {
-                $right = ('Eth ' + $t.Speed + ' (Primary) ' + $script:G.mid + ' Uplink: ' + $uLabel)
-            }
-        } else {
-            $right = ('Ethernet ' + $script:G.mid + ' ' + $t.Speed)
-        }
-    } elseif ($t.Problem) {
-        if ($t.UplinkActive -and $t.UplinkName) {
-            $uLabel = if ($t.UplinkProfile) { "$($t.UplinkName) ($($t.UplinkProfile))" } else { $t.UplinkName }
-            $right = ('Ethernet (Down) ' + $script:G.mid + ' Uplink: ' + $uLabel)
-        } else {
-            $right = 'Ethernet (Down)'
-        }
-    }
-    $heroL = @((Seg 'faint' '  ['), (Seg ($adv.Role + '!') (' ' + $script:G.dot + ' ' + $adv.Word.ToUpper() + ' ')), (Seg 'faint' ']'))
-    $maxRightLen = [Math]::Max(10, ($w + 2) - (Get-SegsLength $heroL) - 2)

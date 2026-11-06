@@ -903,8 +903,15 @@ function Test-Ping([string]$Target, [int]$TimeoutMs = 800) {
     } catch {} finally { $p.Dispose() }
     return $null
 }
+function Test-LatencySample([string]$Target, [int]$TimeoutMs = 800) {
+    if (-not $Target) { return -1 }
+    $rtt = Test-Ping $Target $TimeoutMs
+    if ($null -ne $rtt) { return [int]$rtt }
+    return -1
+}
 function Test-TcpPort([string]$Address, [int]$Port, [int]$TimeoutMs = 800, [string]$SourceIp = '') {
     $c = $null
+    $iar = $null
     try {
         if ($SourceIp -and $SourceIp -ne '0.0.0.0' -and $SourceIp -notlike '169.254.*') {
             $ep = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Parse($SourceIp), 0)
@@ -915,7 +922,11 @@ function Test-TcpPort([string]$Address, [int]$Port, [int]$TimeoutMs = 800, [stri
         $iar = $c.BeginConnect($Address, $Port, $null, $null)
         if ($iar.AsyncWaitHandle.WaitOne($TimeoutMs, $false) -and $c.Connected) { $c.EndConnect($iar); return $true }
         return $false
-    } catch { return $false } finally { if ($c) { try { $c.Close() } catch {} } }
+    } catch { return $false }
+    finally {
+        if ($iar -and $iar.AsyncWaitHandle) { try { $iar.AsyncWaitHandle.Close() } catch {} }
+        if ($c) { try { $c.Close(); $c.Dispose() } catch {} }
+    }
 }
 # Parses the ANSWER section of a DNS response and returns ONLY IPv4 A records, in wire order.
 # Pure (no sockets, no state): this is what unit tests feed synthetic packets to.
@@ -1215,7 +1226,10 @@ function Invoke-HttpProbe([string]$HostName, [string]$Path, [int]$TimeoutMs = 25
         $r.Code = $p.Code; $r.Body = $p.Body; $r.Location = $p.Location
         if ($r.Code -eq 0) { $r.Error = 'BadResponse' }
     } catch { $r.Error = $_.Exception.Message }
-    finally { try { $sock.Close() } catch {} }
+    finally {
+        if ($iar -and $iar.AsyncWaitHandle) { try { $iar.AsyncWaitHandle.Close() } catch {} }
+        if ($sock) { try { $sock.Close(); $sock.Dispose() } catch {} }
+    }
     return $r
 }
 # Pure classifier (unit-tested in SelfTest).
@@ -1686,9 +1700,10 @@ function Invoke-TlsHttp {
         }
     } catch { $r.Error = 'Error' }
     finally {
+        if ($iar -and $iar.AsyncWaitHandle) { try { $iar.AsyncWaitHandle.Close() } catch {} }
         if ($ms) { try { $ms.Dispose() } catch {} }
         if ($ssl) { try { $ssl.Dispose() } catch {} }
-        if ($sock) { try { $sock.Close() } catch {} }
+        if ($sock) { try { $sock.Close(); $sock.Dispose() } catch {} }
     }
     return $r
 }
@@ -3321,6 +3336,12 @@ function Get-GatewaysV4($Ad) {
     return @(Get-NetRoute -InterfaceIndex $Ad.ifIndex -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue |
         Where-Object { $_.NextHop -and $_.NextHop -ne '0.0.0.0' } | ForEach-Object { [string]$_.NextHop } | Select-Object -Unique)
 }
+function Get-DefaultGateway($Ad) {
+    if (-not $Ad) { return $null }
+    $gws = @(Get-GatewaysV4 $Ad)
+    if ($gws.Count -gt 0) { return [string]$gws[0] }
+    return $null
+}
 function Get-ValidIPv4($Ad) {
     $x = Get-NetIPAddress -InterfaceIndex $Ad.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue |
          Where-Object { $_.IPAddress -notlike '169.254.*' -and $_.AddressState -eq 'Preferred' } | Select-Object -First 1
@@ -3821,7 +3842,7 @@ function Wait-StpConvergence($Ad, [int]$MaxWaitSec = 45) {
                 }
             }
         }
-        Start-Sleep -Milliseconds 1000
+        Start-Sleep -Milliseconds 350
     }
     $sw.Stop()
     if ($converged) {
@@ -4038,6 +4059,11 @@ function Release-ArpLocks($Ad) {
     foreach ($gw in @($t.Keys)) {
         [void](Invoke-Change "Gateway ARP lock released: $gw" { Remove-GatewayLock $Ad $gw })
     }
+}
+function Lock-GatewayArp($Ad) {
+    if (-not $Ad) { return }
+    $ctx = @{ Ad = $Ad; Env = (Get-AdapterEnvironment $Ad) }
+    Shield-GatewayArp $ctx 'Online'
 }
 function Shield-GatewayArp($Ctx, [string]$ConnState) {
     if (-not $script:Cfg.ArpLock) { return }
@@ -4266,7 +4292,12 @@ function Get-RouteMetricPlan([string]$EnvName, [string]$ConnState, [int]$OtherCo
 }
 function Shield-RouteMetrics($Ctx, [string]$ConnState) {
     if (-not $script:Cfg.ManageMetrics) { return }
+    if ($Ctx -and -not $Ctx.Ad -and ($Ctx.InterfaceIndex -or $Ctx.InterfaceGuid)) {
+        $Ctx = @{ Ad = $Ctx; Env = (Get-AdapterEnvironment $Ctx) }
+    }
+    if (-not $ConnState) { $ConnState = (Get-InternetState -NoCache).State }
     $ad = $Ctx.Ad
+    if (-not $ad) { return }
     $others = @(Get-OtherUplinkAdapters)
     $plan = Get-RouteMetricPlan ([string]$Ctx.Env.Env) $ConnState $others.Count
     if ($plan.Mode -eq 'Restore') {
@@ -4357,34 +4388,37 @@ function Measure-ResolversFast([string[]]$Servers, [int]$TimeoutMs = 600, [int]$
             } catch { if ($u) { try { $u.Close() } catch {} } }
         }
         $clock = [System.Diagnostics.Stopwatch]::StartNew()
-        while ($pending.Count -gt 0 -and $clock.ElapsedMilliseconds -lt $budget) {
-            $slice = [int][math]::Min(25, [math]::Max(1, $budget - $clock.ElapsedMilliseconds))
-            $rl = New-Object System.Collections.ArrayList
-            foreach ($s in $pending.Keys) { [void]$rl.Add($pending[$s].U.Client) }
-            try { [System.Net.Sockets.Socket]::Select($rl, $null, $null, ($slice * 1000)) } catch { $rl.Clear(); Start-Sleep -Milliseconds 2 }
-            foreach ($s in @($pending.Keys)) {
-                $p = $pending[$s]
-                if ($rl.Contains($p.U.Client)) {
-                    $ms = $p.SW.Elapsed.TotalMilliseconds
-                    $ep = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Any, 0)
-                    try {
-                        $resp = $p.U.Receive([ref]$ep)
-                        # must be OUR transaction id, a response (QR=1) and NOERROR, NXDOMAIN or REFUSED (pre-auth captive liveness)
-                        $rcode = ($resp[3] -band 15)
-                        if ($resp.Length -ge 12 -and $resp[0] -eq $hi -and $resp[1] -eq $lo -and (($resp[2] -band 128) -ne 0) -and ($rcode -eq 0 -or $rcode -eq 3 -or $rcode -eq 5)) {
-                            $times[$s] += [int][math]::Round($ms)
-                        }
-                    } catch {}   # refused / reset: counts as no answer, immediately
-                    try { $p.U.Close() } catch {}
-                    $pending.Remove($s)
-                    continue
+        try {
+            while ($pending.Count -gt 0 -and $clock.ElapsedMilliseconds -lt $budget) {
+                $slice = [int][math]::Min(25, [math]::Max(1, $budget - $clock.ElapsedMilliseconds))
+                $rl = New-Object System.Collections.ArrayList
+                foreach ($s in $pending.Keys) { [void]$rl.Add($pending[$s].U.Client) }
+                try { [System.Net.Sockets.Socket]::Select($rl, $null, $null, ($slice * 1000)) } catch { $rl.Clear(); Start-Sleep -Milliseconds 2 }
+                foreach ($s in @($pending.Keys)) {
+                    $p = $pending[$s]
+                    if ($rl.Contains($p.U.Client)) {
+                        $ms = $p.SW.Elapsed.TotalMilliseconds
+                        $ep = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Any, 0)
+                        try {
+                            $resp = $p.U.Receive([ref]$ep)
+                            # must be OUR transaction id, a response (QR=1) and NOERROR, NXDOMAIN or REFUSED (pre-auth captive liveness)
+                            $rcode = ($resp[3] -band 15)
+                            if ($resp.Length -ge 12 -and $resp[0] -eq $hi -and $resp[1] -eq $lo -and (($resp[2] -band 128) -ne 0) -and ($rcode -eq 0 -or $rcode -eq 3 -or $rcode -eq 5)) {
+                                $times[$s] += [int][math]::Round($ms)
+                            }
+                        } catch {}   # refused / reset: counts as no answer, immediately
+                        try { $p.U.Close() } catch {}
+                        $pending.Remove($s)
+                        continue
+                    }
+                    $refused = $false
+                    try { if ([int]$p.U.Client.GetSocketOption([System.Net.Sockets.SocketOptionLevel]::Socket, [System.Net.Sockets.SocketOptionName]::Error) -ne 0) { $refused = $true } } catch {}
+                    if ($refused) { try { $p.U.Close() } catch {}; $pending.Remove($s) }   # reading SO_ERROR clears it: never Receive after this
                 }
-                $refused = $false
-                try { if ([int]$p.U.Client.GetSocketOption([System.Net.Sockets.SocketOptionLevel]::Socket, [System.Net.Sockets.SocketOptionName]::Error) -ne 0) { $refused = $true } } catch {}
-                if ($refused) { try { $p.U.Close() } catch {}; $pending.Remove($s) }   # reading SO_ERROR clears it: never Receive after this
             }
+        } finally {
+            foreach ($s in @($pending.Keys)) { try { $pending[$s].U.Close() } catch {} }
         }
-        foreach ($s in @($pending.Keys)) { try { $pending[$s].U.Close() } catch {} }
         $alive = @($alive | Where-Object { ($round - $times[$_].Count) -lt 2 })   # tolerate one cold-cache miss, then stop
     }
     foreach ($s in $Servers) {
@@ -7725,6 +7759,11 @@ function Restore-Everything {
         [void](Invoke-Change 'Windows Firewall rules restored from pre-reset backup' {
             [void](Invoke-Native (Get-SysExe 'netsh.exe') @('advfirewall', 'import', $fwBackup) 8000)
         })
+    } else {
+        [void](Invoke-Change 'Windows Firewall restored to factory default policy' {
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('advfirewall', 'reset') 5000)
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('advfirewall', 'set', 'allprofiles', 'state', 'on') 5000)
+        })
     }
 
     # 11. Restore NCSI Active Probing Settings to Windows Defaults
@@ -9714,8 +9753,8 @@ function Wait-SentinelCadence([int]$Seconds, [bool]$Interactive) {
             Write-SentinelLog 'EVENT' "Reactive event: Network change detected via .NET kernel event! Resuming immediately."
             break
         }
-        if ($Interactive -and [Console]::KeyAvailable) {
-            $k = [Console]::ReadKey($true)
+        if ($Interactive -and (Test-KeyAvailable)) {
+            $k = Read-KeyNow
             if ($k.KeyChar -eq 'q' -or $k.KeyChar -eq 'Q' -or $k.Key -eq [ConsoleKey]::Escape) {
                 $script:SentinelRunning = $false
                 break
@@ -9862,9 +9901,10 @@ function Start-AutonomousDaemon([int]$IntervalSec = 10, [switch]$Headless) {
             # Tier 1: Gateway ARP & Routing Priority Enforcement
             if (-not $gwOk -or (-not $script:State.Misc['RouteProfile'] -or $script:State.Misc['RouteProfile'] -eq 'Adaptive')) {
                 Write-SentinelLog 'TIER1' "Executing Tier 1: Locking gateway ARP binding and asserting Ethernet routing priority..."
+                $ctxT1 = @{ Ad = $ad; Env = (Get-AdapterEnvironment $ad) }
                 [void](Invoke-WithLock -WaitMs 3000 {
-                    if ($script:Cfg.ArpLock) { Lock-GatewayArp $ad }
-                    Shield-RouteMetrics $ad
+                    if ($script:Cfg.ArpLock) { Shield-GatewayArp $ctxT1 $state.State }
+                    Shield-RouteMetrics $ctxT1 $state.State
                     Save-State
                 })
                 $st1 = (Get-InternetState -NoCache).State
@@ -9920,15 +9960,16 @@ function Start-AutonomousDaemon([int]$IntervalSec = 10, [switch]$Headless) {
             # Tier 4: DHCP Lease Re-acquisition & STP Switch Convergence
             $ip = Get-ValidIPv4 $ad
             if (-not $recovered -and (-not $ip -or $ip -like '169.254*')) {
-                Write-SentinelLog 'TIER4' ("Executing Tier 4: DHCP lease invalid (IP={0}). Forcing DHCP renew and awaiting STP convergence..." -f $(if ($ip) { $ip } else { 'None' }))
+                Write-SentinelLog 'TIER4' ("Executing Tier 4: IP lease invalid (IP={0}). Re-securing data link and awaiting STP convergence..." -f $(if ($ip) { $ip } else { 'None' }))
                 [void](Invoke-WithLock -WaitMs 10000 {
-                    Repair-Dhcp $ad
+                    $dlCtx = @{ Ad = $ad; Env = (Get-AdapterEnvironment $ad); Repaired = $false }
+                    Shield-DataLink $dlCtx
                     Wait-StpConvergence $ad ([int]$script:Cfg.StpMaxSec)
                     Save-State
                 })
                 $st4 = (Get-InternetState -NoCache).State
                 if ($st4 -eq 'Online') {
-                    $recovered = $true; $remedTier = 'Tier 4 (DHCP/STP)'
+                    $recovered = $true; $remedTier = 'Tier 4 (DataLink/STP)'
                     $script:SentinelStats.T4_Dhcp++
                 }
             }

@@ -103,8 +103,15 @@ function Test-Ping([string]$Target, [int]$TimeoutMs = 800) {
     } catch {} finally { $p.Dispose() }
     return $null
 }
+function Test-LatencySample([string]$Target, [int]$TimeoutMs = 800) {
+    if (-not $Target) { return -1 }
+    $rtt = Test-Ping $Target $TimeoutMs
+    if ($null -ne $rtt) { return [int]$rtt }
+    return -1
+}
 function Test-TcpPort([string]$Address, [int]$Port, [int]$TimeoutMs = 800, [string]$SourceIp = '') {
     $c = $null
+    $iar = $null
     try {
         if ($SourceIp -and $SourceIp -ne '0.0.0.0' -and $SourceIp -notlike '169.254.*') {
             $ep = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Parse($SourceIp), 0)
@@ -115,7 +122,11 @@ function Test-TcpPort([string]$Address, [int]$Port, [int]$TimeoutMs = 800, [stri
         $iar = $c.BeginConnect($Address, $Port, $null, $null)
         if ($iar.AsyncWaitHandle.WaitOne($TimeoutMs, $false) -and $c.Connected) { $c.EndConnect($iar); return $true }
         return $false
-    } catch { return $false } finally { if ($c) { try { $c.Close() } catch {} } }
+    } catch { return $false }
+    finally {
+        if ($iar -and $iar.AsyncWaitHandle) { try { $iar.AsyncWaitHandle.Close() } catch {} }
+        if ($c) { try { $c.Close(); $c.Dispose() } catch {} }
+    }
 }
 # Parses the ANSWER section of a DNS response and returns ONLY IPv4 A records, in wire order.
 # Pure (no sockets, no state): this is what unit tests feed synthetic packets to.
@@ -415,7 +426,10 @@ function Invoke-HttpProbe([string]$HostName, [string]$Path, [int]$TimeoutMs = 25
         $r.Code = $p.Code; $r.Body = $p.Body; $r.Location = $p.Location
         if ($r.Code -eq 0) { $r.Error = 'BadResponse' }
     } catch { $r.Error = $_.Exception.Message }
-    finally { try { $sock.Close() } catch {} }
+    finally {
+        if ($iar -and $iar.AsyncWaitHandle) { try { $iar.AsyncWaitHandle.Close() } catch {} }
+        if ($sock) { try { $sock.Close(); $sock.Dispose() } catch {} }
+    }
     return $r
 }
 # Pure classifier (unit-tested in SelfTest).
@@ -784,17 +798,3 @@ function ConvertFrom-HttpBytes([byte[]]$Raw) {
     $r.Body = [System.Text.Encoding]::UTF8.GetString($bodyBytes)
     return $r
 }
-
-# One HTTPS exchange. Source-bound to the Ethernet IP, TLS 1.2, bounded time and size, no proxy, no auto-redirect.
-function Invoke-TlsHttp {
-    param([uri]$Uri, [string]$Method = 'GET', [string]$Body = '', [string]$SourceIp = '', [string]$Pin = '', [hashtable]$Jar, [int]$TimeoutMs = 6000, [int]$MaxBytes = 262144, $Capture = $null, [switch]$HandshakeOnly)
-    $r = @{ Code = 0; Headers = @{}; Body = ''; Location = ''; Error = ''; Sha256 = ''; TlsErrors = '' }
-    $sock = $null; $ssl = $null
-    try {
-        $hostName = [string]$Uri.Host
-        $ip = ''
-        $tmp = $null
-        if ([System.Net.IPAddress]::TryParse($hostName, [ref]$tmp)) { $ip = $hostName } else { $ip = Resolve-HostBounded $hostName 2500 $SourceIp }
-        if (-not $ip) { $r.Error = 'DnsFail'; return $r }
-        # Verify IP is allowed campus IP (private RFC1918, CGNAT, configured portal IP, or local gateway)
-        if (-not (Test-AllowedPortalIp $ip)) { $r.Error = 'NotPrivate'; return $r }

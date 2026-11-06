@@ -1,3 +1,37 @@
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'tcp', 'set', 'global', 'initialrto=3000') 5000)
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'tcp', 'set', 'global', 'nonsackrttresiliency=disabled') 5000)
+
+            # Disable legacy IPv6 transition tunnel interfaces that cause campus blackholing
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'teredo', 'set', 'state', 'disabled') 5000)
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'isatap', 'set', 'state', 'disabled') 5000)
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', '6to4', 'set', 'state', 'disabled') 5000)
+
+            # Flush HTTP driver internal log buffers
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('http', 'flush', 'logbuffer') 5000)
+        }
+
+        # ----------------------------------------------------------------------
+        # STAGE 4/10: ROUTING TABLE PURGE, PORTPROXY RESET & ACCIDENTAL BRIDGE DESTRUCTION
+        # ----------------------------------------------------------------------
+        Write-Log 'STEP' 'STAGE 4/10  Purging routing table (route -f), portproxy, destination caches & rogue bridges'
+        if ($script:IsDry) {
+            Write-Log 'DRY' 'Would execute: route -f (purge all routes and gateways)'
+            Write-Log 'DRY' 'Would delete IPv4 & IPv6 destination caches'
+            Write-Log 'DRY' 'Would execute: netsh interface portproxy reset & netsh interface httpstunnel reset'
+            Write-Log 'DRY' 'Would destroy accidental network bridges via netsh bridge'
+            Write-Log 'DRY' 'Would execute: netsh advfirewall reset & enable all profiles'
+        } else {
+            # Purge all non-interface, non-loopback routes
+            [void](Invoke-Native (Get-SysExe 'route.exe') @('-f') 5000)
+
+            # Delete IPv4 and IPv6 kernel destination caches
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'ip', 'delete', 'destinationcache') 5000)
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'ipv6', 'delete', 'destinationcache') 5000)
+
+            # Reset Windows port forwarding (PortProxy) and IP-HTTPS tunnels to defeat hijacked developer/emulator port redirects
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('interface', 'portproxy', 'reset') 5000)
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('interface', 'httpstunnel', 'reset') 5000)
+
             # Destroy accidental/rogue network bridges that create packet loops or isolate the physical NIC
             try {
                 $brOut = Invoke-Native (Get-SysExe 'netsh.exe') @('bridge', 'list') 5000
@@ -764,37 +798,3 @@ function Invoke-DoomsdayReset {
         }
         if ($anyVerifyFail -and -not $script:IsDry -and ($resHeal.Conn -ne 'Captive')) {
             Write-Log 'WARN' 'DNS resolution failed for public endpoints. Deploying adaptive public DNS rescue...'
-            foreach ($ad in @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' })) {
-                $rescueDns = @(Get-BestDnsOrder ([string]$ad.InterfaceGuid) @())
-                if ($rescueDns.Count -gt 0) {
-                    Write-Log 'INFO' "Applying active public DNS rescue on $($ad.Name): $($rescueDns -join ', ')..."
-                    [void](Set-AdapterDns $ad $rescueDns)
-                }
-            }
-            Clear-DnsClientCache -ErrorAction SilentlyContinue
-            [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/flushdns') 5000)
-            foreach ($testHost in @('github.com', 'accounts.google.com')) {
-                $ip = Resolve-HostBounded $testHost 3000 $primarySrc
-                if ($ip) {
-                    $tcpOk = Test-TcpPort $ip 443 2500 $primarySrc
-                    Write-Log ($(if ($tcpOk) { 'OK' } else { 'WARN' })) ("Re-verified {0} -> {1} (TCP/443: {2})" -f $testHost, $ip, $(if ($tcpOk) { 'OPEN' } else { 'BLOCKED' }))
-                }
-            }
-        }
-        Save-State
-        $resHeal
-    })
-    $swDoom.Stop()
-    Write-HealSummary $r $swDoom
-    if ($r -and $r.Conn -eq 'Captive' -and -not $script:IsDry) {
-        [void](Invoke-WithLock { [void](Open-Portal); Save-State })
-        if ($script:UiOn -and (Get-InternetState -NoCache).State -eq 'Captive') {
-            Out-Line @((Seg 'dim' '  Sign in on the page that opened; the fast DNS path is applied for you afterwards.'))
-            if (Wait-ForAuthentication 180) { Complete-Authentication; Write-Log 'OK' 'Signed in. Post-login DNS applied.' }
-        }
-    }
-}
-
-# ==============================================================================
-# ARMAGEDDON SYSTEM RESET - KERNEL PROTOCOL & NETWORK ADAPTER REINSTALL WEAPON
-# ==============================================================================

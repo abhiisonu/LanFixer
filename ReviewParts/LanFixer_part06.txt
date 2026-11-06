@@ -1,3 +1,24 @@
+                })
+            }
+            $script:EnvCache.Remove($guid)
+            $Ctx.Env = Get-AdapterEnvironment $ad
+        }
+    }
+    if (-not (Get-ValidIPv4 $ad)) {
+        $Ctx.Repaired = (Repair-Dhcp $ad)
+        $script:EnvCache.Remove($guid)
+        $Ctx.Env = Get-AdapterEnvironment $ad
+    } elseif ($ipif -and [string]$ipif.Dhcp -eq 'Enabled') {
+        $curGw = @(Get-GatewaysV4 $ad) | Select-Object -First 1
+        $gwOk = if ($curGw) { (Test-GatewayAlive $ad $curGw).Alive } else { $false }
+        if (-not $gwOk) {
+            Write-Log 'WARN' "IPv4 lease is present on $($ad.Name), but default gateway is $(if ($curGw) { "$curGw (unreachable)" } else { 'missing' }). Refreshing DHCP lease..."
+            $Ctx.Repaired = (Repair-Dhcp $ad -ForceRelease)
+            $script:EnvCache.Remove($guid)
+            $Ctx.Env = Get-AdapterEnvironment $ad
+        }
+    }
+    $validIp = Get-ValidIPv4 $ad
     if ($validIp -and $Ctx.Env.Env -eq 'Campus' -and -not $script:IsDry) {
         $gw = @(Get-GatewaysV4 $ad) | Select-Object -First 1
         if ($gw) { $script:State.Misc['LastCampusLease'] = @{ Ip = [string]$validIp; Gateway = [string]$gw; Time = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss') } }
@@ -38,6 +59,11 @@ function Release-ArpLocks($Ad) {
     foreach ($gw in @($t.Keys)) {
         [void](Invoke-Change "Gateway ARP lock released: $gw" { Remove-GatewayLock $Ad $gw })
     }
+}
+function Lock-GatewayArp($Ad) {
+    if (-not $Ad) { return }
+    $ctx = @{ Ad = $Ad; Env = (Get-AdapterEnvironment $Ad) }
+    Shield-GatewayArp $ctx 'Online'
 }
 function Shield-GatewayArp($Ctx, [string]$ConnState) {
     if (-not $script:Cfg.ArpLock) { return }
@@ -266,7 +292,12 @@ function Get-RouteMetricPlan([string]$EnvName, [string]$ConnState, [int]$OtherCo
 }
 function Shield-RouteMetrics($Ctx, [string]$ConnState) {
     if (-not $script:Cfg.ManageMetrics) { return }
+    if ($Ctx -and -not $Ctx.Ad -and ($Ctx.InterfaceIndex -or $Ctx.InterfaceGuid)) {
+        $Ctx = @{ Ad = $Ctx; Env = (Get-AdapterEnvironment $Ctx) }
+    }
+    if (-not $ConnState) { $ConnState = (Get-InternetState -NoCache).State }
     $ad = $Ctx.Ad
+    if (-not $ad) { return }
     $others = @(Get-OtherUplinkAdapters)
     $plan = Get-RouteMetricPlan ([string]$Ctx.Env.Env) $ConnState $others.Count
     if ($plan.Mode -eq 'Restore') {
@@ -357,34 +388,37 @@ function Measure-ResolversFast([string[]]$Servers, [int]$TimeoutMs = 600, [int]$
             } catch { if ($u) { try { $u.Close() } catch {} } }
         }
         $clock = [System.Diagnostics.Stopwatch]::StartNew()
-        while ($pending.Count -gt 0 -and $clock.ElapsedMilliseconds -lt $budget) {
-            $slice = [int][math]::Min(25, [math]::Max(1, $budget - $clock.ElapsedMilliseconds))
-            $rl = New-Object System.Collections.ArrayList
-            foreach ($s in $pending.Keys) { [void]$rl.Add($pending[$s].U.Client) }
-            try { [System.Net.Sockets.Socket]::Select($rl, $null, $null, ($slice * 1000)) } catch { $rl.Clear(); Start-Sleep -Milliseconds 2 }
-            foreach ($s in @($pending.Keys)) {
-                $p = $pending[$s]
-                if ($rl.Contains($p.U.Client)) {
-                    $ms = $p.SW.Elapsed.TotalMilliseconds
-                    $ep = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Any, 0)
-                    try {
-                        $resp = $p.U.Receive([ref]$ep)
-                        # must be OUR transaction id, a response (QR=1) and NOERROR, NXDOMAIN or REFUSED (pre-auth captive liveness)
-                        $rcode = ($resp[3] -band 15)
-                        if ($resp.Length -ge 12 -and $resp[0] -eq $hi -and $resp[1] -eq $lo -and (($resp[2] -band 128) -ne 0) -and ($rcode -eq 0 -or $rcode -eq 3 -or $rcode -eq 5)) {
-                            $times[$s] += [int][math]::Round($ms)
-                        }
-                    } catch {}   # refused / reset: counts as no answer, immediately
-                    try { $p.U.Close() } catch {}
-                    $pending.Remove($s)
-                    continue
+        try {
+            while ($pending.Count -gt 0 -and $clock.ElapsedMilliseconds -lt $budget) {
+                $slice = [int][math]::Min(25, [math]::Max(1, $budget - $clock.ElapsedMilliseconds))
+                $rl = New-Object System.Collections.ArrayList
+                foreach ($s in $pending.Keys) { [void]$rl.Add($pending[$s].U.Client) }
+                try { [System.Net.Sockets.Socket]::Select($rl, $null, $null, ($slice * 1000)) } catch { $rl.Clear(); Start-Sleep -Milliseconds 2 }
+                foreach ($s in @($pending.Keys)) {
+                    $p = $pending[$s]
+                    if ($rl.Contains($p.U.Client)) {
+                        $ms = $p.SW.Elapsed.TotalMilliseconds
+                        $ep = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Any, 0)
+                        try {
+                            $resp = $p.U.Receive([ref]$ep)
+                            # must be OUR transaction id, a response (QR=1) and NOERROR, NXDOMAIN or REFUSED (pre-auth captive liveness)
+                            $rcode = ($resp[3] -band 15)
+                            if ($resp.Length -ge 12 -and $resp[0] -eq $hi -and $resp[1] -eq $lo -and (($resp[2] -band 128) -ne 0) -and ($rcode -eq 0 -or $rcode -eq 3 -or $rcode -eq 5)) {
+                                $times[$s] += [int][math]::Round($ms)
+                            }
+                        } catch {}   # refused / reset: counts as no answer, immediately
+                        try { $p.U.Close() } catch {}
+                        $pending.Remove($s)
+                        continue
+                    }
+                    $refused = $false
+                    try { if ([int]$p.U.Client.GetSocketOption([System.Net.Sockets.SocketOptionLevel]::Socket, [System.Net.Sockets.SocketOptionName]::Error) -ne 0) { $refused = $true } } catch {}
+                    if ($refused) { try { $p.U.Close() } catch {}; $pending.Remove($s) }   # reading SO_ERROR clears it: never Receive after this
                 }
-                $refused = $false
-                try { if ([int]$p.U.Client.GetSocketOption([System.Net.Sockets.SocketOptionLevel]::Socket, [System.Net.Sockets.SocketOptionName]::Error) -ne 0) { $refused = $true } } catch {}
-                if ($refused) { try { $p.U.Close() } catch {}; $pending.Remove($s) }   # reading SO_ERROR clears it: never Receive after this
             }
+        } finally {
+            foreach ($s in @($pending.Keys)) { try { $pending[$s].U.Close() } catch {} }
         }
-        foreach ($s in @($pending.Keys)) { try { $pending[$s].U.Close() } catch {} }
         $alive = @($alive | Where-Object { ($round - $times[$_].Count) -lt 2 })   # tolerate one cold-cache miss, then stop
     }
     foreach ($s in $Servers) {
@@ -764,37 +798,3 @@ function Invoke-RoamingCleanup {
     # A substituted resolver on Wi-Fi / USB tethering / Bluetooth PAN is a reason to clean up on its own, even when every
     # other hostel-only change has already been reverted.
     $dnsManaged = @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object { (Get-SubTable 'Dns' ([string]$_.InterfaceGuid)).Managed -eq $true }).Count -gt 0
-    $any = ($rules.Count -gt 0) -or (Test-MetricsManaged) -or $hasNeutSvc -or $hasNeutTsk -or $dnsManaged
-    foreach ($fl in $flags) { if ($script:State.Misc[$fl] -eq $true) { $any = $true } }
-    if (-not $any) { return }
-    if ($Mode -eq 'AutoHeal') {
-        if (-not $script:State.Misc['LinkDownSince']) { Set-StateTime 'LinkDownSince'; Write-Log 'INFO' 'Link down: debouncing roaming cleanup against momentary cable flap (45s grace period).'; return }
-        if (-not (Test-Elapsed 'LinkDownSince' 45)) { Write-Log 'INFO' 'Link down under 45s: debouncing roaming cleanup against momentary cable flap.'; return }
-    }
-    if (Test-MetricsManaged) { Restore-InterfaceMetrics 'No active Ethernet link' }
-    Remove-CampusHostRoutes
-    $cd = Get-ActiveCampusDns
-    $m = Measure-ResolversFast @($cd) 600 53 ''
-    if ($null -ne $m[$cd]) { Write-Log 'INFO' 'No Ethernet link, but the campus resolver answers over another link (campus Wi-Fi?): campus-only settings kept.'; return }
-    Write-Log 'INFO' 'No Ethernet link and the campus resolver is unreachable: undoing the hostel-only settings.'
-    Remove-CampusNrpt
-    Restore-LlmnrIfManaged 'Left campus: LLMNR setting restored'
-    Restore-NegCacheIfManaged 'Left campus: negative DNS cache TTL restored'
-    Restore-MdnsIfManaged 'Left campus: mDNS setting restored'
-    Restore-SmartDnsIfManaged 'Left campus: smart name resolution restored'
-    Restore-TcpKeepAliveIfManaged 'Left campus: TCP keep-alive restored'
-    Restore-Ipv6PrecedenceIfManaged 'Left campus: IPv6 prefix policy restored'
-    if (Test-MetricsManaged) { Restore-InterfaceMetrics 'Left campus' }
-    [void](Restore-ManagedAdapterDns 'Left campus')
-    foreach ($ea in @(Get-EthernetAdapters)) { Restore-Ipv6IfNeutralized $ea }
-    Restore-NeutralizedInterceptors 'Left campus'
-    if (-not $script:IsDry -and $script:State -is [hashtable] -and $script:State.Misc -is [hashtable]) {
-        $script:State.Misc.Remove('DiscoveredPortalUrl')
-        $script:State.Misc.Remove('DiscoveredPortalIp')
-        $script:State.Misc.Remove('DiscoveredDomain')
-    }
-}
-function Restore-NeutralizedInterceptors([string]$Why = 'Non-campus network') {
-    if ($script:State.Misc['NeutralizedTasks'] -is [hashtable]) {
-        foreach ($tn in @($script:State.Misc['NeutralizedTasks'].Keys)) {
-            $tp = [string]$script:State.Misc['NeutralizedTasks'][$tn]

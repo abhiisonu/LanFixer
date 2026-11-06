@@ -1,3 +1,37 @@
+    $any = ($rules.Count -gt 0) -or (Test-MetricsManaged) -or $hasNeutSvc -or $hasNeutTsk -or $dnsManaged
+    foreach ($fl in $flags) { if ($script:State.Misc[$fl] -eq $true) { $any = $true } }
+    if (-not $any) { return }
+    if ($Mode -eq 'AutoHeal') {
+        if (-not $script:State.Misc['LinkDownSince']) { Set-StateTime 'LinkDownSince'; Write-Log 'INFO' 'Link down: debouncing roaming cleanup against momentary cable flap (45s grace period).'; return }
+        if (-not (Test-Elapsed 'LinkDownSince' 45)) { Write-Log 'INFO' 'Link down under 45s: debouncing roaming cleanup against momentary cable flap.'; return }
+    }
+    if (Test-MetricsManaged) { Restore-InterfaceMetrics 'No active Ethernet link' }
+    Remove-CampusHostRoutes
+    $cd = Get-ActiveCampusDns
+    $m = Measure-ResolversFast @($cd) 600 53 ''
+    if ($null -ne $m[$cd]) { Write-Log 'INFO' 'No Ethernet link, but the campus resolver answers over another link (campus Wi-Fi?): campus-only settings kept.'; return }
+    Write-Log 'INFO' 'No Ethernet link and the campus resolver is unreachable: undoing the hostel-only settings.'
+    Remove-CampusNrpt
+    Restore-LlmnrIfManaged 'Left campus: LLMNR setting restored'
+    Restore-NegCacheIfManaged 'Left campus: negative DNS cache TTL restored'
+    Restore-MdnsIfManaged 'Left campus: mDNS setting restored'
+    Restore-SmartDnsIfManaged 'Left campus: smart name resolution restored'
+    Restore-TcpKeepAliveIfManaged 'Left campus: TCP keep-alive restored'
+    Restore-Ipv6PrecedenceIfManaged 'Left campus: IPv6 prefix policy restored'
+    if (Test-MetricsManaged) { Restore-InterfaceMetrics 'Left campus' }
+    [void](Restore-ManagedAdapterDns 'Left campus')
+    foreach ($ea in @(Get-EthernetAdapters)) { Restore-Ipv6IfNeutralized $ea }
+    Restore-NeutralizedInterceptors 'Left campus'
+    if (-not $script:IsDry -and $script:State -is [hashtable] -and $script:State.Misc -is [hashtable]) {
+        $script:State.Misc.Remove('DiscoveredPortalUrl')
+        $script:State.Misc.Remove('DiscoveredPortalIp')
+        $script:State.Misc.Remove('DiscoveredDomain')
+    }
+}
+function Restore-NeutralizedInterceptors([string]$Why = 'Non-campus network') {
+    if ($script:State.Misc['NeutralizedTasks'] -is [hashtable]) {
+        foreach ($tn in @($script:State.Misc['NeutralizedTasks'].Keys)) {
+            $tp = [string]$script:State.Misc['NeutralizedTasks'][$tn]
             [void](Invoke-Change "$($Why): re-enabled task $tn" {
                 Enable-ScheduledTask -TaskName $tn -TaskPath $tp -ErrorAction SilentlyContinue | Out-Null
             })
@@ -764,37 +798,3 @@ function Invoke-UltraSystemReset {
             [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'tcp', 'set', 'global', 'rsc=enabled') 5000)
             [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'tcp', 'set', 'global', 'ecncapability=disabled') 5000)
             [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'tcp', 'set', 'global', 'timestamps=disabled') 5000)
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'tcp', 'set', 'global', 'initialrto=3000') 5000)
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'tcp', 'set', 'global', 'nonsackrttresiliency=disabled') 5000)
-
-            # Disable legacy IPv6 transition tunnel interfaces that cause campus blackholing
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'teredo', 'set', 'state', 'disabled') 5000)
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'isatap', 'set', 'state', 'disabled') 5000)
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', '6to4', 'set', 'state', 'disabled') 5000)
-
-            # Flush HTTP driver internal log buffers
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('http', 'flush', 'logbuffer') 5000)
-        }
-
-        # ----------------------------------------------------------------------
-        # STAGE 4/10: ROUTING TABLE PURGE, PORTPROXY RESET & ACCIDENTAL BRIDGE DESTRUCTION
-        # ----------------------------------------------------------------------
-        Write-Log 'STEP' 'STAGE 4/10  Purging routing table (route -f), portproxy, destination caches & rogue bridges'
-        if ($script:IsDry) {
-            Write-Log 'DRY' 'Would execute: route -f (purge all routes and gateways)'
-            Write-Log 'DRY' 'Would delete IPv4 & IPv6 destination caches'
-            Write-Log 'DRY' 'Would execute: netsh interface portproxy reset & netsh interface httpstunnel reset'
-            Write-Log 'DRY' 'Would destroy accidental network bridges via netsh bridge'
-            Write-Log 'DRY' 'Would execute: netsh advfirewall reset & enable all profiles'
-        } else {
-            # Purge all non-interface, non-loopback routes
-            [void](Invoke-Native (Get-SysExe 'route.exe') @('-f') 5000)
-
-            # Delete IPv4 and IPv6 kernel destination caches
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'ip', 'delete', 'destinationcache') 5000)
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'ipv6', 'delete', 'destinationcache') 5000)
-
-            # Reset Windows port forwarding (PortProxy) and IP-HTTPS tunnels to defeat hijacked developer/emulator port redirects
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('interface', 'portproxy', 'reset') 5000)
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('interface', 'httpstunnel', 'reset') 5000)
-
