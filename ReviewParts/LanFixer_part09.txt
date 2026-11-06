@@ -1,3 +1,46 @@
+    [void](Invoke-Native (Get-SysExe 'netsh.exe') @('winsock', 'reset') 5000)
+    [void](Invoke-Native (Get-SysExe 'netsh.exe') @('advfirewall', 'reset') 5000)
+    try {
+        $rmKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\RadioManagement'
+        if (Test-Path -LiteralPath $rmKey) {
+            Set-ItemProperty -LiteralPath $rmKey -Name 'SystemRadioState' -Value 0 -Type DWord -ErrorAction SilentlyContinue
+        }
+    } catch {}
+
+    $swArm.Stop()
+    Write-Log 'OK' ("ARMAGEDDON SYSTEM RESET completed in {0}ms." -f $swArm.ElapsedMilliseconds)
+    Write-Log 'WARN' 'SYSTEM REBOOT IS REQUIRED: Windows PnP manager will redetect network hardware and reinstall factory drivers upon reboot.'
+
+    # Handle reboot
+    if ($RebootNow) {
+        Write-Log 'WARN' 'Initiating immediate system restart in 5 seconds...'
+        [void](Invoke-Native (Get-SysExe 'shutdown.exe') @('/r', '/t', '5', '/c', 'LanFixer Armageddon Reset: Rebooting to reinstall network drivers.') 5000)
+    } elseif ($script:UiOn) {
+        Write-Host ''
+        Write-Host '  ========================================================================' -ForegroundColor Red
+        Write-Host '  ARMAGEDDON RESET COMPLETE: SYSTEM RESTART REQUIRED' -ForegroundColor Yellow
+        Write-Host '  Windows will reinstall your network adapters and clean drivers upon reboot.' -ForegroundColor Gray
+        Write-Host '  ========================================================================' -ForegroundColor Red
+        Write-Host ''
+        if (Read-Confirm 'Would you like to restart your computer right now?' 'no') {
+            Write-Host '  Restarting system in 5 seconds...' -ForegroundColor Yellow
+            [void](Invoke-Native (Get-SysExe 'shutdown.exe') @('/r', '/t', '5', '/c', 'LanFixer Armageddon Reset: Rebooting to reinstall network drivers.') 5000)
+        } else {
+            Write-Host '  Restart postponed. Please reboot your computer manually to restore connectivity.' -ForegroundColor Gray
+        }
+    }
+}
+
+function Shield-Services($Ctxs, [string]$ConnState) {
+    if ((@($Ctxs | Where-Object { $_.Env.Env -eq 'Campus' })).Count -eq 0 -and (@($Ctxs | Where-Object { $_.Env.Env -eq 'Other' })).Count -gt 0) {
+        Restore-NeutralizedInterceptors 'Non-campus Ethernet network'
+    }
+    Shield-Llmnr $Ctxs
+    Shield-Ipv6Precedence $Ctxs $ConnState
+    Shield-NegCache $Ctxs
+    Shield-Mdns $Ctxs
+    Shield-SmartDns $Ctxs
+    Shield-TcpKeepAlive $Ctxs
     Shield-TcpAutoTuning
     foreach ($ctx in $Ctxs) {
         $guid = [string]$ctx.Ad.InterfaceGuid
@@ -755,46 +798,3 @@ try { [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier(`
     $args = "-NoProfile -ExecutionPolicy Bypass -EncodedCommand $b64"
     return @"
 <?xml version="1.0" encoding="UTF-16"?>
-<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
-  <RegistrationInfo>
-    <Description>Displays LAN Fixer recovery notifications in the active user desktop session.</Description>
-    <Author>Lan Fixer</Author>
-  </RegistrationInfo>
-  <Triggers />
-  <Principals>
-    <Principal id="Users">
-      <GroupId>S-1-5-32-545</GroupId>
-      <RunLevel>LeastPrivilege</RunLevel>
-    </Principal>
-  </Principals>
-  <Settings>
-    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
-    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
-    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
-    <AllowStartOnDemand>true</AllowStartOnDemand>
-    <Enabled>true</Enabled>
-    <Hidden>true</Hidden>
-    <ExecutionTimeLimit>PT1M</ExecutionTimeLimit>
-  </Settings>
-  <Actions Context="Users">
-    <Exec>
-      <Command>%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe</Command>
-      <Arguments>$args</Arguments>
-    </Exec>
-  </Actions>
-</Task>
-"@
-}
-
-function Show-NativeToast([string]$Title, [string]$Message) {
-    try {
-        [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
-        [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null
-        $xml = New-Object Windows.Data.Xml.Dom.XmlDocument
-        $xml.LoadXml("<toast><visual><binding template=""ToastGeneric""><text>$([System.Security.SecurityElement]::Escape($Title))</text><text>$([System.Security.SecurityElement]::Escape($Message))</text></binding></visual></toast>")
-        $toast = New-Object Windows.UI.Notifications.ToastNotification $xml
-        $appId = '{1AC14E77-02E7-4E60-B746-AC6A9D31BDE8}\WindowsPowerShell\v1.0\powershell.exe'
-        [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($appId).Show($toast)
-    } catch {}
-}
-

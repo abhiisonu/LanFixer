@@ -785,16 +785,16 @@ function Invoke-UltraSystemReset {
                 }
             } catch {}
 
+            # Backup custom firewall rules before reset for 100% reversible rollback
+            try {
+                $fwBackup = Join-Path $script:StoreDir 'firewall_pre_reset.wfw'
+                if (-not (Test-Path -LiteralPath $fwBackup)) {
+                    [void](Invoke-Native (Get-SysExe 'netsh.exe') @('advfirewall', 'export', "`"$fwBackup`"") 5000)
+                }
+            } catch {}
+
             # Windows Defender Firewall factory state restoration
             [void](Invoke-Native (Get-SysExe 'netsh.exe') @('advfirewall', 'reset') 8000)
             [void](Invoke-Native (Get-SysExe 'netsh.exe') @('advfirewall', 'set', 'allprofiles', 'state', 'on') 5000)
         }
 
-        # ----------------------------------------------------------------------
-        # STAGE 5/10: ENCRYPTED DNS (DOH/DOT/DDR) WIPE, WPAD AUTOPROXY & BITS JOB PURGE
-        # ----------------------------------------------------------------------
-        Write-Log 'STEP' 'STAGE 5/10  Resetting global/interface DoH, WinHTTP autoproxy, BITS transfers & WFP filters'
-        if ($script:IsDry) {
-            Write-Log 'DRY' 'Would execute: netsh dnsclient delete global all & netsh dnsclient delete interface name=$ea.Name setting=all'
-            Write-Log 'DRY' 'Would execute: netsh winhttp reset proxy, reset autoproxy & tracing'
-            Write-Log 'DRY' 'Would cancel all active BITS transfer jobs via Get-BitsTransfer'

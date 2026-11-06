@@ -5585,6 +5585,14 @@ function Invoke-UltraSystemReset {
                 }
             } catch {}
 
+            # Backup custom firewall rules before reset for 100% reversible rollback
+            try {
+                $fwBackup = Join-Path $script:StoreDir 'firewall_pre_reset.wfw'
+                if (-not (Test-Path -LiteralPath $fwBackup)) {
+                    [void](Invoke-Native (Get-SysExe 'netsh.exe') @('advfirewall', 'export', "`"$fwBackup`"") 5000)
+                }
+            } catch {}
+
             # Windows Defender Firewall factory state restoration
             [void](Invoke-Native (Get-SysExe 'netsh.exe') @('advfirewall', 'reset') 8000)
             [void](Invoke-Native (Get-SysExe 'netsh.exe') @('advfirewall', 'set', 'allprofiles', 'state', 'on') 5000)
@@ -5913,6 +5921,15 @@ function Invoke-DoomsdayReset {
                     foreach ($b in $bindings) {
                         if ($b.ComponentID -notmatch '^(ms_|vms_)' -and $b.Enabled) {
                             Write-Log 'WARN' "Deactivating 3rd-party NDIS filter trap '$($b.DisplayName)' ($($b.ComponentID)) on $($ad.Name)..."
+                            if (-not $script:State.Snapshot.ContainsKey('DeactivatedFilters')) {
+                                $script:State.Snapshot['DeactivatedFilters'] = @{}
+                            }
+                            if (-not $script:State.Snapshot['DeactivatedFilters'].ContainsKey($ad.Name)) {
+                                $script:State.Snapshot['DeactivatedFilters'][$ad.Name] = @()
+                            }
+                            if ($script:State.Snapshot['DeactivatedFilters'][$ad.Name] -notcontains $b.ComponentID) {
+                                $script:State.Snapshot['DeactivatedFilters'][$ad.Name] += $b.ComponentID
+                            }
                             try { Disable-NetAdapterBinding -Name $ad.Name -ComponentID $b.ComponentID -ErrorAction SilentlyContinue } catch {}
                         }
                     }
@@ -6042,6 +6059,14 @@ function Invoke-DoomsdayReset {
                         Write-Log 'WARN' "Destroying orphaned network bridge $brGuid..."
                         [void](Invoke-Native (Get-SysExe 'netsh.exe') @('bridge', 'destroy', $brGuid) 5000)
                     }
+                }
+            } catch {}
+
+            # Backup custom firewall rules before reset for 100% reversible rollback
+            try {
+                $fwBackup = Join-Path $script:StoreDir 'firewall_pre_reset.wfw'
+                if (-not (Test-Path -LiteralPath $fwBackup)) {
+                    [void](Invoke-Native (Get-SysExe 'netsh.exe') @('advfirewall', 'export', "`"$fwBackup`"") 5000)
                 }
             } catch {}
 
@@ -6193,6 +6218,24 @@ function Invoke-DoomsdayReset {
                 Release-ArpLocks $ad
                 try { Shield-Hardware $ad } catch {}
                 try { Shield-TcpOffloads $ad } catch {}
+
+                # Snapshot manual static IP before stripping so Restore-Everything can restore it
+                try {
+                    $manIps = @(Get-NetIPAddress -InterfaceIndex $ad.ifIndex -ErrorAction SilentlyContinue | Where-Object { $_.PrefixOrigin -eq 'Manual' })
+                    if ($manIps.Count -gt 0) {
+                        $gKey = [string]$ad.InterfaceGuid
+                        if ($gKey -and (-not $script:State.Snapshot.ContainsKey($gKey) -or -not $script:State.Snapshot[$gKey].ContainsKey('StaticIp4'))) {
+                            if (-not $script:State.Snapshot.ContainsKey($gKey)) { $script:State.Snapshot[$gKey] = @{} }
+                            $gws = @(Get-GatewaysV4 $ad)
+                            $gw = if ($gws.Count -gt 0) { [string]$gws[0] } else { '' }
+                            $script:State.Snapshot[$gKey]['StaticIp4'] = @{
+                                IPAddress      = [string]$manIps[0].IPAddress
+                                PrefixLength   = [int]$manIps[0].PrefixLength
+                                DefaultGateway = $gw
+                            }
+                        }
+                    }
+                } catch {}
 
                 # Eradicate manual static IP addresses and default routes that cause blackholes
                 try {
@@ -7582,6 +7625,26 @@ function Restore-Everything {
             }
         }
     }
+
+    # Re-enable any 3rd-party NDIS filter drivers deactivated during Doomsday Reset
+    if ($script:State.Snapshot.ContainsKey('DeactivatedFilters')) {
+        $df = $script:State.Snapshot['DeactivatedFilters']
+        foreach ($adName in $df.Keys) {
+            foreach ($compId in @($df[$adName])) {
+                [void](Invoke-Change "NDIS filter '$compId' re-enabled on $adName" {
+                    Enable-NetAdapterBinding -Name $adName -ComponentID $compId -Confirm:$false -ErrorAction SilentlyContinue
+                })
+            }
+        }
+    }
+
+    # Restore pre-reset Windows Firewall rules if backup exists
+    $fwBackup = Join-Path $script:StoreDir 'firewall_pre_reset.wfw'
+    if (Test-Path -LiteralPath $fwBackup) {
+        [void](Invoke-Change 'Windows Firewall rules restored from pre-reset backup' {
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('advfirewall', 'import', "`"$fwBackup`"") 8000)
+        })
+    }
     if (-not $script:IsDry) {
         foreach ($n in @($restartNames.Keys)) { [void](Invoke-Change "Zero-reboot link reset on $n to apply restored driver settings" { $rAd = Get-NetAdapter -Name $n -ErrorAction SilentlyContinue; if ($rAd) { Reset-PhysicalAdapterHardware $rAd } else { Restart-NetAdapter -Name $n -Confirm:$false -ErrorAction Stop } }) }
         Clear-DnsClientCache -ErrorAction SilentlyContinue
@@ -8739,6 +8802,10 @@ function Invoke-LogicTests {
     Write-Check 'Logic: Invoke-ArmageddonReset is defined' ($null -ne (Get-Command Invoke-ArmageddonReset -ErrorAction SilentlyContinue))
     $armDef = [string](Get-Command Invoke-ArmageddonReset -ErrorAction SilentlyContinue).Definition
     Write-Check 'Logic: Armageddon Reset invokes netcfg -d kernel network cleanup' ($armDef.IndexOf('netcfg.exe') -ge 0 -and $armDef.IndexOf('-d') -ge 0)
+    $restDef = [string](Get-Command Restore-Everything -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Restore-Everything restores deactivated NDIS filters' ($restDef.IndexOf('DeactivatedFilters') -ge 0)
+    Write-Check 'Logic: Restore-Everything restores pre-reset firewall backup' ($restDef.IndexOf('firewall_pre_reset.wfw') -ge 0)
+    Write-Check 'Logic: Doomsday Reset snapshots static IPv4 before stripping' ($doomDef.IndexOf('StaticIp4') -ge 0)
     $idkDefNow = [string](Get-Command Invoke-DashboardKey -ErrorAction SilentlyContinue).Definition
     Write-Check 'Logic: Invoke-DashboardKey handles key U for Ultra System Reset' ($idkDefNow.IndexOf("Invoke-UltraSystemReset") -ge 0)
     Write-Check 'Logic: Invoke-DashboardKey handles key D for Doomsday Reset' ($idkDefNow.IndexOf("Invoke-DoomsdayReset") -ge 0)

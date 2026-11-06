@@ -1,3 +1,11 @@
+        # ----------------------------------------------------------------------
+        # STAGE 5/10: ENCRYPTED DNS (DOH/DOT/DDR) WIPE, WPAD AUTOPROXY & BITS JOB PURGE
+        # ----------------------------------------------------------------------
+        Write-Log 'STEP' 'STAGE 5/10  Resetting global/interface DoH, WinHTTP autoproxy, BITS transfers & WFP filters'
+        if ($script:IsDry) {
+            Write-Log 'DRY' 'Would execute: netsh dnsclient delete global all & netsh dnsclient delete interface name=$ea.Name setting=all'
+            Write-Log 'DRY' 'Would execute: netsh winhttp reset proxy, reset autoproxy & tracing'
+            Write-Log 'DRY' 'Would cancel all active BITS transfer jobs via Get-BitsTransfer'
             Write-Log 'DRY' 'Would sanitize WinINet user/machine proxies and flush SSL session cache'
         } else {
             # Reset Windows 11 encrypted DNS (DoH, DoT, DDR) globally to factory defaults
@@ -313,6 +321,15 @@ function Invoke-DoomsdayReset {
                     foreach ($b in $bindings) {
                         if ($b.ComponentID -notmatch '^(ms_|vms_)' -and $b.Enabled) {
                             Write-Log 'WARN' "Deactivating 3rd-party NDIS filter trap '$($b.DisplayName)' ($($b.ComponentID)) on $($ad.Name)..."
+                            if (-not $script:State.Snapshot.ContainsKey('DeactivatedFilters')) {
+                                $script:State.Snapshot['DeactivatedFilters'] = @{}
+                            }
+                            if (-not $script:State.Snapshot['DeactivatedFilters'].ContainsKey($ad.Name)) {
+                                $script:State.Snapshot['DeactivatedFilters'][$ad.Name] = @()
+                            }
+                            if ($script:State.Snapshot['DeactivatedFilters'][$ad.Name] -notcontains $b.ComponentID) {
+                                $script:State.Snapshot['DeactivatedFilters'][$ad.Name] += $b.ComponentID
+                            }
                             try { Disable-NetAdapterBinding -Name $ad.Name -ComponentID $b.ComponentID -ErrorAction SilentlyContinue } catch {}
                         }
                     }
@@ -442,6 +459,14 @@ function Invoke-DoomsdayReset {
                         Write-Log 'WARN' "Destroying orphaned network bridge $brGuid..."
                         [void](Invoke-Native (Get-SysExe 'netsh.exe') @('bridge', 'destroy', $brGuid) 5000)
                     }
+                }
+            } catch {}
+
+            # Backup custom firewall rules before reset for 100% reversible rollback
+            try {
+                $fwBackup = Join-Path $script:StoreDir 'firewall_pre_reset.wfw'
+                if (-not (Test-Path -LiteralPath $fwBackup)) {
+                    [void](Invoke-Native (Get-SysExe 'netsh.exe') @('advfirewall', 'export', "`"$fwBackup`"") 5000)
                 }
             } catch {}
 
@@ -593,6 +618,24 @@ function Invoke-DoomsdayReset {
                 Release-ArpLocks $ad
                 try { Shield-Hardware $ad } catch {}
                 try { Shield-TcpOffloads $ad } catch {}
+
+                # Snapshot manual static IP before stripping so Restore-Everything can restore it
+                try {
+                    $manIps = @(Get-NetIPAddress -InterfaceIndex $ad.ifIndex -ErrorAction SilentlyContinue | Where-Object { $_.PrefixOrigin -eq 'Manual' })
+                    if ($manIps.Count -gt 0) {
+                        $gKey = [string]$ad.InterfaceGuid
+                        if ($gKey -and (-not $script:State.Snapshot.ContainsKey($gKey) -or -not $script:State.Snapshot[$gKey].ContainsKey('StaticIp4'))) {
+                            if (-not $script:State.Snapshot.ContainsKey($gKey)) { $script:State.Snapshot[$gKey] = @{} }
+                            $gws = @(Get-GatewaysV4 $ad)
+                            $gw = if ($gws.Count -gt 0) { [string]$gws[0] } else { '' }
+                            $script:State.Snapshot[$gKey]['StaticIp4'] = @{
+                                IPAddress      = [string]$manIps[0].IPAddress
+                                PrefixLength   = [int]$manIps[0].PrefixLength
+                                DefaultGateway = $gw
+                            }
+                        }
+                    }
+                } catch {}
 
                 # Eradicate manual static IP addresses and default routes that cause blackholes
                 try {
@@ -755,46 +798,3 @@ function Invoke-ArmageddonReset([switch]$RebootNow) {
 
     # Post-cleanup pass
     Write-Log 'STEP' 'STAGE 3/4 Running post-cleanup: resetting Winsock, Firewall & RadioManagement...'
-    [void](Invoke-Native (Get-SysExe 'netsh.exe') @('winsock', 'reset') 5000)
-    [void](Invoke-Native (Get-SysExe 'netsh.exe') @('advfirewall', 'reset') 5000)
-    try {
-        $rmKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\RadioManagement'
-        if (Test-Path -LiteralPath $rmKey) {
-            Set-ItemProperty -LiteralPath $rmKey -Name 'SystemRadioState' -Value 0 -Type DWord -ErrorAction SilentlyContinue
-        }
-    } catch {}
-
-    $swArm.Stop()
-    Write-Log 'OK' ("ARMAGEDDON SYSTEM RESET completed in {0}ms." -f $swArm.ElapsedMilliseconds)
-    Write-Log 'WARN' 'SYSTEM REBOOT IS REQUIRED: Windows PnP manager will redetect network hardware and reinstall factory drivers upon reboot.'
-
-    # Handle reboot
-    if ($RebootNow) {
-        Write-Log 'WARN' 'Initiating immediate system restart in 5 seconds...'
-        [void](Invoke-Native (Get-SysExe 'shutdown.exe') @('/r', '/t', '5', '/c', 'LanFixer Armageddon Reset: Rebooting to reinstall network drivers.') 5000)
-    } elseif ($script:UiOn) {
-        Write-Host ''
-        Write-Host '  ========================================================================' -ForegroundColor Red
-        Write-Host '  ARMAGEDDON RESET COMPLETE: SYSTEM RESTART REQUIRED' -ForegroundColor Yellow
-        Write-Host '  Windows will reinstall your network adapters and clean drivers upon reboot.' -ForegroundColor Gray
-        Write-Host '  ========================================================================' -ForegroundColor Red
-        Write-Host ''
-        if (Read-Confirm 'Would you like to restart your computer right now?' 'no') {
-            Write-Host '  Restarting system in 5 seconds...' -ForegroundColor Yellow
-            [void](Invoke-Native (Get-SysExe 'shutdown.exe') @('/r', '/t', '5', '/c', 'LanFixer Armageddon Reset: Rebooting to reinstall network drivers.') 5000)
-        } else {
-            Write-Host '  Restart postponed. Please reboot your computer manually to restore connectivity.' -ForegroundColor Gray
-        }
-    }
-}
-
-function Shield-Services($Ctxs, [string]$ConnState) {
-    if ((@($Ctxs | Where-Object { $_.Env.Env -eq 'Campus' })).Count -eq 0 -and (@($Ctxs | Where-Object { $_.Env.Env -eq 'Other' })).Count -gt 0) {
-        Restore-NeutralizedInterceptors 'Non-campus Ethernet network'
-    }
-    Shield-Llmnr $Ctxs
-    Shield-Ipv6Precedence $Ctxs $ConnState
-    Shield-NegCache $Ctxs
-    Shield-Mdns $Ctxs
-    Shield-SmartDns $Ctxs
-    Shield-TcpKeepAlive $Ctxs

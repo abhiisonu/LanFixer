@@ -1,3 +1,70 @@
+    Write-Check 'Logic: ArmageddonReset mode exists in ValidateSet' ($srcTxt -match "ValidateSet\([^)]*'ArmageddonReset'")
+    Write-Check 'Logic: Invoke-ArmageddonReset is defined' ($null -ne (Get-Command Invoke-ArmageddonReset -ErrorAction SilentlyContinue))
+    $armDef = [string](Get-Command Invoke-ArmageddonReset -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Armageddon Reset invokes netcfg -d kernel network cleanup' ($armDef.IndexOf('netcfg.exe') -ge 0 -and $armDef.IndexOf('-d') -ge 0)
+    $restDef = [string](Get-Command Restore-Everything -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Restore-Everything restores deactivated NDIS filters' ($restDef.IndexOf('DeactivatedFilters') -ge 0)
+    Write-Check 'Logic: Restore-Everything restores pre-reset firewall backup' ($restDef.IndexOf('firewall_pre_reset.wfw') -ge 0)
+    Write-Check 'Logic: Doomsday Reset snapshots static IPv4 before stripping' ($doomDef.IndexOf('StaticIp4') -ge 0)
+    $idkDefNow = [string](Get-Command Invoke-DashboardKey -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Invoke-DashboardKey handles key U for Ultra System Reset' ($idkDefNow.IndexOf("Invoke-UltraSystemReset") -ge 0)
+    Write-Check 'Logic: Invoke-DashboardKey handles key D for Doomsday Reset' ($idkDefNow.IndexOf("Invoke-DoomsdayReset") -ge 0)
+
+    $script:State = $stSave
+}
+function Invoke-SelfTest {
+    $script:TestFail = 0; $script:TestWarn = 0
+    Write-Banner 'SYSTEM INTEGRITY SELF-TEST (READ-ONLY)'
+    Write-Check ("PowerShell " + $PSVersionTable.PSVersion) ($PSVersionTable.PSVersion.Major -ge 5)
+    Write-Check 'Running as Administrator' $script:IsAdmin $true 'needed for repairs, not for audits'
+    foreach ($c in 'Get-NetAdapter','Get-NetIPInterface','Set-NetIPInterface','Get-NetNeighbor','New-NetNeighbor','Remove-NetNeighbor','Get-DnsClientServerAddress','Set-DnsClientServerAddress','Add-DnsClientNrptRule','Get-DnsClientNrptRule','Resolve-DnsName','Get-NetAdapterAdvancedProperty','Set-NetAdapterAdvancedProperty','Set-NetConnectionProfile','Restart-NetAdapter','Get-WinEvent') {
+        Write-Check ("Cmdlet " + $c) ([bool](Get-Command $c -ErrorAction SilentlyContinue))
+    }
+    foreach ($x in 'schtasks.exe','icacls.exe','ipconfig.exe','arp.exe','rundll32.exe','nbtstat.exe','pnputil.exe','dism.exe') {
+        Write-Check ("Tool " + $x) (Test-Path -LiteralPath (Get-SysExe $x))
+    }
+    Write-Check 'Kernel driver tcpip.sys exists' (Test-Path -LiteralPath (Join-Path $script:Sys32 'drivers\tcpip.sys'))
+    Write-Check 'Kernel driver ndis.sys exists' (Test-Path -LiteralPath (Join-Path $script:Sys32 'drivers\ndis.sys'))
+    Write-Check 'Kernel driver afd.sys exists' (Test-Path -LiteralPath (Join-Path $script:Sys32 'drivers\afd.sys'))
+    $ads = @(Get-EthernetAdapters)
+    Write-Check ("Ethernet adapters found: " + $ads.Count) ($ads.Count -gt 0) $true 'plug in / enable your wired adapter'
+    foreach ($a in $ads) { Write-Check ("  {0}: {1}" -f $a.Name, $a.Status) ($a.Status -eq 'Up') $true }
+    Write-Check 'Protected store exists' (Test-Path -LiteralPath $script:StoreDir) $true 'created on first elevated run'
+    Write-Check 'Protected store ACL verified' $script:StoreSecure $true
+    Write-Check 'State file readable' ((Get-State) -is [hashtable]) $true
+    Write-Check 'Watchdog task installed' (Test-WatchdogInstalled) $true 'optional: menu option 2'
+    if (Test-WatchdogInstalled) {
+        $wa = Get-WatchdogArguments
+        Write-Check 'Watchdog runs the current protected copy' (($null -ne $wa) -and ($wa -eq (Get-WatchdogExpectedArguments))) $true 'run menu option 2 or any elevated heal to repoint it'
+    }
+    $xmlOk = $false
+    try { [void][xml](New-WatchdogXml '/c test' '2026-01-01T00:00:00'); [void][xml](New-PortalTaskXml); $xmlOk = $true } catch {}
+    Write-Check 'Task XML is well-formed' $xmlOk
+    $ip = Resolve-HostBounded 'connectivitycheck.gstatic.com' 2500
+    Write-Check 'DNS resolution works right now' ([bool]$ip) $true
+    Write-Check ("Internet probe: " + (Get-InternetState -NoCache).State) $true
+    Invoke-LogicTests
+    Write-Host ''
+    if ($script:TestFail -eq 0) { Out-Line @((Seg 'ok!' ('  ' + $script:G.dot + '  ready')), (Seg 'dim' ('   {0} {1} warnings' -f $script:G.mid, $script:TestWarn))) }
+    else { Out-Line @((Seg 'bad!' ('  ' + $script:G.dot + '  ' + $script:TestFail + ' failed')), (Seg 'dim' ('   {0} {1} warnings' -f $script:G.mid, $script:TestWarn))) }
+}
+
+# ==============================================================================
+# CONTROL CENTER (79 columns, ASCII only, auto-refreshing)
+# ==============================================================================
+function Pick-Hash($Value) { return (@($Value | Where-Object { $_ -is [hashtable] }) | Select-Object -First 1) }
+function Wait-AnyKey {
+    if (Test-InputRedirected) { return }   # headless / piped: never block
+    Clear-InputBuffer
+    try { [void](Read-KeyNow) } catch { try { [void](Read-Host) } catch {} }
+    Clear-InputBuffer
+}
+$script:WdCache = $null
+# Pure decision (unit-tested). The dashboard may only claim "Ethernet First" when the Ethernet adapter is really the
+# lowest-metric path: while a campus link is captive, Shield-RouteMetrics deliberately demotes it to 50 and promotes
+# Wi-Fi to 15, and reporting "Ethernet First" then is a plain lie (the traffic is going out over the hotspot).
+function Get-RoutingLabel([bool]$Managed, [int]$Metric, [bool]$LinkUp, [bool]$UplinkActive = $true, [string]$Profile = '') {
+    if (-not $Profile -and $script:State -is [hashtable] -and $script:State.Misc -is [hashtable]) {
         $Profile = [string]$script:State.Misc['RouteProfile']
     }
     if ($Profile -eq 'Windows') { return 'automatic' }
