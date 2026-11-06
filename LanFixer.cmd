@@ -9,7 +9,7 @@ exit /b %errorlevel%
 
 <#
 .SYNOPSIS
-    Lan Fixer 6.4.1 - Sovereign self-healing Ethernet stabilizer for campus/hostel LANs (Windows 10/11, Ethernet only).
+    Lan Fixer 6.4.2 - Sovereign self-healing Ethernet stabilizer for campus/hostel LANs (Windows 10/11, Ethernet only).
     Author: A.S.
 .DESCRIPTION
     Single file, ASCII only. Run it normally for the control center, or use -Mode:
@@ -18,6 +18,18 @@ exit /b %errorlevel%
     Add -DryRun to see exactly what would change without changing anything.
     Every change is snapshotted first, so ResetFactory restores YOUR original values.
 .NOTES
+    6.4.2 (Sovereign Grand Master Final Hardening & PnP Optimization):
+      - PnP Rescan Rate-Limit & Narrowing: Rescue-DormantEthernetPnp stamps limiter before query, checks only present faulted physical wired NICs, and ignores disabled/ghost devices.
+      - Interactive Session Timestamp Validation: Start-Interactive writes process StartTime in round-trippable ISO-8601 UTC format, eliminating false-positive session purges.
+      - Undoable IPv6 Neutralization & Restoration: Shield-DnsIntegrity snapshots DnsStatic/Ipv6Rd; Restore-Ipv6IfNeutralized restores ms_tcpip6 and router discovery upon leaving campus or factory reset.
+      - Dry-Run Enforcement in Get-GatewayMacs: Wrapped Remove-NetNeighbor in dry-run guard to prevent neighbor eviction during read-only audits.
+      - Accurate Metric Drift Detection: Get-RoutingLabel reads actual adapter metric to enable drift remediation in Start-Interactive.
+      - Neutralized Interceptor State Persistence: Preserves StartType, DelayedAutostart, and WasRunning for third-party services; added $skipKill gate in Shield-SystemStack.
+      - Prompt Mutex Starvation Protection: Extracted interactive confirmation prompts outside of Invoke-WithLock so operator pauses never block the background watchdog.
+      - Source-Bound Gateway Liveness Probes: Cleaned unbound proxy checks in Test-GatewayAlive; bound TCP probes to adapter IPv4.
+      - Per-Adapter Path-MTU Candidates: Keyed MtuCandidate by interface GUID; enforced Test-RouteViaAdapter unconditionally.
+      - NlaNudge Sleep Optimization: Gated 5s sleep in Shield-Services behind Test-Elapsed 900s limiter.
+      - TCP Auto-Tuning Snapshotting: Shield-TcpAutoTuning snapshots original auto-tuning level before restoration.
     6.4.1 (Supreme Omni-Hardening & Static Lint Resolution):
       - Static IP Auto-Rollback: Shield-DataLink restores snapshotted static IPv4 if DHCP renewal ladder fails.
       - Inverted DHCP Stack Unfreeze: Inverted Step 3 in Repair-Dhcp (Stop -> Zero Registry -> Start) to prevent cached lease rewrites.
@@ -178,7 +190,7 @@ try { Add-Type -AssemblyName System.Security -ErrorAction SilentlyContinue } cat
 # ==============================================================================
 # CONFIG (edit here, nowhere else)
 # ==============================================================================
-$script:Version = '6.4.1'
+$script:Version = '6.4.2'
 $script:Sys32   = Join-Path $env:SystemRoot 'System32'
 $script:SelfPath = if ($env:LANFIXER_SELF -and (Test-Path -LiteralPath $env:LANFIXER_SELF)) { $env:LANFIXER_SELF } elseif ($PSCommandPath -and (Test-Path -LiteralPath $PSCommandPath)) { $PSCommandPath } elseif ($MyInvocation.MyCommand.Path -and (Test-Path -LiteralPath $MyInvocation.MyCommand.Path)) { $MyInvocation.MyCommand.Path } elseif ($PSScriptRoot -and (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'LanFixer.cmd'))) { (Join-Path $PSScriptRoot 'LanFixer.cmd') } else { (Join-Path (Get-Location).Path 'LanFixer.cmd') }
 $script:IsDry   = [bool]$DryRun
@@ -281,11 +293,12 @@ function Write-Log {
 }
 # Every mutation goes through here: honest success/failure, dry-run support, counters.
 function Invoke-Change {
-    param([string]$Description, [scriptblock]$Action)
+    param([string]$Description, [scriptblock]$Action, [switch]$FailOnFalse)
     if ($script:IsDry) { Write-Log 'DRY' "Would: $Description"; return $true }
     $ErrorActionPreference = 'Stop'
     try {
-        & $Action | Out-Null
+        $out = @(& $Action)
+        if ($FailOnFalse -and $out.Count -gt 0 -and $out[-1] -is [bool] -and -not $out[-1]) { throw 'the action reported failure' }
         $script:ChangeCount++
         Write-Log 'OK' $Description
         return $true
@@ -838,9 +851,8 @@ function Test-InteractiveSessionActive {
                 if ($p -and ($p.ProcessName -match 'powershell|cmd|LanFixer')) {
                     if ($meta.StartTime) {
                         try {
-                            $pStart = [datetime]$p.StartTime
-                            $mStart = [datetime]$meta.StartTime
-                            if ([math]::Abs(($pStart - $mStart).TotalSeconds) -lt 5) { return $true }
+                            $mStart = [datetime]::Parse([string]$meta.StartTime, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
+                            if ([math]::Abs(($p.StartTime.ToUniversalTime() - $mStart).TotalSeconds) -le 5) { return $true }
                         } catch { return $true }
                     } else { return $true }
                 }
@@ -1060,11 +1072,11 @@ function Get-AdapterDnsVerdict($Ad) {
         IsSinkhole  = $isSinkhole
     }
 }
-function Resolve-HostBounded([string]$Name, [int]$TimeoutMs = 2500, [string]$SourceIp = '') {
+function Resolve-HostBounded([string]$Name, [int]$TimeoutMs = 2500, [string]$SourceIp = '', [switch]$NoPin) {
     if (-not $Name) { return $null }
     $cleanName = $Name.Trim().TrimEnd('.')
     if (-not $cleanName) { return $null }
-    if ($script:Cfg.PortalHost -and ($cleanName.ToLower() -eq ([string]$script:Cfg.PortalHost).TrimEnd('.').ToLower()) -and $script:Cfg.PortalIp) {
+    if (-not $NoPin -and $script:Cfg.PortalHost -and ($cleanName.ToLower() -eq ([string]$script:Cfg.PortalHost).TrimEnd('.').ToLower()) -and $script:Cfg.PortalIp) {
         return [string]$script:Cfg.PortalIp
     }
     if ($SourceIp -and (Test-OtherUplinkActive)) {
@@ -2614,7 +2626,8 @@ function Show-VaultMenu {
             }
             't' {
                 if (-not (Assert-Admin)) { Out-Line @(); Out-Line @((Seg 'dim' '  press any key')); Wait-AnyKey; continue }
-                [void](Invoke-WithLock { [void](Invoke-HeadlessPortalLogin -Manual); Save-State })
+                [void](Invoke-HeadlessPortalLogin -Manual)
+                if (-not $script:IsDry) { [void](Invoke-WithLock { Save-State }) }
                 Out-Line @(); Out-Line @((Seg 'dim' '  press any key')); Wait-AnyKey
             }
             'p' {
@@ -2666,11 +2679,8 @@ function Start-Repair([string]$Title = 'quick heal') {
             $signedHeadless = $false
             if ($script:Cfg.AutoPortalLogin -and (Get-PortalCredentials)) {
                 Out-Line @((Seg 'dim' '  Attempting automated sign-in using saved vault credentials...'))
-                $signedHeadless = [bool](Invoke-WithLock {
-                    $hRes = Invoke-HeadlessPortalLogin (Get-InternetState -NoCache) -Manual
-                    Save-State
-                    $hRes
-                })
+                $signedHeadless = [bool](Invoke-HeadlessPortalLogin (Get-InternetState -NoCache) -Manual)
+                if (-not $script:IsDry) { [void](Invoke-WithLock { Save-State }) }
                 if ($signedHeadless) { Write-Log 'OK' 'Signed in automatically using stored vault credentials.' }
             }
             if (-not $signedHeadless) {
@@ -2725,11 +2735,8 @@ function Invoke-DashboardKey([string]$Key, $adv) {
                         $signedHeadless = $false
                         if ($script:Cfg.AutoPortalLogin -and (Get-PortalCredentials)) {
                             Out-Line @((Seg 'dim' '  Attempting automated sign-in using saved vault credentials...'))
-                            $signedHeadless = [bool](Invoke-WithLock {
-                                $hRes = Invoke-HeadlessPortalLogin (Get-InternetState -NoCache) -Manual
-                                Save-State
-                                $hRes
-                            })
+                            $signedHeadless = [bool](Invoke-HeadlessPortalLogin (Get-InternetState -NoCache) -Manual)
+                            if (-not $script:IsDry) { [void](Invoke-WithLock { Save-State }) }
                             if ($signedHeadless) { Write-Log 'OK' 'Signed in automatically using stored vault credentials.' }
                         }
                         if (-not $signedHeadless) {
@@ -3086,9 +3093,8 @@ function Test-GatewayAlive($Ad, [string]$Gw) {
     if ($ex -and [string]$ex.State -eq 'Permanent' -and $ex.LinkLayerAddress -and $ex.LinkLayerAddress -notmatch '^(00-)+00$') {
         $homeAd = $true
         try { $eh = Get-AdapterEnvironment $Ad -UseCache; if ($null -ne $eh.Home) { $homeAd = [bool]$eh.Home } } catch {}
-        $cfgProxy = $false
-        if ($homeAd) { $cfgProxy = [bool]((Test-PortalOnlineSmart $script:Cfg.PortalIp ([int]$script:Cfg.PortalPort)) -or ($null -ne (Test-Ping $script:Cfg.CampusDns 500))) }
-        if ((Test-TcpPort $Gw 80 400) -or (Test-TcpPort $Gw 443 400) -or (Test-TcpPort $Gw 53 400) -or $cfgProxy) {
+        $gwSrc = [string](Get-ValidIPv4 $Ad)
+        if ((Test-TcpPort $Gw 80 400 $gwSrc) -or (Test-TcpPort $Gw 443 400 $gwSrc) -or (Test-TcpPort $Gw 53 400 $gwSrc)) {
             return @{ Alive = $true; Rtt = $null; Via = 'arp' }
         }
         $freshArp = @(Get-GatewayMacs $Ad $Gw 1)
@@ -3114,23 +3120,24 @@ function Test-GatewayAlive($Ad, [string]$Gw) {
 # ==============================================================================
 function Rescue-DormantEthernetPnp {
     if (-not $script:IsAdmin -or $script:IsDry) { return }
-    if (-not (Test-Elapsed 'PnpRescan' 60)) { return }
+    if (-not (Test-Elapsed 'PnpRescan' 300)) { return }
+    Set-StateTime 'PnpRescan'
     try {
-        $dormant = @(Get-PnpDevice -Class Net -ErrorAction SilentlyContinue | Where-Object {
-            $_.FriendlyName -match 'Ethernet|GbE|LAN|Realtek|ASIX|Intel' -and
+        $nics = @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object {
+            $_.MediaType -eq '802.3' -and $_.InterfaceDescription -notmatch $script:VirtRegex })
+        if ($nics.Count -eq 0) {
+            [void](Invoke-Native (Get-SysExe 'pnputil.exe') @('/scan-devices') 5000)
+            return
+        }
+        $sick = @(Get-PnpDevice -Class Net -PresentOnly -ErrorAction SilentlyContinue | Where-Object {
+            $_.FriendlyName -match 'Ethernet|GbE|Gigabit|ASIX|Realtek|USB' -and
             $_.FriendlyName -notmatch $script:VirtRegex -and
-            ($_.Present -eq $false -or $_.Status -ne 'OK' -or $_.Problem -ne 'CM_PROB_NONE')
-        })
-        if ($dormant.Count -eq 0) { return }
-        Set-StateTime 'PnpRescan'
-        Write-Log 'STEP' "Detected $($dormant.Count) dormant/hung physical network transceiver(s). Triggering PnP bus rescan..."
-        [void](Invoke-Native (Get-SysExe 'pnputil.exe') @('/scan-devices') 5000)
-        foreach ($dev in $dormant) {
-            Write-Log 'INFO' "Awakening dormant device: $($dev.FriendlyName) ($($dev.InstanceId))"
-            try { Enable-PnpDevice -InstanceId $dev.InstanceId -Confirm:$false -ErrorAction SilentlyContinue } catch {}
+            $_.FriendlyName -notmatch 'Wi-?Fi|Wireless|WLAN|802\.11' -and
+            $_.Problem -notin @('CM_PROB_NONE', 'CM_PROB_DISABLED', 'CM_PROB_HARDWARE_DISABLED') })
+        foreach ($dev in ($sick | Select-Object -First 2)) {
+            Write-Log 'INFO' "Restarting faulted wired transceiver: $($dev.FriendlyName)"
             [void](Invoke-Native (Get-SysExe 'pnputil.exe') @('/restart-device', $dev.InstanceId) 10000)
         }
-        Start-Sleep -Milliseconds 1200
     } catch {
         Write-Log 'WARN' "Rescue-DormantEthernetPnp non-critical exception: $_"
     }
@@ -3690,7 +3697,11 @@ function Shield-DataLink($Ctx) {
 function Get-GatewayMacs($Ad, [string]$Gw, [int]$Samples = 3) {
     $macs = @()
     for ($i = 0; $i -lt $Samples; $i++) {
-        Remove-NetNeighbor -InterfaceIndex $Ad.ifIndex -IPAddress $Gw -Confirm:$false -ErrorAction SilentlyContinue
+        if (-not $script:IsDry) {
+            Remove-NetNeighbor -InterfaceIndex $Ad.ifIndex -IPAddress $Gw -Confirm:$false -ErrorAction SilentlyContinue
+        } else {
+            Write-Log 'DRY' "Would refresh neighbour entry for $Gw on $($Ad.Name)"
+        }
         [void](Test-Ping $Gw 700)
         Start-Sleep -Milliseconds 200
         $n = Get-NetNeighbor -InterfaceIndex $Ad.ifIndex -IPAddress $Gw -AddressFamily IPv4 -ErrorAction SilentlyContinue |
@@ -3777,8 +3788,8 @@ function Test-RouteViaAdapter($Ad, [string]$Target) {
 }
 function Get-PathMtuForAdapter($Ad, [string]$Target = '9.9.9.9') {
     foreach ($t in @($Target, '1.1.1.1') | Where-Object { $_ } | Select-Object -Unique) {
-        if ((Test-OtherUplinkActive) -and -not (Test-RouteViaAdapter $Ad $t)) {
-            Write-Log 'INFO' ("Path-MTU probe to {0} skipped on {1}: route uses another uplink." -f $t, $Ad.Name)
+        if (-not (Test-RouteViaAdapter $Ad $t)) {
+            Write-Log 'INFO' ("Path-MTU probe to {0} skipped on {1}: route uses another interface." -f $t, $Ad.Name)
             continue
         }
         if ($null -eq (Test-Ping $t 600)) { continue }
@@ -3808,14 +3819,15 @@ function Shield-PathMtu($Ctx, [string]$ConnState) {
     $ipif = Get-IPv4Interface $ad
     if (-not $ipif -or [int]$ipif.NlMtu -lt 1500) { return }
     $pmtu = Get-PathMtuForAdapter $ad
-    $d = Get-MtuDecision $pmtu ([int]$ipif.NlMtu) $script:State.Misc['MtuCandidate']
-    if ($d.Action -eq 'candidate') { $script:State.Misc['MtuCandidate'] = $d.Value; Write-Log 'INFO' ("A path MTU of {0} was measured; it is applied only if the next measurement agrees." -f $d.Value) }
+    $candKey = 'MtuCandidate:' + [string]$ad.InterfaceGuid
+    $d = Get-MtuDecision $pmtu ([int]$ipif.NlMtu) $script:State.Misc[$candKey]
+    if ($d.Action -eq 'candidate') { $script:State.Misc[$candKey] = $d.Value; Write-Log 'INFO' ("A path MTU of {0} was measured; it is applied only if the next measurement agrees." -f $d.Value) }
     elseif ($d.Action -eq 'clamp') {
         Save-Original ([string]$ad.InterfaceGuid) 'Mtu' ([int]$ipif.NlMtu)
         $v = [int]$d.Value
         $ok = Invoke-Change "Adapter MTU lowered to $v on $($ad.Name) (path MTU confirmed twice)" { Set-NetIPInterface -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -NlMtuBytes $v -ErrorAction Stop }
-        if ($ok) { $script:State.Misc.Remove('MtuCandidate') }
-    } else { if ($null -ne $script:State.Misc['MtuCandidate']) { $script:State.Misc.Remove('MtuCandidate') } }
+        if ($ok) { $script:State.Misc.Remove($candKey) }
+    } else { if ($null -ne $script:State.Misc[$candKey]) { $script:State.Misc.Remove($candKey) } }
 }
 # Layer 3 Route Shield: Verify reachability and prune unreachable duplicate default gateways
 function Shield-DefaultRoutes($Ctx) {
@@ -4174,6 +4186,19 @@ function Test-DhcpDnsUsable([string]$Guid, [string]$SourceIp = '') {
     } catch {}
     return $false
 }
+function Restore-Ipv6IfNeutralized($Ad) {
+    $guid = [string]$Ad.InterfaceGuid
+    $d = Get-SubTable 'Dns' $guid
+    if ($d.Ipv6Neutralized -ne $true) { return }
+    $snap = Get-SubTable 'Snapshot' $guid
+    $rd = [string]$snap['Ipv6Rd']
+    if (-not $rd) { $rd = 'ControlledByDHCP' }
+    $ok = Invoke-Change "IPv6 re-enabled on $($Ad.Name)" {
+        Enable-NetAdapterBinding -Name $Ad.Name -ComponentId 'ms_tcpip6' -Confirm:$false -ErrorAction Stop
+        Set-NetIPInterface -InterfaceIndex $Ad.ifIndex -AddressFamily IPv6 -RouterDiscovery $rd -ErrorAction SilentlyContinue
+    }
+    if ($ok -and -not $script:IsDry) { $d.Ipv6Neutralized = $false }
+}
 function Shield-DnsIntegrity($Ad) {
     if (-not $script:IsAdmin) { return }
     if ($Ad.MediaType -and $Ad.MediaType -ne '802.3') { return }
@@ -4184,15 +4209,18 @@ function Shield-DnsIntegrity($Ad) {
         $v6Binding = Get-NetAdapterBinding -Name $Ad.Name -ComponentId 'ms_tcpip6' -ErrorAction SilentlyContinue
         if ($v6Binding -and $v6Binding.Enabled) {
             Save-Original $guid 'MsTcpip6' 'True'
+            Save-Original $guid 'DnsStatic' (Get-StaticDnsString $guid)
+            $curRd = [string](Get-NetIPInterface -InterfaceIndex $Ad.ifIndex -AddressFamily IPv6 -ErrorAction SilentlyContinue).RouterDiscovery
+            if ($curRd) { Save-Original $guid 'Ipv6Rd' $curRd }
             $why = if ($verdict.IsSinkhole) { "Neutralize rogue IPv6 DNS sinkhole on $($Ad.Name)" }
                    else { "Neutralize unroutable IPv6 DNS forwarder on $($Ad.Name) (link lacks global IPv6 route)" }
             $ok = Invoke-Change $why {
-                Set-DnsClientServerAddress -InterfaceIndex $Ad.ifIndex -ResetServerAddresses -ErrorAction SilentlyContinue
                 Set-NetIPInterface -InterfaceIndex $Ad.ifIndex -AddressFamily IPv6 -RouterDiscovery Disabled -ErrorAction SilentlyContinue
                 Disable-NetAdapterBinding -Name $Ad.Name -ComponentId 'ms_tcpip6' -Confirm:$false -ErrorAction Stop
             }
             if ($ok -and -not $script:IsDry) {
                 (Get-SubTable 'Dns' $guid).Ipv6Neutralized = $true
+                (Get-SubTable 'Dns' $guid).Managed = $true
                 Clear-DnsClientCache -ErrorAction SilentlyContinue
                 $script:ConnCache = $null
             }
@@ -4220,6 +4248,7 @@ function Shield-Dns($Ctx, [string]$ConnState) {
     $d = Get-SubTable 'Dns' $guid
     $prof = Get-DnsProfileName
     if ($Ctx.Env.Env -eq 'Other') {
+        Restore-Ipv6IfNeutralized $ad
         Remove-CampusNrpt
         if (($prof -eq 'Adaptive' -or $prof -eq 'DHCP') -and $ConnState -ne 'NoDns') {
             if ($d.Managed -eq $true -and [string]$d.Phase -eq 'Public') {
@@ -4305,16 +4334,21 @@ function Shield-Dns($Ctx, [string]$ConnState) {
 # ==============================================================================
 function Shield-Portal($Ctxs) {
     $camp = @($Ctxs | Where-Object { $_.Env.Env -eq 'Campus' })
-    if ($camp.Count -eq 0) { Write-Log 'INFO' 'Not on campus: portal checks skipped.'; return }
+    $discovered = -not [string]::IsNullOrWhiteSpace([string]$script:State.Misc['DiscoveredPortalUrl'])
+    if ($camp.Count -eq 0 -and -not $discovered) { Write-Log 'INFO' 'Not on campus: portal checks skipped.'; return }
     $homeAny = $false
     foreach ($cx in $camp) { if (($null -eq $cx.Env.Home) -or [bool]$cx.Env.Home) { $homeAny = $true } }
-    if (-not $homeAny) { Write-Log 'INFO' 'This campus is not the one the built-in portal values describe: configured-portal checks skipped.'; return }
-    $tcp = Test-TcpPort $script:Cfg.PortalIp $script:Cfg.PortalPort 900
-    if ($tcp) { Write-Log 'OK' ("Portal {0}:{1} reachable" -f $script:Cfg.PortalIp, $script:Cfg.PortalPort) }
-    else { Write-Log 'WARN' ("Portal {0}:{1} not reachable (normal if the session is already authenticated and the firewall hides it)" -f $script:Cfg.PortalIp, $script:Cfg.PortalPort) }
-    $ip = Resolve-HostBounded $script:Cfg.PortalHost 1800
-    if ($ip) { Write-Log 'OK' "Portal name resolves: $($script:Cfg.PortalHost) -> $ip" }
-    else { Write-Log 'WARN' "Portal name $($script:Cfg.PortalHost) does not resolve with the current DNS." }
+    if (-not $homeAny -and -not $discovered) { Write-Log 'INFO' 'This campus is not the one the built-in portal values describe: configured-portal checks skipped.'; return }
+    $ep = Get-ActivePortalEndpoint
+    $tcp = Test-TcpPort $ep.Ip $ep.Port 900
+    if ($tcp) { Write-Log 'OK' ("Portal {0}:{1} reachable" -f $ep.Ip, $ep.Port) }
+    else { Write-Log 'WARN' ("Portal {0}:{1} not reachable (normal if the session is already authenticated and the firewall hides it)" -f $ep.Ip, $ep.Port) }
+    foreach ($cx in $camp) {
+        $src = [string](Get-ValidIPv4 $cx.Ad)
+        $ip = Resolve-HostBounded $ep.Host 1800 $src -NoPin
+        if ($ip) { Write-Log 'OK' "Portal name resolves on $($cx.Ad.Name): $($ep.Host) -> $ip" }
+        else { Write-Log 'WARN' "Portal name $($ep.Host) does not resolve through $($cx.Ad.Name)'s own DNS." }
+    }
 }
 
 # ==============================================================================
@@ -4377,6 +4411,7 @@ function Invoke-RoamingCleanup {
     Restore-Ipv6PrecedenceIfManaged 'Left campus: IPv6 prefix policy restored'
     if (Test-MetricsManaged) { Restore-InterfaceMetrics 'Left campus' }
     [void](Restore-ManagedAdapterDns 'Left campus')
+    foreach ($ea in @(Get-EthernetAdapters)) { Restore-Ipv6IfNeutralized $ea }
     Restore-NeutralizedInterceptors 'Left campus'
     if (-not $script:IsDry -and $script:State -is [hashtable] -and $script:State.Misc -is [hashtable]) {
         $script:State.Misc.Remove('DiscoveredPortalUrl')
@@ -4396,10 +4431,17 @@ function Restore-NeutralizedInterceptors([string]$Why = 'Non-campus network') {
     }
     if ($script:State.Misc['NeutralizedServices'] -is [hashtable]) {
         foreach ($sn in @($script:State.Misc['NeutralizedServices'].Keys)) {
-            $origStart = [string]$script:State.Misc['NeutralizedServices'][$sn]
+            $rec = $script:State.Misc['NeutralizedServices'][$sn]
+            $origStart = if ($rec -is [hashtable]) { [string]$rec.StartType } else { [string]$rec }
             if ($origStart -and $origStart -ne 'Disabled') {
                 [void](Invoke-Change "$($Why): restored service $sn to $origStart" {
                     Set-Service -Name $sn -StartupType $origStart -ErrorAction SilentlyContinue
+                    if ($rec -is [hashtable] -and $rec.DelayedAuto) {
+                        Set-ItemProperty -LiteralPath "HKLM:\SYSTEM\CurrentControlSet\Services\$sn" -Name DelayedAutostart -Value 1 -Type DWord -ErrorAction SilentlyContinue
+                    }
+                    if ($rec -is [hashtable] -and $rec.WasRunning) {
+                        Start-Service -Name $sn -ErrorAction SilentlyContinue
+                    }
                 })
             }
         }
@@ -4588,6 +4630,7 @@ function Shield-TcpAutoTuning {
     try {
         $tcpSetting = Get-NetTCPSetting -SettingName Internet -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($tcpSetting -and [string]$tcpSetting.AutoTuningLevelLocal -eq 'Disabled') {
+            Save-Original 'Global' 'TcpAutoTuning' 'Disabled'
             [void](Invoke-Change 'TCP Window Auto-Tuning restored to Normal (was Disabled by third-party optimizer)' {
                 Set-NetTCPSetting -SettingName Internet -AutoTuningLevelLocal Normal -ErrorAction Stop
             })
@@ -4708,6 +4751,10 @@ function Shield-SystemStack([switch]$Aggressive) {
                 $skipKill = $true
             }
         }
+        if (-not $loopbackCleared -and -not $hasPoison -and -not $Aggressive) {
+            Write-Log 'INFO' 'System resolver failed, but nothing points at a local resolver and no synthetic error record was seen; local processes and services were left alone.'
+            $skipKill = $true
+        }
         if (-not $skipKill) {
             $matchRegex = $wfpDnsRegex
             $rogueProcs = @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
@@ -4724,7 +4771,12 @@ function Shield-SystemStack([switch]$Aggressive) {
                     foreach ($s in $rogueSvcs) {
                         Write-Log 'INFO' ("Stopping rogue DNS interceptor service $($s.Name) (startup set to Manual)...")
                         if (-not $script:State.Misc['NeutralizedServices'].ContainsKey($s.Name)) {
-                            $script:State.Misc['NeutralizedServices'][$s.Name] = [string]$s.StartType
+                            $isDelayed = [bool]((Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\$($s.Name)" -ErrorAction SilentlyContinue).DelayedAutostart)
+                            $script:State.Misc['NeutralizedServices'][$s.Name] = @{
+                                StartType   = [string]$s.StartType
+                                DelayedAuto = $isDelayed
+                                WasRunning  = ($s.Status -eq 'Running')
+                            }
                         }
                         Stop-Service -Name $s.Name -Force -ErrorAction SilentlyContinue
                         Set-Service -Name $s.Name -StartupType Manual -ErrorAction SilentlyContinue
@@ -4973,15 +5025,16 @@ function Shield-Services($Ctxs, [string]$ConnState) {
         [void](Invoke-Change 'Windows connectivity probing re-enabled (it was switched off)' { Set-ItemProperty -LiteralPath $nk -Name EnableActiveProbing -Value 1 -Type DWord -ErrorAction Stop })
     }
     # Internet works but Windows still says "no internet": nudge the Network List service (rate-limited).
-    if ($ConnState -eq 'Online' -and -not $script:IsDry) {
+    if ($ConnState -eq 'Online' -and -not $script:IsDry -and (Test-Elapsed 'NlaNudge' 900)) {
         foreach ($ctx in $Ctxs) {
             $np = Get-NetConnectionProfile -InterfaceIndex $ctx.Ad.ifIndex -ErrorAction SilentlyContinue | Select-Object -First 1
             if ($np -and [string]$np.IPv4Connectivity -ne 'Internet') {
                 Start-Sleep -Seconds 5
                 $np = Get-NetConnectionProfile -InterfaceIndex $ctx.Ad.ifIndex -ErrorAction SilentlyContinue | Select-Object -First 1
-                if ($np -and [string]$np.IPv4Connectivity -ne 'Internet' -and (Test-Elapsed 'NlaNudge' 900)) {
+                if ($np -and [string]$np.IPv4Connectivity -ne 'Internet') {
                     Set-StateTime 'NlaNudge'
                     [void](Invoke-Change 'Network List service refreshed (Windows showed "no internet" while it works)' { Restart-Service -Name NlaSvc -Force -ErrorAction Stop })
+                    break
                 }
             }
         }
@@ -5046,8 +5099,9 @@ function Invoke-HealPipeline([switch]$SkipSystemStack) {
     if (-not $SkipSystemStack) { Shield-SystemStack }
     $ads = @(Get-EthernetAdapters)
     if ($ads.Count -gt 0) {
+        $anyUp = @($ads | Where-Object { $_.Status -eq 'Up' }).Count -gt 0
         foreach ($a in $ads) {
-            if ($a.Status -eq 'Disabled' -and $Mode -ne 'AutoHeal') {   # a manual repair may re-enable it; the watchdog never overrides a choice you made
+            if ($a.Status -eq 'Disabled' -and $Mode -ne 'AutoHeal' -and -not $anyUp) {   # a manual repair may re-enable it; the watchdog never overrides a choice you made
                 [void](Invoke-Change "Enabling disabled physical Ethernet adapter $($a.Name)" {
                     Enable-NetAdapter -Name $a.Name -Confirm:$false -ErrorAction Stop
                 })
@@ -5127,6 +5181,7 @@ function Invoke-HealPipeline([switch]$SkipSystemStack) {
     }
     if (-not $script:IsDry) { Set-StateTime 'LastFull'; $script:State.Misc['Version'] = $script:Version; Save-State }
     $res.Conn = (Get-InternetState -NoCache).State
+    $res.Ip = if ($ups.Count -gt 0) { [string](Get-ValidIPv4 $ups[0]) } else { '' }
     $res.Problem = (Get-AdapterHealth $ups[0]).Problem
     if (Clear-FailStreakIfRecovered ([string]$res.Problem)) { Save-State }
     return $res
@@ -5953,6 +6008,14 @@ function Restore-Everything {
                     if ($null -eq $kai) { Remove-ItemProperty -LiteralPath $script:TcpParamKey -Name KeepAliveInterval -ErrorAction SilentlyContinue }
                     else { Set-ItemProperty -LiteralPath $script:TcpParamKey -Name KeepAliveInterval -Value ([int]$kai) -Type DWord -ErrorAction Stop }
                 })
+            }
+            if ($snap.ContainsKey('TcpAutoTuning')) {
+                $tat = [string]$snap['TcpAutoTuning']
+                if ($tat -eq 'Disabled') {
+                    [void](Invoke-Change 'TCP Window Auto-Tuning restored to Disabled (original user setting)' {
+                        Set-NetTCPSetting -SettingName Internet -AutoTuningLevelLocal Disabled -ErrorAction Stop
+                    })
+                }
             }
             continue
         }
@@ -7199,7 +7262,12 @@ function Get-RoutingLabel([bool]$Managed, [int]$Metric, [bool]$LinkUp, [bool]$Up
         if ($UplinkActive) { return 'Wi-Fi First' }
         return 'Wi-Fi Standby'
     }
-    if ($Profile -eq 'Ethernet') { return 'Ethernet First' }
+    if ($Profile -eq 'Ethernet') {
+        if (-not $LinkUp) { return 'Ethernet Down' }
+        if (-not $Managed) { return 'Ethernet (unmanaged)' }
+        if ($Metric -le 15) { return 'Ethernet First' }
+        return 'Ethernet (metric drifted)'
+    }
     if (-not $Managed) { return 'automatic' }
     if (-not $LinkUp) { return $(if ($UplinkActive) { 'Wi-Fi Protected' } else { 'automatic' }) }
     if ($Metric -ge 45) { return $(if ($UplinkActive) { 'Wi-Fi Protected' } else { 'Ethernet Demoted' }) }
@@ -7459,7 +7527,8 @@ function Start-Interactive {
     }
     try {
         $intFile = Join-Path $script:StoreDir 'interactive.json'
-        $meta = @{ Pid = $PID; StartTime = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss'); User = [string]$env:USERNAME }
+        $self = [System.Diagnostics.Process]::GetCurrentProcess()
+        $meta = @{ Pid = $PID; StartTime = $self.StartTime.ToUniversalTime().ToString('o'); User = [string]$env:USERNAME }
         [System.IO.File]::WriteAllText($intFile, (ConvertTo-Json -InputObject $meta -Compress))
     } catch {}
     try { [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = [System.Diagnostics.ProcessPriorityClass]::AboveNormal } catch {}
