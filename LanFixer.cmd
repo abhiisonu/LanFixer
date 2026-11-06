@@ -2591,7 +2591,7 @@ function Show-VaultMenu {
         $k = Read-Choice
         Out-Line @()
         Out-Line @()
-        switch (([string]$k.KeyChar).ToLower()) {
+        switch (([string]$k.KeyChar).ToLowerInvariant()) {
             's' {
                 if (-not (Assert-Admin)) { Out-Line @(); Out-Line @((Seg 'dim' '  press any key')); Wait-AnyKey; continue }
                 Out-Line @((Seg 'text' '  Use the same login you type on the campus portal page.'))
@@ -4875,7 +4875,14 @@ function Shield-SystemStack([switch]$Aggressive) {
                     $recheck = @(Get-ScopedDnsAnswers 'accounts.google.com' $ouSrc 1500)
                     if ($recheck.Count -eq 0) {
                         $ouEnv = (Get-AdapterEnvironment $ou).Env
-                        if ($ouEnv -ne 'Campus') { [void](Set-AdapterDns $ou @('8.8.8.8','1.1.1.1')) }
+                        if ($ouEnv -ne 'Campus') {
+                            $fallbackDns = @()
+                            $dhcpDns = @(Get-DhcpDnsServers $ouGuid | Where-Object { $_ -ne $script:Cfg.CampusDns -and $_ -ne $script:Cfg.PortalIp })
+                            if ($dhcpDns.Count -gt 0) { $fallbackDns = $dhcpDns }
+                            elseif ($ou.IPv4DefaultGateway) { $fallbackDns = @($ou.IPv4DefaultGateway) }
+                            else { $fallbackDns = @('8.8.8.8','1.1.1.1') }
+                            [void](Set-AdapterDns $ou $fallbackDns)
+                        }
                         Clear-DnsClientCache -ErrorAction SilentlyContinue
                     }
                 }
@@ -7590,7 +7597,7 @@ function Start-Interactive {
             }
             if ($draw -and $null -eq $key) { continue }
             if ($null -eq $key) { continue }
-            $ch = ([string]$key.KeyChar).ToLower()
+            $ch = ([string]$key.KeyChar).ToLowerInvariant()
             if ($key.Key -eq 'Enter') { $ch = [string]$adv.Key }
             if ($key.Key -eq 'Spacebar' -or $key.KeyChar -eq ' ' -or $key.Key -eq 'F5') { $ch = '' }
             if ($key.Key -eq 'Escape') { $ch = '' }
