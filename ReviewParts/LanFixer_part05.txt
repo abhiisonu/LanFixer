@@ -1,3 +1,19 @@
+    if ($state -eq 'Captive') {
+        if ($p1.Location) { $loc = [string]$p1.Location } elseif ($p2.Location) { $loc = [string]$p2.Location }
+        if ($loc -and -not $script:IsDry -and $script:State -is [hashtable] -and $script:State.Misc -is [hashtable]) {
+            try {
+                $lu = [uri]$loc
+                if ($lu.IsAbsoluteUri -and ($lu.Scheme -eq 'http' -or $lu.Scheme -eq 'https')) {
+                    $script:State.Misc['DiscoveredPortalUrl'] = [string]$lu.AbsoluteUri
+                    $script:State.Misc['DiscoveryTime'] = (Get-Date).ToString('o')
+                    $tmpIp = $null
+                    if ([System.Net.IPAddress]::TryParse($lu.Host, [ref]$tmpIp) -and (Test-AllowedPortalIp $lu.Host)) {
+                        $script:State.Misc['DiscoveredPortalIp'] = $lu.Host
+                    }
+                }
+            } catch {}
+        }
+    }
     $res = @{ State = $state; Location = $loc; Via = $via }
     $script:ConnCache = @{ Time = (Get-Date); Result = $res; Key = $ckey }
     return $res
@@ -782,19 +798,3 @@ function Shield-DataLink($Ctx) {
     }
     $validIp = Get-ValidIPv4 $ad
     if ($validIp -and $Ctx.Env.Env -eq 'Campus' -and -not $script:IsDry) {
-        $gw = @(Get-GatewaysV4 $ad) | Select-Object -First 1
-        if ($gw) { $script:State.Misc['LastCampusLease'] = @{ Ip = [string]$validIp; Gateway = [string]$gw; Time = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss') } }
-    }
-}
-
-# ==============================================================================
-# LAYER 3 - GATEWAY ARP INTEGRITY (verify, then lock; auto-release if it hurts)
-# ==============================================================================
-function Get-GatewayMacs($Ad, [string]$Gw, [int]$Samples = 3) {
-    $macs = @()
-    for ($i = 0; $i -lt $Samples; $i++) {
-        if (-not $script:IsDry) {
-            Remove-NetNeighbor -InterfaceIndex $Ad.ifIndex -IPAddress $Gw -Confirm:$false -ErrorAction SilentlyContinue
-        } else {
-            Write-Log 'DRY' "Would refresh neighbour entry for $Gw on $($Ad.Name)"
-        }

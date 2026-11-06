@@ -1,3 +1,19 @@
+        $gw = @(Get-GatewaysV4 $ad) | Select-Object -First 1
+        if ($gw) { $script:State.Misc['LastCampusLease'] = @{ Ip = [string]$validIp; Gateway = [string]$gw; Time = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss') } }
+    }
+}
+
+# ==============================================================================
+# LAYER 3 - GATEWAY ARP INTEGRITY (verify, then lock; auto-release if it hurts)
+# ==============================================================================
+function Get-GatewayMacs($Ad, [string]$Gw, [int]$Samples = 3) {
+    $macs = @()
+    for ($i = 0; $i -lt $Samples; $i++) {
+        if (-not $script:IsDry) {
+            Remove-NetNeighbor -InterfaceIndex $Ad.ifIndex -IPAddress $Gw -Confirm:$false -ErrorAction SilentlyContinue
+        } else {
+            Write-Log 'DRY' "Would refresh neighbour entry for $Gw on $($Ad.Name)"
+        }
         [void](Test-Ping $Gw 700)
         Start-Sleep -Milliseconds 200
         $n = Get-NetNeighbor -InterfaceIndex $Ad.ifIndex -IPAddress $Gw -AddressFamily IPv4 -ErrorAction SilentlyContinue |
@@ -782,19 +798,3 @@ function Restore-NeutralizedInterceptors([string]$Why = 'Non-campus network') {
             })
         }
         if (-not $script:IsDry) { $script:State.Misc.Remove('NeutralizedTasks') }
-    }
-    if ($script:State.Misc['NeutralizedServices'] -is [hashtable]) {
-        foreach ($sn in @($script:State.Misc['NeutralizedServices'].Keys)) {
-            $rec = $script:State.Misc['NeutralizedServices'][$sn]
-            $origStart = if ($rec -is [hashtable]) { [string]$rec.StartType } else { [string]$rec }
-            if ($origStart -and $origStart -ne 'Disabled') {
-                [void](Invoke-Change "$($Why): restored service $sn to $origStart" {
-                    Set-Service -Name $sn -StartupType $origStart -ErrorAction SilentlyContinue
-                    if ($rec -is [hashtable] -and $rec.DelayedAuto) {
-                        Set-ItemProperty -LiteralPath "HKLM:\SYSTEM\CurrentControlSet\Services\$sn" -Name DelayedAutostart -Value 1 -Type DWord -ErrorAction SilentlyContinue
-                    }
-                    if ($rec -is [hashtable] -and $rec.WasRunning) {
-                        Start-Service -Name $sn -ErrorAction SilentlyContinue
-                    }
-                })
-            }

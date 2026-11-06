@@ -1,3 +1,19 @@
+    $msgXml   = [System.Security.SecurityElement]::Escape($Message)
+    $script = @"
+[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
+[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null
+`$ip = (Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { `$_.InterfaceAlias -match 'Ethernet|LAN' -and `$_.IPAddress -notlike '169.254.*' } | Select-Object -First 1).IPAddress
+`$m = if ('$msgXml') { '$msgXml' } elseif (`$ip) { "Ethernet is back online (`$ip)! You can turn off a mobile hotspot." } else { "Ethernet is back online! You can turn off a mobile hotspot." }
+`$xml = New-Object Windows.Data.Xml.Dom.XmlDocument
+`$xml.LoadXml('<toast><visual><binding template=""ToastGeneric""><text>$titleXml</text><text>' + [System.Security.SecurityElement]::Escape(`$m) + '</text></binding></visual></toast>')
+`$toast = New-Object Windows.UI.Notifications.ToastNotification `$xml
+`$appId = '{1AC14E77-02E7-4E60-B746-AC6A9D31BDE8}\WindowsPowerShell\v1.0\powershell.exe'
+try { [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier(`$appId).Show(`$toast) } catch {}
+"@
+    $b64 = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($script))
+    $args = "-NoProfile -ExecutionPolicy Bypass -EncodedCommand $b64"
+    return @"
+<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
     <Description>Displays LAN Fixer recovery notifications in the active user desktop session.</Description>
@@ -782,19 +798,3 @@ function Show-Diagnostics {
 }
 
 # ==============================================================================
-# QUICK PROBE (real numbers, real thresholds)
-# ==============================================================================
-function Get-LatencyLabel([double]$Ms) {
-    if ($Ms -lt 5) { return @('excellent', 'Green') }
-    if ($Ms -lt 20) { return @('good', 'Green') }
-    if ($Ms -lt 60) { return @('fair', 'Yellow') }
-    return @('poor', 'Red')
-}
-function Run-QuickProbe {
-    Write-Banner 'LATENCY, PACKET LOSS & JITTER PROBE'
-    $ethAds = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })
-    $secAds = @(Get-OtherUplinkAdapters)
-    $gatewaysToProbe = @()
-    if ($ethAds.Count -gt 0) {
-        $egw = @(Get-GatewaysV4 $ethAds[0]) | Select-Object -First 1
-        if ($egw) { $gatewaysToProbe += @{ Label = 'Ethernet Gateway'; Ip = $egw } }

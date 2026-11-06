@@ -217,13 +217,13 @@ function Show-VaultMenu {
         Out-Line @((Seg 'dim' '  Certificate   '), (Seg $pinRole $pinTxt))
         Out-Line @((Seg 'dim' '  Auto Sign-In  '), (Seg $autoRole $autoTxt))
         Out-Line @()
-        Out-Line @((Seg 'accent' '  [S]'), (Seg 'text' ' Save / Update   '), (Seg 'accent' '[T]'), (Seg 'text' ' Test Login   '), (Seg 'accent' '[P]'), (Seg 'text' ' Certificate Pinning   '), (Seg 'accent' '[C]'), (Seg 'text' ' Clear Credentials'))
+        Out-Line @((Seg 'accent' '  [S/1]'), (Seg 'text' ' Save / Update   '), (Seg 'accent' '[T/2]'), (Seg 'text' ' Test Login   '), (Seg 'accent' '[P/3]'), (Seg 'text' ' Certificate Pinning   '), (Seg 'accent' '[C/4]'), (Seg 'text' ' Clear Credentials'))
         Out-Line @((Seg 'dim' '  Press any other key to return '), (Seg 'accent!' $script:G.prompt)) -NoNewline
         $k = Read-Choice
         Out-Line @()
         Out-Line @()
         switch (([string]$k.KeyChar).ToLowerInvariant()) {
-            's' {
+            { $_ -eq 's' -or $_ -eq '1' } {
                 if (-not (Assert-Admin)) { Out-Line @(); Out-Line @((Seg 'dim' '  press any key')); Wait-AnyKey; continue }
                 Out-Line @((Seg 'text' '  Use the same login you type on the campus portal page.'))
                 if (-not (Read-Confirm 'Store this login on this PC?')) { Out-Line @((Seg 'dim' '  cancelled.')); Start-Sleep -Milliseconds 700; continue }
@@ -255,13 +255,13 @@ function Show-VaultMenu {
                 }
                 Start-Sleep -Seconds 1
             }
-            't' {
+            { $_ -eq 't' -or $_ -eq '2' } {
                 if (-not (Assert-Admin)) { Out-Line @(); Out-Line @((Seg 'dim' '  press any key')); Wait-AnyKey; continue }
                 [void](Invoke-HeadlessPortalLogin -Manual)
                 if (-not $script:IsDry) { [void](Invoke-WithLock { Save-State }) }
                 Out-Line @(); Out-Line @((Seg 'dim' '  press any key')); Wait-AnyKey
             }
-            'p' {
+            { $_ -eq 'p' -or $_ -eq '3' } {
                 if (-not (Assert-Admin)) { Out-Line @(); Out-Line @((Seg 'dim' '  press any key')); Wait-AnyKey; continue }
                 $liveUrl = Resolve-PortalUrl (Get-InternetState -NoCache)
                 $targetUri = $null; try { $targetUri = [uri]$liveUrl } catch {}
@@ -284,7 +284,7 @@ function Show-VaultMenu {
                 }
                 Out-Line @(); Out-Line @((Seg 'dim' '  press any key')); Wait-AnyKey
             }
-            'c' {
+            { $_ -eq 'c' -or $_ -eq '4' } {
                 if (-not (Assert-Admin)) { Out-Line @(); Out-Line @((Seg 'dim' '  press any key')); Wait-AnyKey; continue }
                 if (Read-Confirm 'Delete the saved login and the approved certificate?') {
                     [void](Invoke-WithLock { Remove-PortalCredentials; $script:State.Misc.Remove('PortalPin'); Save-State })
@@ -326,7 +326,7 @@ function Start-Repair([string]$Title = 'quick heal') {
 }
 
 function Invoke-DashboardKey([string]$Key, $adv) {
-    $aliases = @{ w = '2'; n = '3'; p = '4'; f = '5'; c = '5'; d = '6'; o = '7'; v = 'a'; l = 'g'; h = '0'; '?' = '0' }
+    $aliases = @{ w = '2'; n = 'x'; p = '4'; f = '5'; c = '5'; i = '6'; o = '7'; v = 'a'; l = 'g'; h = '0'; '?' = '0' }
     if ($aliases.ContainsKey($Key)) { $Key = $aliases[$Key] }
     switch ($Key) {
         '0' { Show-Advisory }
@@ -351,7 +351,7 @@ function Invoke-DashboardKey([string]$Key, $adv) {
                 $k = Read-Choice
                 Out-Line @()
                 $choice = ([string]$k.KeyChar).ToLowerInvariant()
-                if ($choice -eq '4' -or $choice -eq 'a') {
+                if ($choice -eq '4' -or $choice -eq 'a' -or $choice -eq 'k') {
                     if (Read-Confirm 'Execute ARMAGEDDON SYSTEM RESET (netcfg -d, requires reboot)?' 'no') {
                         $script:ChangeCount = 0; $script:FailCount = 0
                         Invoke-ArmageddonReset
@@ -375,7 +375,7 @@ function Invoke-DashboardKey([string]$Key, $adv) {
                     } else {
                         Out-Line @((Seg 'dim' '  Operation cancelled. No changes made.'))
                     }
-                } elseif ($choice -eq '1' -or $choice -eq 'x') {
+                } elseif ($choice -eq '1' -or $choice -eq 'x' -or $choice -eq 's') {
                     if (Read-Confirm 'Proceed with Standard Full Net Reset?' 'yes') {
                         $script:ChangeCount = 0; $script:FailCount = 0
                         Invoke-SupremeOmnifix
@@ -383,6 +383,22 @@ function Invoke-DashboardKey([string]$Key, $adv) {
                     } else {
                         Out-Line @((Seg 'dim' '  Operation cancelled. No changes made.'))
                     }
+                } else {
+                    Out-Line @((Seg 'dim' '  Operation cancelled. No changes made.'))
+                }
+            }
+        }
+        '!' {
+            Show-View 'armageddon deep os wipe (netcfg -d)' {
+                if (-not (Assert-Admin)) { return }
+                Out-Line @((Seg 'bad!' '  DANGER: ARMAGEDDON SYSTEM RESET PERFORMS A KERNEL-LEVEL NETWORK REINSTALL:'))
+                Out-Wrapped 'faint' $script:G.mid 'text' 'Kernel-level removal and reinstallation of all network protocols, virtual adapters, and hardware stacks via netcfg -d.' 4
+                Out-Wrapped 'warn'  $script:G.mid 'warn' 'Requires an immediate system reboot to reconstruct the Windows networking stack.' 4
+                Out-Line @()
+                if (Read-Confirm 'Execute ARMAGEDDON SYSTEM RESET (netcfg -d, requires reboot)?' 'no') {
+                    $script:ChangeCount = 0; $script:FailCount = 0
+                    Invoke-ArmageddonReset
+                    $script:WdCache = $null
                 } else {
                     Out-Line @((Seg 'dim' '  Operation cancelled. No changes made.'))
                 }
@@ -782,19 +798,3 @@ function Get-InternetState {
         }
     }
     $loc = ''
-    if ($state -eq 'Captive') {
-        if ($p1.Location) { $loc = [string]$p1.Location } elseif ($p2.Location) { $loc = [string]$p2.Location }
-        if ($loc -and -not $script:IsDry -and $script:State -is [hashtable] -and $script:State.Misc -is [hashtable]) {
-            try {
-                $lu = [uri]$loc
-                if ($lu.IsAbsoluteUri -and ($lu.Scheme -eq 'http' -or $lu.Scheme -eq 'https')) {
-                    $script:State.Misc['DiscoveredPortalUrl'] = [string]$lu.AbsoluteUri
-                    $script:State.Misc['DiscoveryTime'] = (Get-Date).ToString('o')
-                    $tmpIp = $null
-                    if ([System.Net.IPAddress]::TryParse($lu.Host, [ref]$tmpIp) -and (Test-AllowedPortalIp $lu.Host)) {
-                        $script:State.Misc['DiscoveredPortalIp'] = $lu.Host
-                    }
-                }
-            } catch {}
-        }
-    }

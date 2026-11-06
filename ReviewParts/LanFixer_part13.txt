@@ -1,0 +1,12 @@
+}
+if ($exitCode -eq 0 -and $script:FailCount -gt 0 -and (@('AutoHeal', 'Heal', 'QuickHeal', 'Omnifix', 'NetReset', 'FullNetReset', 'UltraReset', 'Ultra', 'DoomsdayReset', 'Doomsday', 'ArmageddonReset', 'Armageddon') -contains $Mode)) { $exitCode = 2 }
+if ($exitCode -ne 0 -and -not $NoPause -and $Host.Name -eq 'ConsoleHost') {
+    Write-Host ''
+    Write-Host 'LanFixer closed with an exit code. Press any key to close...' -ForegroundColor Gray
+    Wait-AnyKey
+} elseif ($script:UiOn -and $Mode -ne 'Interactive' -and -not $NoPause -and $Host.Name -eq 'ConsoleHost') {
+    Write-Host ''
+    Write-Host 'Press any key to close...' -ForegroundColor Gray
+    Wait-AnyKey
+}
+exit $exitCode

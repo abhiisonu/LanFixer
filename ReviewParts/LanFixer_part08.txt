@@ -1,3 +1,19 @@
+                }
+            } catch {}
+
+            # Backup custom firewall rules before reset for 100% reversible rollback
+            try {
+                $fwBackup = Join-Path $script:StoreDir 'firewall_pre_reset.wfw'
+                if (-not (Test-Path -LiteralPath $fwBackup)) {
+                    [void](Invoke-Native (Get-SysExe 'netsh.exe') @('advfirewall', 'export', "`"$fwBackup`"") 5000)
+                }
+            } catch {}
+
+            # Windows Defender Firewall factory state restoration
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('advfirewall', 'reset') 8000)
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('advfirewall', 'set', 'allprofiles', 'state', 'on') 5000)
+        }
+
         # ----------------------------------------------------------------------
         # STAGE 5/10: ENCRYPTED DNS (DOH/DOT/DDR) WIPE, WPAD AUTOPROXY & BITS JOB PURGE
         # ----------------------------------------------------------------------
@@ -782,19 +798,3 @@ function Invoke-ArmageddonReset([switch]$RebootNow) {
         Write-Log 'DRY' 'Would prompt or execute scheduled reboot'
         return
     }
-
-    # Pre-flight ACID snapshot
-    Write-Log 'STEP' 'STAGE 1/4 Capturing global pre-flight snapshot across all network adapters'
-    foreach ($a in @(Get-NetAdapter -ErrorAction SilentlyContinue)) {
-        try { [void](Capture-PreflightSnapshot $a) } catch {}
-    }
-
-    # Execute netcfg -d
-    Write-Log 'STEP' 'STAGE 2/4 Executing netcfg.exe -d (wiping network devices, virtual switches & protocol stacks)...'
-    $netcfgRes = Invoke-Native (Get-SysExe 'netcfg.exe') @('-d') 30000
-    if ($netcfgRes.Output) {
-        Write-Log 'INFO' ("netcfg output: {0}" -f $netcfgRes.Output.Trim())
-    }
-
-    # Post-cleanup pass
-    Write-Log 'STEP' 'STAGE 3/4 Running post-cleanup: resetting Winsock, Firewall & RadioManagement...'

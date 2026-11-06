@@ -193,7 +193,7 @@ exit /b %errorlevel%
 
 [CmdletBinding()]
 param(
-    [ValidateSet('Interactive','Heal','AutoHeal','Omnifix','FullNetReset','UltraReset','DoomsdayReset','Doomsday','ArmageddonReset','Armageddon','Diagnose','QuickProbe','FlushCache','InstallWatchdog','UninstallWatchdog','InstallShield','UninstallShield','ResetFactory','LaunchPortal','SetDnsProfile','SetRouteProfile','SelfTest','Report','Daemon')]
+    [ValidateSet('Interactive','Heal','QuickHeal','AutoHeal','Omnifix','NetReset','FullNetReset','UltraReset','Ultra','DoomsdayReset','Doomsday','ArmageddonReset','Armageddon','Diagnose','Audit','QuickProbe','Probe','FlushCache','Flush','InstallWatchdog','UninstallWatchdog','InstallShield','UninstallShield','ResetFactory','Reset','LaunchPortal','Login','SetDnsProfile','Dns','DnsMenu','SetRouteProfile','Route','RouteMenu','SelfTest','Verify','Report','Daemon','Vault','Guide','Help')]
     [string]$Mode = 'Interactive',
     [ValidateSet('Adaptive','DHCP','Hybrid','Cloudflare','ResetDHCP')]
     [string]$DnsProfile = 'Adaptive',
@@ -2617,13 +2617,13 @@ function Show-VaultMenu {
         Out-Line @((Seg 'dim' '  Certificate   '), (Seg $pinRole $pinTxt))
         Out-Line @((Seg 'dim' '  Auto Sign-In  '), (Seg $autoRole $autoTxt))
         Out-Line @()
-        Out-Line @((Seg 'accent' '  [S]'), (Seg 'text' ' Save / Update   '), (Seg 'accent' '[T]'), (Seg 'text' ' Test Login   '), (Seg 'accent' '[P]'), (Seg 'text' ' Certificate Pinning   '), (Seg 'accent' '[C]'), (Seg 'text' ' Clear Credentials'))
+        Out-Line @((Seg 'accent' '  [S/1]'), (Seg 'text' ' Save / Update   '), (Seg 'accent' '[T/2]'), (Seg 'text' ' Test Login   '), (Seg 'accent' '[P/3]'), (Seg 'text' ' Certificate Pinning   '), (Seg 'accent' '[C/4]'), (Seg 'text' ' Clear Credentials'))
         Out-Line @((Seg 'dim' '  Press any other key to return '), (Seg 'accent!' $script:G.prompt)) -NoNewline
         $k = Read-Choice
         Out-Line @()
         Out-Line @()
         switch (([string]$k.KeyChar).ToLowerInvariant()) {
-            's' {
+            { $_ -eq 's' -or $_ -eq '1' } {
                 if (-not (Assert-Admin)) { Out-Line @(); Out-Line @((Seg 'dim' '  press any key')); Wait-AnyKey; continue }
                 Out-Line @((Seg 'text' '  Use the same login you type on the campus portal page.'))
                 if (-not (Read-Confirm 'Store this login on this PC?')) { Out-Line @((Seg 'dim' '  cancelled.')); Start-Sleep -Milliseconds 700; continue }
@@ -2655,13 +2655,13 @@ function Show-VaultMenu {
                 }
                 Start-Sleep -Seconds 1
             }
-            't' {
+            { $_ -eq 't' -or $_ -eq '2' } {
                 if (-not (Assert-Admin)) { Out-Line @(); Out-Line @((Seg 'dim' '  press any key')); Wait-AnyKey; continue }
                 [void](Invoke-HeadlessPortalLogin -Manual)
                 if (-not $script:IsDry) { [void](Invoke-WithLock { Save-State }) }
                 Out-Line @(); Out-Line @((Seg 'dim' '  press any key')); Wait-AnyKey
             }
-            'p' {
+            { $_ -eq 'p' -or $_ -eq '3' } {
                 if (-not (Assert-Admin)) { Out-Line @(); Out-Line @((Seg 'dim' '  press any key')); Wait-AnyKey; continue }
                 $liveUrl = Resolve-PortalUrl (Get-InternetState -NoCache)
                 $targetUri = $null; try { $targetUri = [uri]$liveUrl } catch {}
@@ -2684,7 +2684,7 @@ function Show-VaultMenu {
                 }
                 Out-Line @(); Out-Line @((Seg 'dim' '  press any key')); Wait-AnyKey
             }
-            'c' {
+            { $_ -eq 'c' -or $_ -eq '4' } {
                 if (-not (Assert-Admin)) { Out-Line @(); Out-Line @((Seg 'dim' '  press any key')); Wait-AnyKey; continue }
                 if (Read-Confirm 'Delete the saved login and the approved certificate?') {
                     [void](Invoke-WithLock { Remove-PortalCredentials; $script:State.Misc.Remove('PortalPin'); Save-State })
@@ -2726,7 +2726,7 @@ function Start-Repair([string]$Title = 'quick heal') {
 }
 
 function Invoke-DashboardKey([string]$Key, $adv) {
-    $aliases = @{ w = '2'; n = '3'; p = '4'; f = '5'; c = '5'; d = '6'; o = '7'; v = 'a'; l = 'g'; h = '0'; '?' = '0' }
+    $aliases = @{ w = '2'; n = 'x'; p = '4'; f = '5'; c = '5'; i = '6'; o = '7'; v = 'a'; l = 'g'; h = '0'; '?' = '0' }
     if ($aliases.ContainsKey($Key)) { $Key = $aliases[$Key] }
     switch ($Key) {
         '0' { Show-Advisory }
@@ -2751,7 +2751,7 @@ function Invoke-DashboardKey([string]$Key, $adv) {
                 $k = Read-Choice
                 Out-Line @()
                 $choice = ([string]$k.KeyChar).ToLowerInvariant()
-                if ($choice -eq '4' -or $choice -eq 'a') {
+                if ($choice -eq '4' -or $choice -eq 'a' -or $choice -eq 'k') {
                     if (Read-Confirm 'Execute ARMAGEDDON SYSTEM RESET (netcfg -d, requires reboot)?' 'no') {
                         $script:ChangeCount = 0; $script:FailCount = 0
                         Invoke-ArmageddonReset
@@ -2775,7 +2775,7 @@ function Invoke-DashboardKey([string]$Key, $adv) {
                     } else {
                         Out-Line @((Seg 'dim' '  Operation cancelled. No changes made.'))
                     }
-                } elseif ($choice -eq '1' -or $choice -eq 'x') {
+                } elseif ($choice -eq '1' -or $choice -eq 'x' -or $choice -eq 's') {
                     if (Read-Confirm 'Proceed with Standard Full Net Reset?' 'yes') {
                         $script:ChangeCount = 0; $script:FailCount = 0
                         Invoke-SupremeOmnifix
@@ -2783,6 +2783,22 @@ function Invoke-DashboardKey([string]$Key, $adv) {
                     } else {
                         Out-Line @((Seg 'dim' '  Operation cancelled. No changes made.'))
                     }
+                } else {
+                    Out-Line @((Seg 'dim' '  Operation cancelled. No changes made.'))
+                }
+            }
+        }
+        '!' {
+            Show-View 'armageddon deep os wipe (netcfg -d)' {
+                if (-not (Assert-Admin)) { return }
+                Out-Line @((Seg 'bad!' '  DANGER: ARMAGEDDON SYSTEM RESET PERFORMS A KERNEL-LEVEL NETWORK REINSTALL:'))
+                Out-Wrapped 'faint' $script:G.mid 'text' 'Kernel-level removal and reinstallation of all network protocols, virtual adapters, and hardware stacks via netcfg -d.' 4
+                Out-Wrapped 'warn'  $script:G.mid 'warn' 'Requires an immediate system reboot to reconstruct the Windows networking stack.' 4
+                Out-Line @()
+                if (Read-Confirm 'Execute ARMAGEDDON SYSTEM RESET (netcfg -d, requires reboot)?' 'no') {
+                    $script:ChangeCount = 0; $script:FailCount = 0
+                    Invoke-ArmageddonReset
+                    $script:WdCache = $null
                 } else {
                     Out-Line @((Seg 'dim' '  Operation cancelled. No changes made.'))
                 }
@@ -8402,7 +8418,7 @@ function Invoke-LogicTests {
     Write-Check 'Logic: WFP DNS regex spares user proxy/VPN apps' ('clash' -notmatch $wfpReg -and 'v2ray' -notmatch $wfpReg -and 'proxifier' -notmatch $wfpReg)
     # v4.8.0: Inspect real Invoke-DashboardKey definition for aliases and [M] route menu binding
     $dkDef = [string](Get-Command Invoke-DashboardKey -ErrorAction SilentlyContinue).Definition
-    Write-Check 'Logic: Invoke-DashboardKey maps n, c, o aliases, binds m to Show-RouteMenu, and omits dead guide alias' ($dkDef.IndexOf("n = '3'") -ge 0 -and $dkDef.IndexOf("c = '5'") -ge 0 -and $dkDef.IndexOf("o = '7'") -ge 0 -and $dkDef.IndexOf('Show-RouteMenu') -ge 0 -and $dkDef.IndexOf('guide') -lt 0)
+    Write-Check 'Logic: Invoke-DashboardKey maps n to x, c, o aliases, binds m to Show-RouteMenu, and omits dead guide alias' ($dkDef.IndexOf("n = 'x'") -ge 0 -and $dkDef.IndexOf("c = '5'") -ge 0 -and $dkDef.IndexOf("o = '7'") -ge 0 -and $dkDef.IndexOf('Show-RouteMenu') -ge 0 -and $dkDef.IndexOf('guide') -lt 0)
     $tArp = New-Telemetry; $tArp.Admin = $true; $tArp.Problem = 'Healthy'; $tArp.ArpPending = $true
     Write-Check 'Logic: ArpPending surfaces [K] in Get-Advice even when link is Healthy' (((Get-Advice $tArp).Key) -eq 'k')
     Write-Check 'Logic: a fresh telemetry record starts with ArpPending false' ((New-Telemetry).ArpPending -eq $false)
@@ -8809,6 +8825,13 @@ function Invoke-LogicTests {
     $idkDefNow = [string](Get-Command Invoke-DashboardKey -ErrorAction SilentlyContinue).Definition
     Write-Check 'Logic: Invoke-DashboardKey handles key U for Ultra System Reset' ($idkDefNow.IndexOf("Invoke-UltraSystemReset") -ge 0)
     Write-Check 'Logic: Invoke-DashboardKey handles key D for Doomsday Reset' ($idkDefNow.IndexOf("Invoke-DoomsdayReset") -ge 0)
+    Write-Check 'Logic: Invoke-DashboardKey aliases do not intercept key D' (-not $idkDefNow.Contains("'d' = '6'") -and -not $idkDefNow.Contains("d = '6'"))
+    Write-Check 'Logic: Invoke-DashboardKey alias N routes to NetReset X' ($idkDefNow.Contains("n = 'x'") -or $idkDefNow.Contains("'n' = 'x'"))
+    Write-Check 'Logic: Invoke-DashboardKey handles direct Armageddon hotkey !' ($idkDefNow.IndexOf("Invoke-ArmageddonReset") -ge 0)
+    Write-Check 'Logic: Show-DnsMenu handles letter aliases' ($srcTxt -match "Cloudflare';\s*'c'\s*=\s*'Cloudflare")
+    Write-Check 'Logic: Show-RouteMenu handles letter aliases' ($srcTxt -match "Wifi';\s*'w'\s*=\s*'Wifi")
+    Write-Check 'Logic: NetReset and Ultra mode aliases exist in ValidateSet' ($srcTxt -match "ValidateSet\([^)]*'NetReset'" -and $srcTxt -match "ValidateSet\([^)]*'Ultra'")
+    Write-Check 'Logic: Guide and Vault mode aliases exist in ValidateSet' ($srcTxt -match "ValidateSet\([^)]*'Guide'" -and $srcTxt -match "ValidateSet\([^)]*'Vault'")
 
     $script:State = $stSave
 }
@@ -9069,10 +9092,10 @@ function Show-DnsMenu {
         )
     }
     Out-Line @()
-    Out-Line @((Seg 'dim' '  Select profile [1-5], or press any other key to cancel '), (Seg 'accent!' $script:G.prompt)) -NoNewline
+    Out-Line @((Seg 'dim' '  Select profile [1-5] or [A/D/H/C/R], or press any other key to cancel '), (Seg 'accent!' $script:G.prompt)) -NoNewline
     $k = Read-Choice
     Out-Line @()
-    $map = @{ '1' = 'Adaptive'; '2' = 'DHCP'; '3' = 'Hybrid'; '4' = 'Cloudflare'; '5' = 'ResetDHCP' }
+    $map = @{ '1' = 'Adaptive'; 'a' = 'Adaptive'; '2' = 'DHCP'; 'd' = 'DHCP'; '3' = 'Hybrid'; 'h' = 'Hybrid'; '4' = 'Cloudflare'; 'c' = 'Cloudflare'; '5' = 'ResetDHCP'; 'r' = 'ResetDHCP' }
     $c = [string]$k.KeyChar
     if ($map.ContainsKey($c)) {
         Set-DnsProfileMode $map[$c]
@@ -9102,10 +9125,10 @@ function Show-RouteMenu {
         )
     }
     Out-Line @()
-    Out-Line @((Seg 'dim' '  Select profile [1-4], or press any other key to cancel '), (Seg 'accent!' $script:G.prompt)) -NoNewline
+    Out-Line @((Seg 'dim' '  Select profile [1-4] or [A/E/W/D], or press any other key to cancel '), (Seg 'accent!' $script:G.prompt)) -NoNewline
     $k = Read-Choice
     Out-Line @()
-    $map = @{ '1' = 'Adaptive'; '2' = 'Ethernet'; '3' = 'Wifi'; '4' = 'Windows' }
+    $map = @{ '1' = 'Adaptive'; 'a' = 'Adaptive'; '2' = 'Ethernet'; 'e' = 'Ethernet'; '3' = 'Wifi'; 'w' = 'Wifi'; '4' = 'Windows'; 'd' = 'Windows' }
     $c = [string]$k.KeyChar
     if ($map.ContainsKey($c)) {
         Set-RouteProfileMode $map[$c]
@@ -9438,7 +9461,7 @@ function Start-Interactive {
     }
 }
 $script:IsAdmin = Test-IsAdmin
-$adminModes = @('Interactive', 'Heal', 'AutoHeal', 'Omnifix', 'FullNetReset', 'UltraReset', 'DoomsdayReset', 'Doomsday', 'ArmageddonReset', 'Armageddon', 'FlushCache', 'InstallWatchdog', 'UninstallWatchdog', 'InstallShield', 'UninstallShield', 'ResetFactory', 'SetDnsProfile', 'SetRouteProfile', 'Daemon')
+$adminModes = @('Interactive', 'Heal', 'QuickHeal', 'AutoHeal', 'Omnifix', 'NetReset', 'FullNetReset', 'UltraReset', 'Ultra', 'DoomsdayReset', 'Doomsday', 'ArmageddonReset', 'Armageddon', 'FlushCache', 'Flush', 'InstallWatchdog', 'UninstallWatchdog', 'InstallShield', 'UninstallShield', 'ResetFactory', 'Reset', 'SetDnsProfile', 'Dns', 'DnsMenu', 'SetRouteProfile', 'Route', 'RouteMenu', 'Daemon', 'Vault')
 if ($Mode -eq 'Interactive') {
     $intFile = Join-Path $script:Cfg.StoreDir 'interactive.json'
     if (Test-Path -LiteralPath $intFile) {
@@ -9497,15 +9520,19 @@ $exitCode = 0
 try {
     if ($script:UiOn -and $Mode -ne 'Interactive') { Write-Banner ("{0}{1}" -f $Mode, $(if ($script:IsDry) { ' (dry run)' } else { '' })) }
     switch ($Mode) {
-        'AutoHeal' { [void](Invoke-AutoHeal) }
-        'Omnifix'      { Invoke-SupremeOmnifix }
-        'FullNetReset'  { Invoke-UltraSystemReset }
-        'UltraReset'    { Invoke-UltraSystemReset }
-        'DoomsdayReset' { Invoke-DoomsdayReset }
-        'Doomsday'      { Invoke-DoomsdayReset }
-        'ArmageddonReset' { Invoke-ArmageddonReset }
-        'Armageddon'      { Invoke-ArmageddonReset }
-        'SetRouteProfile' { Set-RouteProfileMode $RouteProfile }
+        'AutoHeal'          { [void](Invoke-AutoHeal) }
+        'Omnifix'           { Invoke-SupremeOmnifix }
+        'NetReset'          { Invoke-UltraSystemReset }
+        'FullNetReset'      { Invoke-UltraSystemReset }
+        'UltraReset'        { Invoke-UltraSystemReset }
+        'Ultra'             { Invoke-UltraSystemReset }
+        'DoomsdayReset'     { Invoke-DoomsdayReset }
+        'Doomsday'          { Invoke-DoomsdayReset }
+        'ArmageddonReset'   { Invoke-ArmageddonReset }
+        'Armageddon'        { Invoke-ArmageddonReset }
+        'SetRouteProfile'   { Set-RouteProfileMode $RouteProfile }
+        'Route'             { Show-RouteMenu }
+        'RouteMenu'         { Show-RouteMenu }
         'Heal' {
             $sw = [System.Diagnostics.Stopwatch]::StartNew()
             $r = Pick-Hash (Invoke-WithLock { Invoke-HealPipeline })
@@ -9518,19 +9545,42 @@ try {
                 }
             }
         }
-        'Diagnose'   { Show-Diagnostics }
-        'Report'     { New-SupportReport }
-        'QuickProbe' { Run-QuickProbe }
-        'FlushCache' { [void](Invoke-WithLock { Flush-NetworkCache }) }
+        'QuickHeal' {
+            $sw = [System.Diagnostics.Stopwatch]::StartNew()
+            $r = Pick-Hash (Invoke-WithLock { Invoke-HealPipeline })
+            $sw.Stop()
+            Write-HealSummary $r $sw
+            if ($r -and $r.Conn -eq 'Captive' -and -not $script:IsDry) {
+                [void](Invoke-WithLock { [void](Open-Portal); Save-State })
+                if ((Get-InternetState -NoCache).State -eq 'Captive') {
+                    if (Wait-ForAuthentication 120) { [void](Invoke-WithLock { Complete-Authentication }) }
+                }
+            }
+        }
+        'Diagnose'          { Show-Diagnostics }
+        'Audit'             { Show-Diagnostics }
+        'Report'            { New-SupportReport }
+        'QuickProbe'        { Run-QuickProbe }
+        'Probe'             { Run-QuickProbe }
+        'FlushCache'        { [void](Invoke-WithLock { Flush-NetworkCache }) }
+        'Flush'             { [void](Invoke-WithLock { Flush-NetworkCache }) }
         'InstallWatchdog'   { [void](Invoke-WithLock { Install-Watchdog }) }
         'InstallShield'     { [void](Invoke-WithLock { Install-Watchdog }) }
         'UninstallWatchdog' { [void](Invoke-WithLock { Uninstall-Watchdog }) }
         'UninstallShield'   { [void](Invoke-WithLock { Uninstall-Watchdog }) }
         'ResetFactory'      { [void](Invoke-WithLock { Restore-Everything }) }
+        'Reset'             { [void](Invoke-WithLock { Restore-Everything }) }
         'LaunchPortal'      { [void](Invoke-WithLock { Open-Portal -Force }) }
+        'Login'             { [void](Invoke-WithLock { Open-Portal -Force }) }
         'SetDnsProfile'     { Set-DnsProfileMode $DnsProfile }
+        'Dns'               { Show-DnsMenu }
+        'DnsMenu'           { Show-DnsMenu }
         'SelfTest'          { Invoke-SelfTest; if ($script:TestFail -gt 0) { $exitCode = 1 } }
+        'Verify'            { Invoke-SelfTest; if ($script:TestFail -gt 0) { $exitCode = 1 } }
         'Daemon'            { Start-AutonomousDaemon }
+        'Vault'             { Show-VaultMenu }
+        'Guide'             { Show-Advisory }
+        'Help'              { Show-Advisory }
         'Interactive'       { Start-Interactive }
     }
 } catch {
@@ -9549,7 +9599,7 @@ try {
     Exit-Lock
     if ($script:UiOn) { Exit-Screen }
 }
-if ($exitCode -eq 0 -and $script:FailCount -gt 0 -and (@('AutoHeal', 'Heal', 'Omnifix', 'FullNetReset', 'UltraReset', 'DoomsdayReset', 'Doomsday', 'ArmageddonReset', 'Armageddon') -contains $Mode)) { $exitCode = 2 }
+if ($exitCode -eq 0 -and $script:FailCount -gt 0 -and (@('AutoHeal', 'Heal', 'QuickHeal', 'Omnifix', 'NetReset', 'FullNetReset', 'UltraReset', 'Ultra', 'DoomsdayReset', 'Doomsday', 'ArmageddonReset', 'Armageddon') -contains $Mode)) { $exitCode = 2 }
 if ($exitCode -ne 0 -and -not $NoPause -and $Host.Name -eq 'ConsoleHost') {
     Write-Host ''
     Write-Host 'LanFixer closed with an exit code. Press any key to close...' -ForegroundColor Gray
