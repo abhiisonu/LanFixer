@@ -5,7 +5,7 @@
 **Autonomous Single-File Network Stabilization & Captive Portal Engine for Windows**
 
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-0078D6?style=flat-square&logo=windows)](https://github.com/abhiisonu/LanFixer)
-[![Version](https://img.shields.io/badge/Release-v6.4.0-blue?style=flat-square)](https://github.com/abhiisonu/LanFixer/releases/tag/v6.4.0)
+[![Version](https://img.shields.io/badge/Release-v6.4.1-blue?style=flat-square)](https://github.com/abhiisonu/LanFixer/releases/tag/v6.4.1)
 [![Architecture](https://img.shields.io/badge/Arch-x64%20%7C%20ARM64%20%7C%20x86-0A84FF?style=flat-square)](https://github.com/abhiisonu/LanFixer)
 [![Runtime](https://img.shields.io/badge/Engine-PowerShell%205.1%2B%20%7C%20Batch%20Polyglot-172B4D?style=flat-square)](https://github.com/abhiisonu/LanFixer)
 [![Dependencies](https://img.shields.io/badge/Dependencies-0%20External%20Binaries-2ea44f?style=flat-square)](https://github.com/abhiisonu/LanFixer)

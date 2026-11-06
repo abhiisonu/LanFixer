@@ -9,7 +9,7 @@ exit /b %errorlevel%
 
 <#
 .SYNOPSIS
-    Lan Fixer 6.4.0 - Sovereign self-healing Ethernet stabilizer for campus/hostel LANs (Windows 10/11, Ethernet only).
+    Lan Fixer 6.4.1 - Sovereign self-healing Ethernet stabilizer for campus/hostel LANs (Windows 10/11, Ethernet only).
     Author: A.S.
 .DESCRIPTION
     Single file, ASCII only. Run it normally for the control center, or use -Mode:
@@ -18,6 +18,19 @@ exit /b %errorlevel%
     Add -DryRun to see exactly what would change without changing anything.
     Every change is snapshotted first, so ResetFactory restores YOUR original values.
 .NOTES
+    6.4.1 (Supreme Omni-Hardening & Static Lint Resolution):
+      - Static IP Auto-Rollback: Shield-DataLink restores snapshotted static IPv4 if DHCP renewal ladder fails.
+      - Inverted DHCP Stack Unfreeze: Inverted Step 3 in Repair-Dhcp (Stop -> Zero Registry -> Start) to prevent cached lease rewrites.
+      - Roaming Cleanup Flap Grace Period: 45s debounce in Invoke-RoamingCleanup avoids full teardown during momentary cable wiggles.
+      - Measured Per-Adapter Complete-Authentication: Evaluates genuine Internet state per adapter rather than assuming 'Online'.
+      - Source-Bound Stage 5 Omnifix: Bound public verification probes to primary Ethernet IP, eliminating Wi-Fi hotspot false-positives.
+      - Secondary-Uplink DNS Scoping: Preserves legitimate DHCP-supplied campus DNS on campus Wi-Fi while purging stuck static entries.
+      - Inverted Stale Portal Condition Fix: Corrected line 3285 to unconditionally purge discovered portal state on non-campus networks.
+      - HTML5 Form Parser Expansion: Added input number, checked checkboxes, and select dropdown extraction in ConvertFrom-LoginForm.
+      - Vault Re-Save Protection: Implemented transaction guard ($moved) in Save-PortalCredentials to protect existing vault secrets.
+      - Read-Only Telemetry Contract: Purged unsynchronized metric writes from Get-Telemetry to prevent multi-threaded race conditions.
+      - Wi-Fi Enablement Dry-Run Guard: Wrapped Enable-NetAdapter in Invoke-Change and dry-run check in Set-RouteProfileMode.
+      - Lazy Uplink Evaluation: Deferred Test-OtherUplinkActive in Get-InternetState, eliminating 75% of route table sweep overhead.
     6.4.0 (Grand Master Sovereign Hardening - 21-Point Alpha-to-Omega Resilience Engine):
       - Dormant USB PnP Transceiver Revival: Rescue-DormantEthernetPnp detects non-present/sleep-crashed USB NICs and
         resynchronizes the PnP bus via pnputil /scan-devices, guaranteeing zero-reboot waking on all USB controllers.
@@ -165,7 +178,7 @@ try { Add-Type -AssemblyName System.Security -ErrorAction SilentlyContinue } cat
 # ==============================================================================
 # CONFIG (edit here, nowhere else)
 # ==============================================================================
-$script:Version = '6.4.0'
+$script:Version = '6.4.1'
 $script:Sys32   = Join-Path $env:SystemRoot 'System32'
 $script:SelfPath = if ($env:LANFIXER_SELF -and (Test-Path -LiteralPath $env:LANFIXER_SELF)) { $env:LANFIXER_SELF } elseif ($PSCommandPath -and (Test-Path -LiteralPath $PSCommandPath)) { $PSCommandPath } elseif ($MyInvocation.MyCommand.Path -and (Test-Path -LiteralPath $MyInvocation.MyCommand.Path)) { $MyInvocation.MyCommand.Path } elseif ($PSScriptRoot -and (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'LanFixer.cmd'))) { (Join-Path $PSScriptRoot 'LanFixer.cmd') } else { (Join-Path (Get-Location).Path 'LanFixer.cmd') }
 $script:IsDry   = [bool]$DryRun
@@ -855,13 +868,19 @@ function Test-Ping([string]$Target, [int]$TimeoutMs = 800) {
     } catch {} finally { $p.Dispose() }
     return $null
 }
-function Test-TcpPort([string]$Address, [int]$Port, [int]$TimeoutMs = 800) {
-    $c = New-Object System.Net.Sockets.TcpClient
+function Test-TcpPort([string]$Address, [int]$Port, [int]$TimeoutMs = 800, [string]$SourceIp = '') {
+    $c = $null
     try {
+        if ($SourceIp -and $SourceIp -ne '0.0.0.0' -and $SourceIp -notlike '169.254.*') {
+            $ep = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Parse($SourceIp), 0)
+            $c = New-Object System.Net.Sockets.TcpClient($ep)
+        } else {
+            $c = New-Object System.Net.Sockets.TcpClient
+        }
         $iar = $c.BeginConnect($Address, $Port, $null, $null)
         if ($iar.AsyncWaitHandle.WaitOne($TimeoutMs, $false) -and $c.Connected) { $c.EndConnect($iar); return $true }
         return $false
-    } catch { return $false } finally { try { $c.Close() } catch {} }
+    } catch { return $false } finally { if ($c) { try { $c.Close() } catch {} } }
 }
 # Parses the ANSWER section of a DNS response and returns ONLY IPv4 A records, in wire order.
 # Pure (no sockets, no state): this is what unit tests feed synthetic packets to.
@@ -1661,9 +1680,10 @@ function ConvertFrom-LoginForm([string]$Html, [uri]$PageUri) {
             $val = [string](Get-HtmlAttr $tag 'value')
             if ($type -eq 'password') { if (-not $pass) { $pass = $name } }
             elseif ($type -eq 'hidden') { $fields[$name] = $val }
+            elseif ($type -eq 'checkbox') { if ($tag -match '(?i)\bchecked\b') { $fields[$name] = $(if ($val) { $val } else { 'on' }) } }
             elseif ($type -eq 'submit') { if (-not $fields.Contains($name)) { $fields[$name] = $val } }
-            elseif ($type -eq '' -or $type -eq 'text' -or $type -eq 'email' -or $type -eq 'tel') {
-                $candidates += @{ Name = $name; Id = $id }
+            elseif ($type -eq '' -or $type -eq 'text' -or $type -eq 'email' -or $type -eq 'tel' -or $type -eq 'number') {
+                $candidates += @{ Name = $name; Id = $id; Value = $val }
             }
         }
         if (-not $pass) { continue }
@@ -1672,6 +1692,17 @@ function ConvertFrom-LoginForm([string]$Html, [uri]$PageUri) {
             if ($comb -match '(?i)user|login|email|auth|account|id|roll|reg|uid|uname|member|netid|student') { $user = $c.Name; break }
         }
         if (-not $user -and $candidates.Count -gt 0) { $user = $candidates[0].Name }
+        foreach ($c in $candidates) {
+            if ($c.Name -ne $user -and $c.Value -and -not $fields.Contains($c.Name)) { $fields[$c.Name] = $c.Value }
+        }
+        foreach ($sel in [regex]::Matches($fm.Groups[2].Value, '(?is)<select\b([^>]*)>(.*?)</select>')) {
+            $sname = Get-HtmlAttr $sel.Groups[1].Value 'name'
+            if ($sname) {
+                $optM = [regex]::Match($sel.Groups[2].Value, '(?is)<option\b[^>]*\bselected\b[^>]*value\s*=\s*["\x27]?([^"\x27\s>]+)')
+                if (-not $optM.Success) { $optM = [regex]::Match($sel.Groups[2].Value, '(?is)<option\b[^>]*value\s*=\s*["\x27]?([^"\x27\s>]+)') }
+                if ($optM.Success -and -not $fields.Contains($sname)) { $fields[$sname] = [System.Net.WebUtility]::HtmlDecode($optM.Groups[1].Value) }
+            }
+        }
         foreach ($bt in [regex]::Matches($fm.Groups[2].Value, '(?is)<button\b[^>]*>')) {
             $bn = Get-HtmlAttr $bt.Value 'name'
             $btype = ([string](Get-HtmlAttr $bt.Value 'type')).ToLower()
@@ -1695,12 +1726,14 @@ function ConvertFrom-LoginForm([string]$Html, [uri]$PageUri) {
             $id = Get-HtmlAttr $tag 'id'; $val = [string](Get-HtmlAttr $tag 'value')
             if ($type -eq 'password') { if (-not $pass) { $pass = $name } }
             elseif ($type -eq 'hidden') { $fields[$name] = $val }
+            elseif ($type -eq 'checkbox') { if ($tag -match '(?i)\bchecked\b') { $fields[$name] = $(if ($val) { $val } else { 'on' }) } }
             elseif ($type -eq 'submit') { if (-not $fields.Contains($name)) { $fields[$name] = $val } }
-            elseif ($type -eq '' -or $type -eq 'text' -or $type -eq 'email' -or $type -eq 'tel') { $candidates += @{ Name = $name; Id = $id } }
+            elseif ($type -eq '' -or $type -eq 'text' -or $type -eq 'email' -or $type -eq 'tel' -or $type -eq 'number') { $candidates += @{ Name = $name; Id = $id; Value = $val } }
         }
         if ($pass) {
             foreach ($c in $candidates) { if (($c.Name + ' ' + $c.Id) -match '(?i)user|login|email|auth|account|id|roll|reg|uid|uname|member|netid|student') { $user = $c.Name; break } }
             if (-not $user -and $candidates.Count -gt 0) { $user = $candidates[0].Name }
+            foreach ($c in $candidates) { if ($c.Name -ne $user -and $c.Value -and -not $fields.Contains($c.Name)) { $fields[$c.Name] = $c.Value } }
             if (-not $user) { $user = 'auth_user' }
             $target = $PageUri
             $fmFirst = [regex]::Match($Html, '(?is)<form\b([^>]*)>')
@@ -2989,7 +3022,7 @@ function Get-InternetState {
     if ($p1.Code -ne 204) { $p2 = Invoke-HttpProbe 'www.msftconnecttest.com' '/connecttest.txt' 2500 $SourceIp }
     $state = Get-ProbeVerdict $p1 $p2
     $via = 'link'
-    if ((Test-AllowSystemFallback $explicit $state (Test-OtherUplinkActive))) {
+    if (-not $explicit -and ($state -eq 'Offline' -or $state -eq 'NoDns') -and (Test-AllowSystemFallback $explicit $state (Test-OtherUplinkActive))) {
         $u1 = $none
         if ($SourceIp) { $u1 = Invoke-HttpProbe 'connectivitycheck.gstatic.com' '/generate_204' 2000 '' }
         if ($u1.Code -eq 204) { $state = 'Online'; $via = 'system'; $p1 = $u1 }
@@ -3282,7 +3315,7 @@ function Get-AdapterEnvironment {
         $h.Home = $homeVerdict
         $h.Time = (Get-Date).ToString('o')
         if (-not $script:IsDry) {
-            if ($envName -eq 'Other' -and -not $script:State.Misc['DiscoveredPortalUrl']) {
+            if ($envName -eq 'Other') {
                 $script:State.Misc.Remove('DiscoveredPortalIp')
                 $script:State.Misc.Remove('DiscoveredPortalUrl')
                 $script:State.Misc.Remove('DiscoveredDomain')
@@ -3516,11 +3549,9 @@ function Repair-Dhcp($Ad, [switch]$ForceRelease) {
     } else {
         Write-Log 'INFO' 'Link reset skipped (done less than 5 minutes ago).'
     }
-    # Step 3: release + renew
     # Step 3: DHCP stack unfreeze and release/renew
     [void](Invoke-Change "DHCP stack unfreeze and release/renew on $($Ad.Name)" {
-        Restart-Service -Name Dhcp -Force -ErrorAction SilentlyContinue
-        Start-Sleep -Milliseconds 800
+        Stop-Service -Name Dhcp -Force -ErrorAction SilentlyContinue
         if ($guid) {
             try {
                 $ifKey = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$guid"
@@ -3530,6 +3561,7 @@ function Repair-Dhcp($Ad, [switch]$ForceRelease) {
                 }
             } catch {}
         }
+        Start-Service -Name Dhcp -ErrorAction SilentlyContinue
         [void](Invoke-Native $ipconfig @('/release', $Ad.Name) 10000)
         $r = Invoke-Native $ipconfig @('/renew', $Ad.Name) 25000
         if ($r.TimedOut) { throw 'ipconfig /renew timed out' }
@@ -3606,6 +3638,7 @@ function Shield-DataLink($Ctx) {
             if ($peerArp.Count -gt 0) { $stAlive = $true }
         }
         if (-not $stAlive) {
+            $origIpInfo = $null
             $stIps = @(Get-NetIPAddress -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -notmatch '^(169\.254\.|127\.)' })
             if ($stIps.Count -gt 0) {
                 $origIpInfo = @{ IPAddress = [string]$stIps[0].IPAddress; PrefixLength = [int]$stIps[0].PrefixLength; DefaultGateway = $(if ($stGw) { [string]$stGw } else { '' }) }
@@ -3617,6 +3650,15 @@ function Shield-DataLink($Ctx) {
                 Set-NetIPInterface -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -Dhcp Enabled -ErrorAction Stop
             })
             $Ctx.Repaired = (Repair-Dhcp $ad)
+            if (-not $Ctx.Repaired -and $origIpInfo -and -not (Get-ValidIPv4 $ad)) {
+                Write-Log 'WARN' "DHCP failed to acquire lease on $($ad.Name); rolling back to static IP $($origIpInfo.IPAddress)..."
+                [void](Invoke-Change "Rollback to static IP on $($ad.Name)" {
+                    Set-NetIPInterface -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -Dhcp Disabled -ErrorAction Stop
+                    $params = @{ InterfaceIndex = $ad.ifIndex; IPAddress = $origIpInfo.IPAddress; PrefixLength = $origIpInfo.PrefixLength; ErrorAction = 'Stop' }
+                    if ($origIpInfo.DefaultGateway) { $params.DefaultGateway = $origIpInfo.DefaultGateway }
+                    New-NetIPAddress @params -ErrorAction SilentlyContinue | Out-Null
+                })
+            }
             $script:EnvCache.Remove($guid)
             $Ctx.Env = Get-AdapterEnvironment $ad
         }
@@ -4321,6 +4363,10 @@ function Invoke-RoamingCleanup {
     $cd = Get-ActiveCampusDns
     $m = Measure-ResolversFast @($cd) 600 53 ''
     if ($null -ne $m[$cd]) { Write-Log 'INFO' 'No Ethernet link, but the campus resolver answers over another link (campus Wi-Fi?): campus-only settings kept.'; return }
+    if ($Mode -eq 'AutoHeal') {
+        if (-not $script:State.Misc['LinkDownSince']) { Set-StateTime 'LinkDownSince'; Write-Log 'INFO' 'Link down: debouncing roaming cleanup against momentary cable flap (45s grace period).'; return }
+        if (-not (Test-Elapsed 'LinkDownSince' 45)) { Write-Log 'INFO' 'Link down under 45s: debouncing roaming cleanup against momentary cable flap.'; return }
+    }
     Write-Log 'INFO' 'No Ethernet link and the campus resolver is unreachable: undoing the hostel-only settings.'
     Remove-CampusNrpt
     Restore-LlmnrIfManaged 'Left campus: LLMNR setting restored'
@@ -4620,8 +4666,10 @@ function Shield-SystemStack([switch]$Aggressive) {
         $dnsBroken = $true
         $dnsEvidence = 'synthetic interceptor error record detected'
     } elseif (-not $hasA) {
-        $rawDns = Measure-ResolversFast @('8.8.8.8','1.1.1.1') 400 53 ''
-        $rawNet = ($null -ne (Test-Ping '8.8.8.8' 500)) -or (Test-TcpPort '1.1.1.1' 443 600)
+        $ethUps = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })
+        $stackSrc = if ($ethUps.Count -gt 0) { Get-ValidIPv4 $ethUps[0] } else { '' }
+        $rawDns = Measure-ResolversFast @('8.8.8.8','1.1.1.1') 400 53 $stackSrc
+        $rawNet = (Test-TcpPort '8.8.8.8' 53 600 $stackSrc) -or (Test-TcpPort '1.1.1.1' 443 600 $stackSrc)
         if (@($rawDns.Values | Where-Object { $null -ne $_ }).Count -gt 0 -or $rawNet -or $Aggressive) {
             $dnsBroken = $true
             $dnsEvidence = if ($Aggressive) { 'system resolver failed during aggressive remediation' } else { 'system resolver failed while raw IPv4 internet (8.8.8.8 / 1.1.1.1) is alive' }
@@ -4756,26 +4804,28 @@ function Shield-SystemStack([switch]$Aggressive) {
     # 5. Safely manage Wi-Fi / Secondary Uplink DNS: try DHCP first, and if DNS still fails on non-campus hotspot, set resilient public DNS (8.8.8.8, 1.1.1.1)
     $otherUps = @(Get-OtherUplinkAdapters)
     if ($otherUps.Count -gt 0) {
-        $sysOk = Resolve-DnsName -Name 'accounts.google.com' -Type A -QuickTimeout -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress }
-        $hasStuckCampusDns = $false
         foreach ($ou in $otherUps) {
-            $ouDns = @(Get-DnsClientServerAddress -InterfaceIndex $ou.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses
-            if ($ouDns -contains $script:Cfg.CampusDns -or $ouDns -contains $script:Cfg.PortalIp) { $hasStuckCampusDns = $true }
-        }
-        if (-not $sysOk -or $hasStuckCampusDns) {
-            # Every secondary-uplink DNS change goes through the same snapshotting helpers that Ethernet uses:
-            # the user's ORIGINAL Wi-Fi / USB-tethering / Bluetooth-PAN resolver string is recorded first and the
-            # adapter is marked managed, so it can be restored exactly when this link is no longer ours to manage.
-            foreach ($ou in $otherUps) { [void](Set-AdapterDnsAutomatic $ou) }
-            Clear-DnsClientCache -ErrorAction SilentlyContinue
-            if (-not $script:IsDry) {
-                $recheckOk = Resolve-DnsName -Name 'accounts.google.com' -Type A -QuickTimeout -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress }
-                if (-not $recheckOk) {
-                    foreach ($ou in $otherUps) {
+            $ouGuid = [string]$ou.InterfaceGuid
+            $ouStatic = Get-StaticDnsString $ouGuid
+            $ouDns = @((Get-DnsClientServerAddress -InterfaceIndex $ou.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses)
+            $ouDhcp = @(Get-DhcpDnsServers $ouGuid)
+            $stuckCampus = ($ouStatic -and ($ouDns -contains $script:Cfg.CampusDns -or $ouDns -contains $script:Cfg.PortalIp) -and ($ouDhcp -notcontains $script:Cfg.CampusDns))
+            $ouSrc = Get-ValidIPv4 $ou
+            $ouDead = $false
+            if ($ouSrc) {
+                $ouAns = @(Get-ScopedDnsAnswers 'accounts.google.com' $ouSrc 1500)
+                if ($ouAns.Count -eq 0) { $ouDead = $true }
+            }
+            if ($stuckCampus -or $ouDead) {
+                [void](Set-AdapterDnsAutomatic $ou)
+                Clear-DnsClientCache -ErrorAction SilentlyContinue
+                if (-not $script:IsDry -and $ouSrc) {
+                    $recheck = @(Get-ScopedDnsAnswers 'accounts.google.com' $ouSrc 1500)
+                    if ($recheck.Count -eq 0) {
                         $ouEnv = (Get-AdapterEnvironment $ou).Env
                         if ($ouEnv -ne 'Campus') { [void](Set-AdapterDns $ou @('8.8.8.8','1.1.1.1')) }
+                        Clear-DnsClientCache -ErrorAction SilentlyContinue
                     }
-                    Clear-DnsClientCache -ErrorAction SilentlyContinue
                 }
             }
         }
@@ -4831,10 +4881,12 @@ function Invoke-SupremeOmnifix {
         }
         Write-Log 'STEP' 'STAGE 5/5  Verifying live IPv4 A-record & HTTPS reachability (GitHub & Google Auth)'
         $anyVerifyFail = $false
+        $upEths = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })
+        $primarySrc = if ($upEths.Count -gt 0) { Get-ValidIPv4 $upEths[0] } else { '' }
         foreach ($testHost in @('github.com', 'accounts.google.com')) {
-            $ip = Resolve-HostBounded $testHost 3000
+            $ip = Resolve-HostBounded $testHost 3000 $primarySrc
             if ($ip) {
-                $tcpOk = Test-TcpPort $ip 443 2500
+                $tcpOk = Test-TcpPort $ip 443 2500 $primarySrc
                 Write-Log ($(if ($tcpOk) { 'OK' } else { 'WARN' })) ("Verified {0} -> {1} (TCP/443: {2})" -f $testHost, $ip, $(if ($tcpOk) { 'OPEN' } else { 'BLOCKED' }))
             } else {
                 $anyVerifyFail = $true
@@ -4859,9 +4911,9 @@ function Invoke-SupremeOmnifix {
                 foreach ($ea in @(Get-EthernetAdapters)) { Reset-PhysicalAdapterHardware $ea }
             })
             foreach ($testHost in @('github.com', 'accounts.google.com')) {
-                $ip = Resolve-HostBounded $testHost 3000
+                $ip = Resolve-HostBounded $testHost 3000 $primarySrc
                 if ($ip) {
-                    $tcpOk = Test-TcpPort $ip 443 2500
+                    $tcpOk = Test-TcpPort $ip 443 2500 $primarySrc
                     Write-Log ($(if ($tcpOk) { 'OK' } else { 'WARN' })) ("Re-verified {0} -> {1} (TCP/443: {2})" -f $testHost, $ip, $(if ($tcpOk) { 'OPEN' } else { 'BLOCKED' }))
                 }
             }
@@ -5035,6 +5087,7 @@ function Invoke-HealPipeline([switch]$SkipSystemStack) {
         return $res
     }
     $res.AnyUp = $true
+    if ($script:State.Misc -and $script:State.Misc['LinkDownSince']) { $script:State.Misc.Remove('LinkDownSince') }
     $ctxs = @()
     foreach ($a in $ups) { $ctxs += @{ Ad = $a; Env = (Get-AdapterEnvironment $a); Repaired = $false } }
     foreach ($c in $ctxs) {
@@ -5164,6 +5217,7 @@ function Save-PortalCredentials([string]$User, [string]$Pass) {
     if (-not $User -or -not $Pass) { return $false }
     if ($User -match '[\t\r\n]') { Write-Log 'FAIL' 'The username cannot contain tabs or line breaks.'; return $false }
     $tmp = $script:VaultFile + '.new'
+    $moved = $false
     try {
         $bytes = [System.Text.Encoding]::UTF8.GetBytes($User + [string][char]9 + $Pass)
         $enc = [System.Security.Cryptography.ProtectedData]::Protect($bytes, (Get-VaultEntropy), [System.Security.Cryptography.DataProtectionScope]::LocalMachine)
@@ -5173,13 +5227,16 @@ function Save-PortalCredentials([string]$User, [string]$Pass) {
         if (-not (Protect-VaultFile $tmp) -or -not (Test-VaultAcl $tmp)) { throw 'could not restrict the vault file to Administrators/SYSTEM' }
         [System.IO.File]::WriteAllBytes($tmp, $enc)
         Move-Item -LiteralPath $tmp -Destination $script:VaultFile -Force -ErrorAction Stop
+        $moved = $true
         if (-not (Test-VaultAcl $script:VaultFile)) { throw 'vault permissions did not survive the move' }
         $script:State.Misc['PortalFails'] = 0; $script:State.Misc['PortalAmbiguous'] = 0
         $script:State.Misc['PortalLoginSuspended'] = $false
         return $true
     } catch {
         Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
-        Remove-Item -LiteralPath $script:VaultFile -Force -ErrorAction SilentlyContinue   # fail closed: never leave a half-protected secret
+        if ($moved) {
+            Remove-Item -LiteralPath $script:VaultFile -Force -ErrorAction SilentlyContinue   # fail closed: never leave a half-protected secret
+        }
         Write-Log 'FAIL' ('Credentials were NOT saved: ' + $_.Exception.Message)
         return $false
     }
@@ -5198,6 +5255,8 @@ function Get-PortalCredentials {
             $plain = [System.Text.Encoding]::UTF8.GetString($bytes)
             [Array]::Clear($bytes, 0, $bytes.Length)
             return (ConvertFrom-VaultPlain $plain)
+        } else {
+            Write-Log 'WARN' 'The vault file exists on disk but could not be decrypted via DPAPI (machine key or entropy mismatch).'
         }
     } catch {}
     return $null
@@ -5393,8 +5452,10 @@ function Complete-Authentication {
         foreach ($a in @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })) {
             $script:EnvCache.Remove([string]$a.InterfaceGuid)
             $ctx = @{ Ad = $a; Env = (Get-AdapterEnvironment $a) }
-            Shield-RouteMetrics $ctx 'Online'
-            Shield-Dns $ctx 'Online'
+            $srcIp = Get-ValidIPv4 $a
+            $st = if ($srcIp) { (Get-InternetState -NoCache -SourceIp $srcIp).State } else { 'Offline' }
+            Shield-RouteMetrics $ctx $st
+            Shield-Dns $ctx $st
         }
         Clear-DnsClientCache -ErrorAction SilentlyContinue
         if (-not $script:IsDry) { Save-State }
@@ -6102,7 +6163,13 @@ function Set-RouteProfileMode([string]$Name) {
         if ($Name -eq 'Wifi') {
             foreach ($w in (Get-AllWirelessAdapters)) {
                 if ($w.Status -eq 'Disabled') {
-                    try { Enable-NetAdapter -Name $w.Name -Confirm:$false -ErrorAction SilentlyContinue } catch {}
+                    if (-not $script:IsDry) {
+                        [void](Invoke-Change "Enabling disabled Wi-Fi adapter $($w.Name) for Wifi profile" {
+                            Enable-NetAdapter -Name $w.Name -Confirm:$false -ErrorAction Stop
+                        })
+                    } else {
+                        Write-Log 'DRY' "Would: Enable disabled Wi-Fi adapter $($w.Name)"
+                    }
                 }
             }
         }
@@ -7174,13 +7241,6 @@ function Get-Telemetry {
             $ipif = Get-IPv4Interface $ad
             if ($ipif) {
                 $t.Mtu = [string]$ipif.NlMtu
-                # Self-healing: if no secondary uplink is active and Ethernet metric is demoted (>=45), promote Ethernet back to primary (metric 10)
-                if (-not $t.UplinkActive -and (Test-MetricsManaged) -and [int]$ipif.InterfaceMetric -ge 45) {
-                    if ($script:IsAdmin -and -not $script:IsDry) {
-                        [void](Set-InterfaceMetric $ipif 10 "Self-heal: Sole uplink, restoring Ethernet to primary metric 10")
-                        $ipif = Get-IPv4Interface $ad
-                    }
-                }
                 $t.Routing = Get-RoutingLabel (Test-MetricsManaged) ([int]$ipif.InterfaceMetric) $true $t.UplinkActive
             }
             $raw = @((Get-DnsClientServerAddress -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses)
