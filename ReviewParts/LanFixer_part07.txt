@@ -1,49 +1,3 @@
-    }
-}
-function Restore-NeutralizedInterceptors([string]$Why = 'Non-campus network') {
-    if ($script:State.Misc['NeutralizedTasks'] -is [hashtable]) {
-        foreach ($tn in @($script:State.Misc['NeutralizedTasks'].Keys)) {
-            $tp = [string]$script:State.Misc['NeutralizedTasks'][$tn]
-            [void](Invoke-Change "$($Why): re-enabled task $tn" {
-                Enable-ScheduledTask -TaskName $tn -TaskPath $tp -ErrorAction SilentlyContinue | Out-Null
-            })
-        }
-        if (-not $script:IsDry) { $script:State.Misc.Remove('NeutralizedTasks') }
-    }
-    if ($script:State.Misc['NeutralizedServices'] -is [hashtable]) {
-        foreach ($sn in @($script:State.Misc['NeutralizedServices'].Keys)) {
-            $rec = $script:State.Misc['NeutralizedServices'][$sn]
-            $origStart = if ($rec -is [hashtable]) { [string]$rec.StartType } else { [string]$rec }
-            if ($origStart -and $origStart -ne 'Disabled') {
-                [void](Invoke-Change "$($Why): restored service $sn to $origStart" {
-                    Set-Service -Name $sn -StartupType $origStart -ErrorAction SilentlyContinue
-                    if ($rec -is [hashtable] -and $rec.DelayedAuto) {
-                        Set-ItemProperty -LiteralPath "HKLM:\SYSTEM\CurrentControlSet\Services\$sn" -Name DelayedAutostart -Value 1 -Type DWord -ErrorAction SilentlyContinue
-                    }
-                    if ($rec -is [hashtable] -and $rec.WasRunning) {
-                        Start-Service -Name $sn -ErrorAction SilentlyContinue
-                    }
-                })
-            }
-        }
-        if (-not $script:IsDry) { $script:State.Misc.Remove('NeutralizedServices') }
-    }
-}
-$script:LlmnrKey = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient'
-function Restore-Llmnr($Orig) {
-    if ($null -eq $Orig) { Remove-ItemProperty -LiteralPath $script:LlmnrKey -Name EnableMulticast -ErrorAction SilentlyContinue }
-    else { New-ItemProperty -LiteralPath $script:LlmnrKey -Name EnableMulticast -Value ([int]$Orig) -PropertyType DWord -Force -ErrorAction Stop | Out-Null }
-}
-# LLMNR (like NetBIOS) lets any host on the hostel LAN answer "who is X?" and harvest credentials. Off on campus.
-function Shield-Llmnr($Ctxs) {
-    if (-not $script:Cfg.DisableLlmnr) { return }
-    $anyCampus = (@($Ctxs | Where-Object { $_.Env.Env -eq 'Campus' })).Count -gt 0
-    $anyOther  = (@($Ctxs | Where-Object { $_.Env.Env -eq 'Other' })).Count -gt 0
-    $cur = $null
-    try { $cur = (Get-ItemProperty -LiteralPath $script:LlmnrKey -Name EnableMulticast -ErrorAction Stop).EnableMulticast } catch {}
-    if ($anyCampus) {
-        if ($null -ne $cur -and [int]$cur -eq 0) { return }
-        Save-Original 'Global' 'Llmnr' $cur
         $ok = Invoke-Change 'LLMNR off (blocks name-poisoning attacks on the shared hostel LAN)' {
             if (-not (Test-Path -LiteralPath $script:LlmnrKey)) { New-Item -Path $script:LlmnrKey -Force -ErrorAction Stop | Out-Null }
             New-ItemProperty -LiteralPath $script:LlmnrKey -Name EnableMulticast -Value 0 -PropertyType DWord -Force -ErrorAction Stop
@@ -798,3 +752,49 @@ function Invoke-UltraSystemReset {
 
             # Delete IPv4 and IPv6 kernel destination caches
             [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'ip', 'delete', 'destinationcache') 5000)
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'ipv6', 'delete', 'destinationcache') 5000)
+
+            # Reset Windows port forwarding (PortProxy) and IP-HTTPS tunnels to defeat hijacked developer/emulator port redirects
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('interface', 'portproxy', 'reset') 5000)
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('interface', 'httpstunnel', 'reset') 5000)
+
+            # Destroy accidental/rogue network bridges that create packet loops or isolate the physical NIC
+            try {
+                $brOut = Invoke-Native (Get-SysExe 'netsh.exe') @('bridge', 'list') 5000
+                if ($brOut.Output -match '([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})') {
+                    foreach ($brMatch in [regex]::Matches($brOut.Output, '([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})')) {
+                        $brGuid = $brMatch.Groups[1].Value
+                        Write-Log 'WARN' "Destroying orphaned network bridge $brGuid..."
+                        [void](Invoke-Native (Get-SysExe 'netsh.exe') @('bridge', 'destroy', $brGuid) 5000)
+                    }
+                }
+            } catch {}
+
+            # Backup custom firewall rules before reset for 100% reversible rollback
+            try {
+                $fwBackup = Join-Path $script:StoreDir 'firewall_pre_reset.wfw'
+                if (-not (Test-Path -LiteralPath $fwBackup)) {
+                    [void](Invoke-Native (Get-SysExe 'netsh.exe') @('advfirewall', 'export', $fwBackup) 5000)
+                }
+            } catch {}
+
+            # Windows Defender Firewall factory state restoration
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('advfirewall', 'reset') 8000)
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('advfirewall', 'set', 'allprofiles', 'state', 'on') 5000)
+        }
+
+        # ----------------------------------------------------------------------
+        # STAGE 5/10: ENCRYPTED DNS (DOH/DOT/DDR) WIPE, WPAD AUTOPROXY & BITS JOB PURGE
+        # ----------------------------------------------------------------------
+        Write-Log 'STEP' 'STAGE 5/10  Resetting global/interface DoH, WinHTTP autoproxy, BITS transfers & WFP filters'
+        if ($script:IsDry) {
+            Write-Log 'DRY' 'Would execute: netsh dnsclient delete global all & netsh dnsclient delete interface name=$ea.Name setting=all'
+            Write-Log 'DRY' 'Would execute: netsh winhttp reset proxy, reset autoproxy & tracing'
+            Write-Log 'DRY' 'Would cancel all active BITS transfer jobs via Get-BitsTransfer'
+            Write-Log 'DRY' 'Would sanitize WinINet user/machine proxies and flush SSL session cache'
+        } else {
+            # Reset Windows 11 encrypted DNS (DoH, DoT, DDR) globally to factory defaults
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('dnsclient', 'delete', 'global', 'all') 5000)
+
+            # Reset per-interface DNS encryption and DDR settings across physical adapters
+            foreach ($ea in @(Get-EthernetAdapters)) {

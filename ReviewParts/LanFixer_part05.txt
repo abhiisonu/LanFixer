@@ -1,49 +1,3 @@
-    if ($state -eq 'Captive') {
-        if ($p1.Location) { $loc = [string]$p1.Location } elseif ($p2.Location) { $loc = [string]$p2.Location }
-        if ($loc -and -not $script:IsDry -and $script:State -is [hashtable] -and $script:State.Misc -is [hashtable]) {
-            try {
-                $lu = [uri]$loc
-                if ($lu.IsAbsoluteUri -and ($lu.Scheme -eq 'http' -or $lu.Scheme -eq 'https')) {
-                    $script:State.Misc['DiscoveredPortalUrl'] = [string]$lu.AbsoluteUri
-                    $script:State.Misc['DiscoveryTime'] = (Get-Date).ToString('o')
-                    $tmpIp = $null
-                    if ([System.Net.IPAddress]::TryParse($lu.Host, [ref]$tmpIp) -and (Test-AllowedPortalIp $lu.Host)) {
-                        $script:State.Misc['DiscoveredPortalIp'] = $lu.Host
-                    }
-                }
-            } catch {}
-        }
-    }
-    $res = @{ State = $state; Location = $loc; Via = $via }
-    $script:ConnCache = @{ Time = (Get-Date); Result = $res; Key = $ckey }
-    return $res
-}
-# "Gateway alive" no longer depends on ICMP alone: many campus gateways drop ping but still answer ARP.
-# Fresh evidence only: a cached neighbour entry proves nothing. 'Stale'/'Delay'/'Probe' are exactly what a DEAD gateway's
-# leftover entry looks like, and 'Permanent' is our own lock. Force a fresh ARP exchange and accept only a freshly
-# 'Reachable' entry (checked a few times, because the entry appears a moment after the probe).
-function Test-GatewayAlive($Ad, [string]$Gw) {
-    $rtt = Test-Ping $Gw 700
-    if ($null -ne $rtt) { return @{ Alive = $true; Rtt = $rtt; Via = 'icmp' } }
-    $ex = Get-NetNeighbor -InterfaceIndex $Ad.ifIndex -IPAddress $Gw -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($ex -and [string]$ex.State -eq 'Permanent' -and $ex.LinkLayerAddress -and $ex.LinkLayerAddress -notmatch '^(00-)+00$') {
-        $homeAd = $true
-        try { $eh = Get-AdapterEnvironment $Ad -UseCache; if ($null -ne $eh.Home) { $homeAd = [bool]$eh.Home } } catch {}
-        $gwSrc = [string](Get-ValidIPv4 $Ad)
-        if ((Test-TcpPort $Gw 80 400 $gwSrc) -or (Test-TcpPort $Gw 443 400 $gwSrc) -or (Test-TcpPort $Gw 53 400 $gwSrc)) {
-            return @{ Alive = $true; Rtt = $null; Via = 'arp' }
-        }
-        $freshArp = @(Get-GatewayMacs $Ad $Gw 1)
-        if ($freshArp.Count -gt 0 -and $freshArp[0] -eq [string]$ex.LinkLayerAddress) {
-            return @{ Alive = $true; Rtt = $null; Via = 'arp' }
-        }
-        return @{ Alive = $false; Rtt = $null; Via = '' }
-    }
-    if ($script:IsAdmin -and -not $script:IsDry -and $ex -and [string]$ex.State -ne 'Permanent') {
-        Remove-NetNeighbor -InterfaceIndex $Ad.ifIndex -IPAddress $Gw -Confirm:$false -ErrorAction SilentlyContinue
-    }
-    [void](Test-Ping $Gw 700)
-    for ($i = 0; $i -lt 4; $i++) {
         Start-Sleep -Milliseconds 100
         $n = Get-NetNeighbor -InterfaceIndex $Ad.ifIndex -IPAddress $Gw -AddressFamily IPv4 -ErrorAction SilentlyContinue |
              Where-Object { $_.LinkLayerAddress -and $_.LinkLayerAddress -notmatch '^(00-)+00$' -and ([string]$_.State -eq 'Reachable' -or [string]$_.State -eq 'Permanent') } | Select-Object -First 1
@@ -798,3 +752,49 @@ function Shield-DataLink($Ctx) {
         $gwOk = if ($curGw) { (Test-GatewayAlive $ad $curGw).Alive } else { $false }
         if (-not $gwOk) {
             Write-Log 'WARN' "IPv4 lease is present on $($ad.Name), but default gateway is $(if ($curGw) { "$curGw (unreachable)" } else { 'missing' }). Refreshing DHCP lease..."
+            $Ctx.Repaired = (Repair-Dhcp $ad -ForceRelease)
+            $script:EnvCache.Remove($guid)
+            $Ctx.Env = Get-AdapterEnvironment $ad
+        }
+    }
+    $validIp = Get-ValidIPv4 $ad
+    if ($validIp -and $Ctx.Env.Env -eq 'Campus' -and -not $script:IsDry) {
+        $gw = @(Get-GatewaysV4 $ad) | Select-Object -First 1
+        if ($gw) { $script:State.Misc['LastCampusLease'] = @{ Ip = [string]$validIp; Gateway = [string]$gw; Time = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss') } }
+    }
+}
+
+# ==============================================================================
+# LAYER 3 - GATEWAY ARP INTEGRITY (verify, then lock; auto-release if it hurts)
+# ==============================================================================
+function Get-GatewayMacs($Ad, [string]$Gw, [int]$Samples = 3) {
+    $macs = @()
+    for ($i = 0; $i -lt $Samples; $i++) {
+        if (-not $script:IsDry) {
+            Remove-NetNeighbor -InterfaceIndex $Ad.ifIndex -IPAddress $Gw -Confirm:$false -ErrorAction SilentlyContinue
+        } else {
+            Write-Log 'DRY' "Would refresh neighbour entry for $Gw on $($Ad.Name)"
+        }
+        [void](Test-Ping $Gw 700)
+        Start-Sleep -Milliseconds 200
+        $n = Get-NetNeighbor -InterfaceIndex $Ad.ifIndex -IPAddress $Gw -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+             Where-Object { $_.LinkLayerAddress -and $_.LinkLayerAddress -notmatch '^(00-)+00$' -and @('Unreachable','Incomplete') -notcontains [string]$_.State } | Select-Object -First 1
+        if ($n) { $macs += ([string]$n.LinkLayerAddress).ToUpper() }
+    }
+    return $macs
+}
+function Remove-GatewayLock($Ad, [string]$Gw) {
+    if ($script:IsDry) { Write-Log 'DRY' "Would release ARP lock for $Gw on $($Ad.Name)"; return }
+    Remove-NetNeighbor -InterfaceIndex $Ad.ifIndex -IPAddress $Gw -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue
+    Remove-NetNeighbor -InterfaceIndex $Ad.ifIndex -IPAddress $Gw -PolicyStore PersistentStore -Confirm:$false -ErrorAction SilentlyContinue
+    Remove-NetNeighbor -InterfaceIndex $Ad.ifIndex -IPAddress $Gw -Confirm:$false -ErrorAction SilentlyContinue
+    [void](Invoke-Native (Get-SysExe 'arp.exe') @('-d', $Gw) 5000)
+    # Retain the recorded MAC in $script:State.Arp so Get-ArpDecision can continue
+    # to compare against $Prev and detect rogue spoofed MAC candidates!
+    $t = Get-SubTable 'Arp' ([string]$Ad.InterfaceGuid)
+}
+function Release-ArpLocks($Ad) {
+    $t = Get-SubTable 'Arp' ([string]$Ad.InterfaceGuid)
+    foreach ($gw in @($t.Keys)) {
+        [void](Invoke-Change "Gateway ARP lock released: $gw" { Remove-GatewayLock $Ad $gw })
+    }

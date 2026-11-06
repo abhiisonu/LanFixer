@@ -193,7 +193,7 @@ exit /b %errorlevel%
 
 [CmdletBinding()]
 param(
-    [ValidateSet('Interactive','Heal','QuickHeal','AutoHeal','Omnifix','NetReset','FullNetReset','UltraReset','Ultra','DoomsdayReset','Doomsday','ArmageddonReset','Armageddon','Diagnose','Audit','QuickProbe','Probe','FlushCache','Flush','InstallWatchdog','UninstallWatchdog','InstallShield','UninstallShield','ResetFactory','Reset','LaunchPortal','Login','SetDnsProfile','Dns','DnsMenu','SetRouteProfile','Route','RouteMenu','SelfTest','Verify','Report','Daemon','Vault','Guide','Help')]
+    [ValidateSet('Interactive','Heal','QuickHeal','AutoHeal','Omnifix','NetReset','FullNetReset','UltraReset','Ultra','DoomsdayReset','Doomsday','ArmageddonReset','Armageddon','ResetOptions','ResetMenu','Diagnose','Audit','QuickProbe','Probe','FlushCache','Flush','InstallWatchdog','UninstallWatchdog','InstallShield','UninstallShield','ResetFactory','Reset','LaunchPortal','Login','SetDnsProfile','Dns','DnsMenu','SetRouteProfile','Route','RouteMenu','SelfTest','Verify','Report','Daemon','Vault','Guide','Help')]
     [string]$Mode = 'Interactive',
     [ValidateSet('Adaptive','DHCP','Hybrid','Cloudflare','ResetDHCP')]
     [string]$DnsProfile = 'Adaptive',

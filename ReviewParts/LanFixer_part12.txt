@@ -1,49 +1,3 @@
-    Write-Check 'Logic: Find-OptimalPathMtu returns 1500 on null adapter' ((Find-OptimalPathMtu $null) -eq 1500)
-    Write-Check 'Logic: Shield-TcpOffloads handles null adapter safely' ((Shield-TcpOffloads $null) -eq $false)
-    Write-Check 'Logic: Shield-Proxies is safe in DryRun mode' (($script:IsAdmin -eq $false) -or (Shield-Proxies) -is [bool])
-    Write-Check 'Logic: Capture-PreflightSnapshot returns null on null adapter' ($null -eq (Capture-PreflightSnapshot $null))
-    Write-Check 'Logic: Restore-PreflightSnapshot returns false on null snapshot' ((Restore-PreflightSnapshot $null) -eq $false)
-
-    # ACID rollback validation
-    $acidDef = [string](Get-Command Invoke-AcidMutation -ErrorAction SilentlyContinue).Definition
-    Write-Check 'Logic: Invoke-AcidMutation triggers rollback when validation fails' ($acidDef.IndexOf('Restore-PreflightSnapshot') -ge 0)
-
-    Write-Check 'Logic: Daemon mode exists in ValidateSet' ($srcTxt -match "ValidateSet\([^)]*'Daemon'")
-    Write-Check 'Logic: Start-AutonomousDaemon is defined' ($null -ne (Get-Command Start-AutonomousDaemon -ErrorAction SilentlyContinue))
-    $idkDef = [string](Get-Command Invoke-DashboardKey -ErrorAction SilentlyContinue).Definition
-    Write-Check 'Logic: Invoke-DashboardKey handles key B for autonomous daemon' ($idkDef.IndexOf("Start-AutonomousDaemon") -ge 0)
-    $omniWinsock = [string](Get-Command Invoke-SupremeOmnifix -ErrorAction SilentlyContinue).Definition
-    Write-Check 'Logic: Invoke-SupremeOmnifix resets Winsock catalog' ($omniWinsock.IndexOf("winsock") -ge 0)
-    $diagDef = [string](Get-Command Show-Diagnostics -ErrorAction SilentlyContinue).Definition
-    Write-Check 'Logic: Show-Diagnostics displays subnet calculus and NDIS health' ($diagDef.IndexOf("Get-SubnetInfoFromLease") -ge 0 -and $diagDef.IndexOf("Test-NdisLinkHealth") -ge 0)
-
-    Write-Check 'Logic: UltraReset mode exists in ValidateSet' ($srcTxt -match "ValidateSet\([^)]*'UltraReset'")
-    Write-Check 'Logic: Invoke-UltraSystemReset is defined' ($null -ne (Get-Command Invoke-UltraSystemReset -ErrorAction SilentlyContinue))
-    $ultraDef = [string](Get-Command Invoke-UltraSystemReset -ErrorAction SilentlyContinue).Definition
-    Write-Check 'Logic: Ultra System Reset resets dual-stack TCP/IP, Winsock, route -f, and firewall' ($ultraDef.IndexOf('netsh') -ge 0 -and $ultraDef.IndexOf('route.exe') -ge 0 -and $ultraDef.IndexOf('advfirewall') -ge 0 -and $ultraDef.IndexOf('winsock') -ge 0)
-    Write-Check 'Logic: Ultra System Reset resuscitates services topologically and registers DNS' ($ultraDef.IndexOf('registerdns') -ge 0 -and $ultraDef.IndexOf('Wait-StpConvergence') -ge 0)
-    Write-Check 'Logic: Ultra System Reset resets 64-bit and 32-bit Winsock catalogs' ($ultraDef.IndexOf('SysWOW64') -ge 0 -and $ultraDef.IndexOf('winsock') -ge 0)
-    Write-Check 'Logic: Ultra System Reset clears destination cache and autoproxy' ($ultraDef.IndexOf('destinationcache') -ge 0 -and $ultraDef.IndexOf('autoproxy') -ge 0)
-    Write-Check 'Logic: Ultra System Reset disables transition tunnels (Teredo, ISATAP, 6to4)' ($ultraDef.IndexOf('teredo') -ge 0 -and $ultraDef.IndexOf('isatap') -ge 0 -and $ultraDef.IndexOf('6to4') -ge 0)
-    Write-Check 'Logic: Ultra System Reset zeroes DHCP lease registry to force clean Discover' ($ultraDef.IndexOf('DhcpIPAddress') -ge 0 -and $ultraDef.IndexOf('DhcpDefaultGateway') -ge 0)
-    Write-Check 'Logic: Ultra System Reset issues 802.1X netsh lan reconnect' ($ultraDef.IndexOf('reconnect') -ge 0)
-    Write-Check 'Logic: Ultra System Reset clears encrypted DNS via delete global all' ($ultraDef.IndexOf('delete') -ge 0 -and $ultraDef.IndexOf('global') -ge 0 -and $ultraDef.IndexOf('dnsclient') -ge 0)
-    Write-Check 'Logic: Ultra System Reset sets DhcpConnForceBroadcastFlag' ($ultraDef.IndexOf('DhcpConnForceBroadcastFlag') -ge 0)
-    Write-Check 'Logic: Ultra System Reset audits and destroys accidental network bridges' ($ultraDef.IndexOf('bridge') -ge 0)
-    Write-Check 'Logic: Ultra System Reset flushes HTTP driver log buffers' ($ultraDef.IndexOf('logbuffer') -ge 0)
-    Write-Check 'Logic: Ultra System Reset resets interface portproxy and httpstunnel' ($ultraDef.IndexOf('portproxy') -ge 0 -and $ultraDef.IndexOf('httpstunnel') -ge 0)
-    Write-Check 'Logic: Ultra System Reset purges BITS transfers and Kerberos tickets' ($ultraDef.IndexOf('Get-BitsTransfer') -ge 0 -and $ultraDef.IndexOf('klist.exe') -ge 0)
-    Write-Check 'Logic: Ultra System Reset calibrates NCSI active probing in registry' ($ultraDef.IndexOf('EnableActiveProbing') -ge 0 -and $ultraDef.IndexOf('ActiveWebProbeHost') -ge 0)
-    Write-Check 'Logic: Ultra System Reset wipes interface DNS settings via delete interface' ($ultraDef.IndexOf('dnsclient') -ge 0 -and $ultraDef.IndexOf('setting=all') -ge 0)
-    Write-Check 'Logic: Ultra System Reset purges SMB sessions via net use' ($ultraDef.IndexOf('net.exe') -ge 0 -and $ultraDef.IndexOf('use') -ge 0)
-    Write-Check 'Logic: DoomsdayReset mode exists in ValidateSet' ($srcTxt -match "ValidateSet\([^)]*'DoomsdayReset'")
-    Write-Check 'Logic: Invoke-DoomsdayReset is defined' ($null -ne (Get-Command Invoke-DoomsdayReset -ErrorAction SilentlyContinue))
-    $doomDef = [string](Get-Command Invoke-DoomsdayReset -ErrorAction SilentlyContinue).Definition
-    Write-Check 'Logic: Doomsday Reset resets Wi-Fi WLAN autoconfig' ($doomDef.IndexOf('wlan') -ge 0 -and $doomDef.IndexOf('autoconfig') -ge 0)
-    Write-Check 'Logic: Doomsday Reset purges user and machine proxy registry' ($doomDef.IndexOf('HKEY_USERS') -ge 0 -and $doomDef.IndexOf('ProxyEnable') -ge 0)
-    Write-Check 'Logic: Doomsday Reset resuscitates 13 services including WlanSvc, bthserv, and WwanSvc' ($doomDef.IndexOf('WlanSvc') -ge 0 -and $doomDef.IndexOf('bthserv') -ge 0 -and $doomDef.IndexOf('WwanSvc') -ge 0)
-    Write-Check 'Logic: Doomsday Reset cycles all physical adapters across media' ($doomDef.IndexOf('Restart-NetAdapter') -ge 0)
-    Write-Check 'Logic: Doomsday Reset deactivates rogue 3rd-party NDIS filter bindings' ($doomDef.IndexOf('Disable-NetAdapterBinding') -ge 0)
     Write-Check 'Logic: Doomsday Reset performs PnP silicon hardware restart via pnputil' ($doomDef.IndexOf('/restart-device') -ge 0)
     Write-Check 'Logic: Doomsday Reset unlocks Modern Standby Airplane Mode in registry' ($doomDef.IndexOf('RadioManagement') -ge 0)
     Write-Check 'Logic: Doomsday Reset eradicates manual static IP address conflicts' ($doomDef.IndexOf('PrefixOrigin') -ge 0 -and $doomDef.IndexOf('Manual') -ge 0)
@@ -78,6 +32,11 @@
     Write-Check 'Tournament: Sentinel Daemon loop variables persist in script scope' ($srcTxt.IndexOf('$script:DaemonConsecutiveFails = 0') -ge 0 -and $srcTxt.IndexOf('$script:DaemonLastHwCheck = [DateTime]::MinValue') -ge 0)
     Write-Check 'Tournament: STP convergence runs before DHCP renew in Doomsday' ($doomDef.IndexOf('Wait-StpConvergence') -lt $doomDef.IndexOf("@('/renew')"))
     Write-Check 'Tournament: STP convergence runs before DHCP renew in Ultra' ($ultraDef.IndexOf('Wait-StpConvergence') -lt $ultraDef.IndexOf("@('/renew')"))
+    Write-Check 'Logic: Show-ResetMenu is defined' ($null -ne (Get-Command Show-ResetMenu -ErrorAction SilentlyContinue))
+    $rmDef = [string](Get-Command Show-ResetMenu -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Show-ResetMenu covers all 5 reset and recovery tiers' ($rmDef.IndexOf('Invoke-SupremeOmnifix') -ge 0 -and $rmDef.IndexOf('Invoke-UltraSystemReset') -ge 0 -and $rmDef.IndexOf('Invoke-DoomsdayReset') -ge 0 -and $rmDef.IndexOf('Invoke-ArmageddonReset') -ge 0 -and $rmDef.IndexOf('Restore-Everything') -ge 0)
+    Write-Check 'Logic: Show-ResetMenu enforces explicit yes confirmation on all options' ($rmDef.IndexOf("'yes'") -ge 0 -and $rmDef.IndexOf("'no'") -lt 0)
+    Write-Check 'Logic: ResetOptions exists in ValidateSet' ($srcTxt -match "ValidateSet\([^)]*'ResetOptions'")
 
     $script:State = $stSave
 }
@@ -287,8 +246,8 @@ function Get-Advice($t) {
         'NoLink' {
             $r.Status = 'Physical Ethernet link down. Cable unplugged or port inactive.'
             if ($t.Watchdog) {
-                $r.Action = 'Connect Ethernet cable, or press [ENTER] / [X] to run Full Net Reset.'
-                $r.Key = 'x'; $r.KeyLabel = 'run Full Net Reset'
+                $r.Action = 'Connect Ethernet cable, or press [ENTER] / [X] to open Reset Options.'
+                $r.Key = 'x'; $r.KeyLabel = 'open Reset Options'
             } else {
                 $r.Action = 'Connect Ethernet cable, then arm watchdog (or press 2).'
                 $r.Key = '2'; $r.KeyLabel = 'arm the watchdog'
@@ -296,8 +255,8 @@ function Get-Advice($t) {
         }
         'NoAdapter' {
             $r.Status = 'No physical Ethernet network adapter found.'
-            $r.Action = 'Press [ENTER] or [X] to rescan PnP hardware bus & heal Wi-Fi/system stack.'
-            $r.Key = 'x'; $r.KeyLabel = 'run Full Net Reset'
+            $r.Action = 'Press [ENTER] or [X] to open Reset Options & rescan PnP hardware bus.'
+            $r.Key = 'x'; $r.KeyLabel = 'open Reset Options'
         }
         default {
             $r.Status = 'Reading network state and adapters...'
@@ -381,6 +340,83 @@ function Show-RouteMenu {
         Out-Line @()
         Out-Line @((Seg 'dim' '  press any key to return'))
         Wait-AnyKey
+    }
+}
+function Show-ResetMenu {
+    if (-not (Assert-Admin)) { return }
+    Out-Line @((Seg 'warn!' '  RESET & SYSTEM RECOVERY OPTIONS:'))
+    Out-Line @((Seg 'dim'   '  Choose the appropriate recovery weapon based on the severity of network death:'))
+    Out-Line @()
+    $options = @(
+        @('1', 'Standard Net Reset',  's', '5-Stage Fast Network Reset (Winsock, TCP/IP, route -f, MTU 1500, 7-layer heal)'),
+        @('2', 'Ultra System Reset',  'u', '10-Stage Nuclear Reset (Dual 64/32-bit Winsock, TCP/IP heuristics, DoH wipe, NCSI)'),
+        @('3', 'Doomsday Reset',      'd', '12-Stage Universal Reset (All Media: Wi-Fi/BT/USB/LAN, NDIS Filters, PnP Transceiver)'),
+        @('4', 'Armageddon OS Wipe',  'a', '4-Stage Kernel Stack Reinstall (netcfg.exe -d, requires immediate system reboot)'),
+        @('5', 'Restore Settings',    'r', 'Rollback to Original Settings (100% reversible ACID restore from pre-reset backup)')
+    )
+    foreach ($opt in $options) {
+        $color = switch ($opt[0]) {
+            '1' { 'accent!' }
+            '2' { 'warn' }
+            '3' { 'warn!' }
+            '4' { 'bad!' }
+            '5' { 'ok!' }
+        }
+        Out-Line @(
+            (Seg 'faint' '  ['),
+            (Seg $color $opt[0]),
+            (Seg 'faint' '] '),
+            (Seg 'text!' (' ' + $opt[1].PadRight(23))),
+            (Seg 'dim' $opt[3])
+        )
+    }
+    Out-Line @()
+    Out-Line @((Seg 'dim' '  Select reset option [1-5] or [S/U/D/A/R], or press any other key to cancel '), (Seg 'accent!' $script:G.prompt)) -NoNewline
+    $k = Read-Choice
+    Out-Line @()
+    $choice = ([string]$k.KeyChar).ToLowerInvariant()
+    if ($choice -in @('1', 's', 'x')) {
+        if (Read-Confirm 'Execute Standard Full Net Reset?' 'yes') {
+            $script:ChangeCount = 0; $script:FailCount = 0
+            Invoke-SupremeOmnifix
+            $script:WdCache = $null
+        } else {
+            Out-Line @((Seg 'dim' '  Operation cancelled. No changes made.'))
+        }
+    } elseif ($choice -in @('2', 'u')) {
+        if (Read-Confirm 'Execute ULTRA SYSTEM RESET (Hyper-Nuclear Antimatter Weapon)?' 'yes') {
+            $script:ChangeCount = 0; $script:FailCount = 0
+            Invoke-UltraSystemReset
+            $script:WdCache = $null
+        } else {
+            Out-Line @((Seg 'dim' '  Operation cancelled. No changes made.'))
+        }
+    } elseif ($choice -in @('3', 'd')) {
+        if (Read-Confirm 'Execute DOOMSDAY SYSTEM RESET (Ultimate Universal Weapon)?' 'yes') {
+            $script:ChangeCount = 0; $script:FailCount = 0
+            Invoke-DoomsdayReset
+            $script:WdCache = $null
+        } else {
+            Out-Line @((Seg 'dim' '  Operation cancelled. No changes made.'))
+        }
+    } elseif ($choice -in @('4', 'a', 'k', '!')) {
+        if (Read-Confirm 'Execute ARMAGEDDON SYSTEM RESET (netcfg -d, requires reboot)?' 'yes') {
+            $script:ChangeCount = 0; $script:FailCount = 0
+            Invoke-ArmageddonReset
+            $script:WdCache = $null
+        } else {
+            Out-Line @((Seg 'dim' '  Operation cancelled. No changes made.'))
+        }
+    } elseif ($choice -in @('5', 'r', '9')) {
+        if (Read-Confirm 'Restore all original pre-reset network settings?' 'yes') {
+            $script:ChangeCount = 0; $script:FailCount = 0
+            Restore-Everything
+            $script:WdCache = $null
+        } else {
+            Out-Line @((Seg 'dim' '  Operation cancelled. No changes made.'))
+        }
+    } else {
+        Out-Line @((Seg 'dim' '  Operation cancelled. No changes made.'))
     }
 }
 function Write-HealSummary($r, $sw) {
@@ -707,7 +743,7 @@ function Start-Interactive {
     }
 }
 $script:IsAdmin = Test-IsAdmin
-$adminModes = @('Interactive', 'Heal', 'QuickHeal', 'AutoHeal', 'Omnifix', 'NetReset', 'FullNetReset', 'UltraReset', 'Ultra', 'DoomsdayReset', 'Doomsday', 'ArmageddonReset', 'Armageddon', 'FlushCache', 'Flush', 'InstallWatchdog', 'UninstallWatchdog', 'InstallShield', 'UninstallShield', 'ResetFactory', 'Reset', 'SetDnsProfile', 'Dns', 'DnsMenu', 'SetRouteProfile', 'Route', 'RouteMenu', 'Daemon', 'Vault')
+$adminModes = @('Interactive', 'Heal', 'QuickHeal', 'AutoHeal', 'Omnifix', 'NetReset', 'FullNetReset', 'UltraReset', 'Ultra', 'DoomsdayReset', 'Doomsday', 'ArmageddonReset', 'Armageddon', 'ResetOptions', 'ResetMenu', 'FlushCache', 'Flush', 'InstallWatchdog', 'UninstallWatchdog', 'InstallShield', 'UninstallShield', 'ResetFactory', 'Reset', 'SetDnsProfile', 'Dns', 'DnsMenu', 'SetRouteProfile', 'Route', 'RouteMenu', 'Daemon', 'Vault')
 if ($Mode -eq 'Interactive') {
     $intFile = Join-Path $script:Cfg.StoreDir 'interactive.json'
     if (Test-Path -LiteralPath $intFile) {
@@ -762,39 +798,3 @@ if ($script:UiOn) { Initialize-Ui }
 if ($script:IsAdmin) { Initialize-Store }
 Import-UserConfig
 $script:State = Get-State
-$exitCode = 0
-try {
-    if ($script:UiOn -and $Mode -ne 'Interactive') { Write-Banner ("{0}{1}" -f $Mode, $(if ($script:IsDry) { ' (dry run)' } else { '' })) }
-    switch ($Mode) {
-        'AutoHeal'          { [void](Invoke-AutoHeal) }
-        'Omnifix'           { Invoke-SupremeOmnifix }
-        'NetReset'          { Invoke-UltraSystemReset }
-        'FullNetReset'      { Invoke-UltraSystemReset }
-        'UltraReset'        { Invoke-UltraSystemReset }
-        'Ultra'             { Invoke-UltraSystemReset }
-        'DoomsdayReset'     { Invoke-DoomsdayReset }
-        'Doomsday'          { Invoke-DoomsdayReset }
-        'ArmageddonReset'   { Invoke-ArmageddonReset }
-        'Armageddon'        { Invoke-ArmageddonReset }
-        'SetRouteProfile'   { Set-RouteProfileMode $RouteProfile }
-        'Route'             { Show-RouteMenu }
-        'RouteMenu'         { Show-RouteMenu }
-        'Heal' {
-            $sw = [System.Diagnostics.Stopwatch]::StartNew()
-            $r = Pick-Hash (Invoke-WithLock { Invoke-HealPipeline })
-            $sw.Stop()
-            Write-HealSummary $r $sw
-            if ($r -and $r.Conn -eq 'Captive' -and -not $script:IsDry) {
-                [void](Invoke-WithLock { [void](Open-Portal); Save-State })
-                if ((Get-InternetState -NoCache).State -eq 'Captive') {
-                    if (Wait-ForAuthentication 120) { [void](Invoke-WithLock { Complete-Authentication }) }
-                }
-            }
-        }
-        'QuickHeal' {
-            $sw = [System.Diagnostics.Stopwatch]::StartNew()
-            $r = Pick-Hash (Invoke-WithLock { Invoke-HealPipeline })
-            $sw.Stop()
-            Write-HealSummary $r $sw
-            if ($r -and $r.Conn -eq 'Captive' -and -not $script:IsDry) {
-                [void](Invoke-WithLock { [void](Open-Portal); Save-State })
