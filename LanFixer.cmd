@@ -9,7 +9,7 @@ exit /b %errorlevel%
 
 <#
 .SYNOPSIS
-    Lan Fixer 6.2.0 - Sovereign self-healing Ethernet stabilizer for campus/hostel LANs (Windows 10/11, Ethernet only).
+    Lan Fixer 6.2.1 - Sovereign self-healing Ethernet stabilizer for campus/hostel LANs (Windows 10/11, Ethernet only).
     Author: A.S.
 .DESCRIPTION
     Single file, ASCII only. Run it normally for the control center, or use -Mode:
@@ -131,7 +131,7 @@ try { Add-Type -AssemblyName System.Security -ErrorAction SilentlyContinue } cat
 # ==============================================================================
 # CONFIG (edit here, nowhere else)
 # ==============================================================================
-$script:Version = '6.2.0'
+$script:Version = '6.2.1'
 $script:Sys32   = Join-Path $env:SystemRoot 'System32'
 $script:SelfPath = if ($env:LANFIXER_SELF -and (Test-Path -LiteralPath $env:LANFIXER_SELF)) { $env:LANFIXER_SELF } elseif ($PSCommandPath -and (Test-Path -LiteralPath $PSCommandPath)) { $PSCommandPath } elseif ($MyInvocation.MyCommand.Path -and (Test-Path -LiteralPath $MyInvocation.MyCommand.Path)) { $MyInvocation.MyCommand.Path } elseif ($PSScriptRoot -and (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'LanFixer.cmd'))) { (Join-Path $PSScriptRoot 'LanFixer.cmd') } else { (Join-Path (Get-Location).Path 'LanFixer.cmd') }
 $script:IsDry   = [bool]$DryRun
@@ -525,13 +525,37 @@ function Get-ActivePortalUrl {
     }
     return [string]$script:Cfg.PortalUrl
 }
+function Find-ActivePortalPort([string]$HostOrIp, [int]$DefaultPort = 8888) {
+    if (-not $HostOrIp) { return $DefaultPort }
+    if ($script:State.Misc -and $script:State.Misc['DiscoveredPortalPort']) {
+        $savedPort = [int]$script:State.Misc['DiscoveredPortalPort']
+        if ($savedPort -ge 1 -and $savedPort -le 65535) {
+            if (Test-TcpPort $HostOrIp $savedPort 250) { return $savedPort }
+        }
+    }
+    $probePorts = @([int]$DefaultPort, 8888, 8003, 8443, 8080, 443, 80) | Select-Object -Unique
+    foreach ($p in $probePorts) {
+        if (Test-TcpPort $HostOrIp $p 300) {
+            if ($script:State.Misc) { $script:State.Misc['DiscoveredPortalPort'] = $p }
+            return $p
+        }
+    }
+    return $DefaultPort
+}
+function Test-PortalOnlineSmart([string]$HostOrIp, [int]$ConfiguredPort = 8888) {
+    $candidatePorts = @([int]$ConfiguredPort, 8888, 8003, 8443, 8080, 443, 80) | Select-Object -Unique
+    foreach ($p in $candidatePorts) {
+        if (Test-TcpPort $HostOrIp $p 350) { return $true }
+    }
+    return $false
+}
 function Get-ActivePortalEndpoint {
     $discIp = ([string]$script:State.Misc['DiscoveredPortalIp']).Trim()
     $discUrl = Get-ActivePortalUrl
     try {
         $u = [uri]$discUrl
         if ($u.Host) {
-            $port = if ($u.Port -gt 0) { [int]$u.Port } else { [int]$script:Cfg.PortalPort }
+            $port = if ($u.Port -gt 0 -and $u.Port -ne 80 -and $u.Port -ne 443) { [int]$u.Port } else { Find-ActivePortalPort $u.Host ([int]$script:Cfg.PortalPort) }
             $ip = if ($discIp -and (Test-AllowedPortalIp $discIp)) { $discIp } else { [string]$script:Cfg.PortalIp }
             return @{ Host = [string]$u.Host; Ip = $ip; Port = $port; Url = $discUrl }
         }
@@ -2741,7 +2765,7 @@ function Invoke-DashboardKey([string]$Key, $adv) {
                         return @{ State = 'Online'; Signed = $true }
                     }
                     if ($inet.State -ne 'Captive') {
-                        if ($inet.State -eq 'Offline' -and (Test-TcpPort $script:Cfg.PortalIp $script:Cfg.PortalPort 900)) {
+                        if ($inet.State -eq 'Offline' -and (Test-PortalOnlineSmart $script:Cfg.PortalIp ([int]$script:Cfg.PortalPort))) {
                             $inet = @{ State = 'Captive'; Location = $script:Cfg.PortalUrl; Via = 'link' }
                         } else {
                             Write-Log 'WARN' ("Link state is '{0}' (not behind captive portal). Run [1] Quick Heal first." -f $inet.State)
@@ -2972,7 +2996,7 @@ function Test-GatewayAlive($Ad, [string]$Gw) {
         $homeAd = $true
         try { $eh = Get-AdapterEnvironment $Ad -UseCache; if ($null -ne $eh.Home) { $homeAd = [bool]$eh.Home } } catch {}
         $cfgProxy = $false
-        if ($homeAd) { $cfgProxy = [bool]((Test-TcpPort $script:Cfg.PortalIp $script:Cfg.PortalPort 500) -or ($null -ne (Test-Ping $script:Cfg.CampusDns 500))) }
+        if ($homeAd) { $cfgProxy = [bool]((Test-PortalOnlineSmart $script:Cfg.PortalIp ([int]$script:Cfg.PortalPort)) -or ($null -ne (Test-Ping $script:Cfg.CampusDns 500))) }
         if ((Test-TcpPort $Gw 80 400) -or (Test-TcpPort $Gw 443 400) -or (Test-TcpPort $Gw 53 400) -or $cfgProxy -or (Test-TcpPort '1.1.1.1' 53 400) -or (Test-TcpPort '8.8.8.8' 53 400)) {
             return @{ Alive = $true; Rtt = $null; Via = 'arp' }
         }
@@ -3118,7 +3142,8 @@ function Get-AdapterEnvironment {
     }
     if ($score -lt $cfg.CampusThreshold -and $ip) {
         if ($ip -notlike '192.168.*' -or ($cfg.PortalIp -and $cfg.PortalIp -like '192.168.*')) {
-            if (Test-TcpPort $cfg.PortalIp $cfg.PortalPort 700) { $score += 2; $portalHit = $true; [void]$ev.Add("portal $($cfg.PortalIp):$($cfg.PortalPort) open") }
+            $detectedPort = Find-ActivePortalPort $cfg.PortalIp ([int]$cfg.PortalPort)
+            if (Test-TcpPort $cfg.PortalIp $detectedPort 700) { $score += 2; $portalHit = $true; [void]$ev.Add("portal $($cfg.PortalIp):$detectedPort open") }
             if ($null -ne (Test-Ping $cfg.PortalIp 700)) { $score += 1; $portalHit = $true; [void]$ev.Add("portal firewall answers ping") }
             if ($null -ne (Test-Ping $cfg.CampusDns 700)) { $score += 1; [void]$ev.Add("campus DNS answers ping") }
         }
@@ -5040,7 +5065,7 @@ function Invoke-HeadlessPortalLogin {
         }
         $Inet = Get-InternetState -NoCache
     }
-    if ($Manual -and $Inet.State -eq 'Offline' -and (Test-TcpPort $script:Cfg.PortalIp $script:Cfg.PortalPort 900)) {
+    if ($Manual -and $Inet.State -eq 'Offline' -and (Test-PortalOnlineSmart $script:Cfg.PortalIp ([int]$script:Cfg.PortalPort))) {
         $Inet = @{ State = 'Captive'; Location = $script:Cfg.PortalUrl; Via = 'link' }
     }
     if ($Inet.State -ne 'Captive') { if ($Manual) { Write-Log 'INFO' 'This link is not behind the login page right now; nothing to do.' }; return $false }
