@@ -18,6 +18,19 @@ exit /b %errorlevel%
     Add -DryRun to see exactly what would change without changing anything.
     Every change is snapshotted first, so ResetFactory restores YOUR original values.
 .NOTES
+    6.3.0 (Sovereign Zero-Reboot Situational Auto-Adaptation Engine):
+      - Situational DNS Engine: Shield-Dns resolves failures across Online, NoDns, and Offline states via parallel
+        53/UDP latency probes, automatically placing measured working public resolvers at the head of the adapter list.
+      - NRPT Split-Horizon Rule Injection: Dynamically maps the campus/organization domain to campus resolvers so
+        internal portals, ERPs, and intranet services continue working alongside high-speed public internet.
+      - Dynamic Captive Host Routing: Ensure-CampusPortalPath resolves portal redirect hostnames on the wire and
+        creates /32 host routes pinned to the active gateway, preventing secondary uplinks from hijacking portal auth.
+      - Zero-Reboot Hardware Cycling: Combines pnputil /restart-device with NDIS stack cycling and DHCP Client service
+        unfreezing, eliminating the need to restart the PC to resolve hung transceivers or frozen sockets.
+      - Multi-Vendor NIC Power Hardening: Suppresses selective suspend and Energy Efficient Ethernet (EEE) across
+        Realtek, ASIX, and Intel GbE controllers, and disables USB selective suspend globally across AC and DC power plans.
+      - DHCP Stale Cache Flush: Step 3 of Repair-Dhcp purges stale DhcpIPAddress and DhcpDefaultGateway registry values
+        before renewing, preventing 30-second APIPA 169.254.x.x deadlocks on foreign networks.
     5.2.0 (verified-defect release; every item below was reproduced in the 5.0.0 source before it was changed):
       SECURITY
       - The saved portal password could be sent to any HTTPS host under the DNS suffix that the CURRENT network's DHCP
