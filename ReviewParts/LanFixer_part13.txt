@@ -1,3 +1,68 @@
+        elseif ($l -like '*[FAIL ]*') { $c = 'bad' }
+        elseif ($l -like '*[TIER*]*') { $c = 'cyan' }
+        Out-Line @((Seg $c ("  " + $l)))
+    }
+    Out-Line @()
+    Out-Line @((Seg 'dim' '  Press any key to return to sentinel cockpit...'))
+    Wait-AnyKey
+}
+
+function Show-SentinelHud($Adapter, $LinkHealth, [string]$Status, [int]$Cadence) {
+    if (-not $script:UiOn) { return }
+    Clear-Screen
+    $w = [Math]::Min(100, [Math]::Max(60, (Get-UiWidth)))
+    $sep = '-' * ($w - 4)
+    $uptime = (Get-Date) - $script:SentinelStats.StartTime
+    $upStr = "{0:D2}h {1:D2}m {2:D2}s" -f [int]$uptime.TotalHours, $uptime.Minutes, $uptime.Seconds
+    
+    Out-Line @((Seg 'cyan!' ("  LAN FIXER . AUTONOMOUS SENTINEL DAEMON (MARK VI)")), (Seg 'dim' (" . Uptime: " + $upStr)))
+    Out-Line @((Seg 'dim' ("  " + $sep)))
+    
+    $statCol = $(switch -wildcard ($Status) {
+        'Online*'    { 'ok!' }
+        'Recovered*' { 'ok!' }
+        'Captive*'   { 'warn!' }
+        'Breaker*'   { 'bad!' }
+        default      { 'warn!' }
+    })
+    $adName = $(if ($Adapter) { $Adapter.InterfaceDescription } else { 'No Active Ethernet Adapter' })
+    Out-Line @(
+        (Seg 'dim' '  Sentinel Status: '), (Seg $statCol ("[" + $Status.ToUpper() + "]")),
+        (Seg 'dim' ' | Cadence: '), (Seg 'text' ("${Cadence}s (Adaptive)")),
+        (Seg 'dim' ' | Cycles: '), (Seg 'text' ("$($script:SentinelStats.HealthyCycles)/$($script:SentinelStats.TotalCycles) healthy"))
+    )
+    if ($Adapter) {
+        $ip = Get-ValidIPv4 $Adapter
+        $gw = Get-DefaultGateway $Adapter
+        $truncW = [Math]::Max(12, $w - 40)
+        Out-Line @(
+            (Seg 'dim' '  Adapter        : '), (Seg 'text' (Fit $adName $truncW)),
+            (Seg 'dim' ' | IP: '), (Seg 'text' $(if ($ip) { $ip } else { 'APIPA/None' }))
+        )
+        Out-Line @(
+            (Seg 'dim' '  Link Health    : '), (Seg $(if ($LinkHealth -and $LinkHealth.Healthy) { 'ok' } else { 'warn' }) (Fit $(if ($LinkHealth) { $LinkHealth.Reason } else { 'Unchecked' }) $truncW)),
+            (Seg 'dim' ' | Gateway: '), (Seg 'text' $(if ($gw) { $gw } else { 'None' }))
+        )
+    }
+    Out-Line @((Seg 'dim' ("  " + $sep)))
+    Out-Line @((Seg 'text' '  AUTONOMOUS ESCALATION LADDER (INTERVENTIONS SINCE START):'))
+    if ($w -ge 72) {
+        Out-Line @(
+            (Seg 'dim' '  T1 ARP/Route: '), (Seg 'ok' ("{0,-5}" -f $script:SentinelStats.T1_ArpRoute)),
+            (Seg 'dim' '  T2 Captive: '), (Seg 'ok' ("{0,-5}" -f $script:SentinelStats.T2_Captive)),
+            (Seg 'dim' '  T3 DNS/NRPT: '), (Seg 'ok' ("$($script:SentinelStats.T3_Dns)"))
+        )
+        Out-Line @(
+            (Seg 'dim' '  T4 DHCP/STP : '), (Seg 'ok' ("{0,-5}" -f $script:SentinelStats.T4_Dhcp)),
+            (Seg 'dim' '  T5 NDIS/PHY: '), (Seg 'ok' ("{0,-5}" -f $script:SentinelStats.T5_Ndis)),
+            (Seg 'dim' '  T6 DeepStack: '), (Seg 'ok' ("$($script:SentinelStats.T6_Stack)"))
+        )
+    } else {
+        Out-Line @(
+            (Seg 'dim' '  T1 ARP: '), (Seg 'ok' ("{0,-4}" -f $script:SentinelStats.T1_ArpRoute)),
+            (Seg 'dim' 'T2 Captive: '), (Seg 'ok' ("{0,-4}" -f $script:SentinelStats.T2_Captive)),
+            (Seg 'dim' 'T3 DNS: '), (Seg 'ok' ("$($script:SentinelStats.T3_Dns)"))
+        )
         Out-Line @(
             (Seg 'dim' '  T4 DHCP: '), (Seg 'ok' ("{0,-4}" -f $script:SentinelStats.T4_Dhcp)),
             (Seg 'dim' 'T5 NDIS: '), (Seg 'ok' ("{0,-4}" -f $script:SentinelStats.T5_Ndis)),

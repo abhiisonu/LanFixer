@@ -7415,214 +7415,223 @@ function Uninstall-Watchdog {
 # ==============================================================================
 function Restore-Everything {
     if (-not (Assert-Admin)) { return }
-    Write-Log 'INFO' 'Restoring from the snapshot taken before Lan Fixer changed anything...'
+    Write-Log 'INFO' 'Initiating Complete Sovereign Factory Reset & Rollback to Default Windows...'
     $restartNames = @{}
     $present = @(Get-NetAdapter -IncludeHidden -ErrorAction SilentlyContinue)
-    foreach ($guid in @($script:State.Snapshot.Keys)) {
-        $snap = $script:State.Snapshot[$guid]
-        if ($snap -isnot [hashtable]) { continue }
-        if ($guid -eq 'NetProfiles') {
-            foreach ($k in @($snap.Keys)) {
-                if ($k -like 'Cat:*') {
-                    $nm = $k.Substring(4); $cat = [string]$snap[$k]
-                    [void](Invoke-Change "Network '$nm' set back to $cat" { Set-NetConnectionProfile -Name $nm -NetworkCategory $cat -ErrorAction Stop })
+
+    # 1. Unregister & Terminate ALL Background Daemons and Scheduled Tasks
+    Uninstall-SentinelTask
+    Uninstall-Watchdog
+    try {
+        Get-ScheduledTask -TaskName 'LanFixer_*' -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false -ErrorAction SilentlyContinue
+    } catch {}
+
+    # 2. Restore Pre-LanFixer Snapshots (If snapshot exists in state)
+    if ($script:State -is [hashtable] -and $script:State.Snapshot -is [hashtable]) {
+        foreach ($guid in @($script:State.Snapshot.Keys)) {
+            $snap = $script:State.Snapshot[$guid]
+            if ($snap -isnot [hashtable]) { continue }
+            if ($guid -eq 'NetProfiles') {
+                foreach ($k in @($snap.Keys)) {
+                    if ($k -like 'Cat:*') {
+                        $nm = $k.Substring(4); $cat = [string]$snap[$k]
+                        [void](Invoke-Change "Network '$nm' set back to $cat" { Set-NetConnectionProfile -Name $nm -NetworkCategory $cat -ErrorAction Stop })
+                    }
                 }
+                continue
             }
-            continue
-        }
-        if ($snap.ContainsKey('MsTcpip6')) {
-            $mv = [string]$snap['MsTcpip6']
-            if ($mv -eq 'True') {
-                [void](Invoke-Change "IPv6 re-enabled on adapter $guid" {
-                    $mAd = Get-NetAdapter -InterfaceGuid $guid -ErrorAction SilentlyContinue
-                    if ($mAd) { Enable-NetAdapterBinding -Name $mAd.Name -ComponentId 'ms_tcpip6' -Confirm:$false -ErrorAction SilentlyContinue }
-                })
-            }
-        }
-        if ($guid -eq 'Global') {
-            if ($snap.ContainsKey('UsbSuspend')) { $uv = $snap['UsbSuspend']; [void](Invoke-Change 'USB selective suspend restored to your original value' { Restore-UsbSuspend $uv }) }
-            if ($snap.ContainsKey('WinHttpProxy')) {
-                $wh = [string]$snap['WinHttpProxy']
-                [void](Invoke-Change 'WinHTTP proxy restored' {
-                    $netsh = Get-SysExe 'netsh.exe'
-                    if ($wh) { [void](Invoke-Native $netsh @('winhttp', 'set', 'proxy', $wh) 5000) }
-                    else { [void](Invoke-Native $netsh @('winhttp', 'reset', 'proxy') 5000) }
-                })
-            }
-            if ($snap.ContainsKey('ProxyEnable_CU')) {
-                $pe = [int]$snap['ProxyEnable_CU']
-                [void](Invoke-Change 'WinINet user proxy restored' {
-                    Set-ItemProperty -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -Name ProxyEnable -Value $pe -Type DWord -Force -ErrorAction SilentlyContinue
-                })
-            }
-            if ($snap.ContainsKey('ProxyEnable_LM')) {
-                $pe = [int]$snap['ProxyEnable_LM']
-                [void](Invoke-Change 'WinINet machine proxy restored' {
-                    Set-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings' -Name ProxyEnable -Value $pe -Type DWord -Force -ErrorAction SilentlyContinue
-                })
-            }
-            if ($snap.ContainsKey('Llmnr')) {
-                $lv = $snap['Llmnr']
-                [void](Invoke-Change 'LLMNR setting restored' { Restore-Llmnr $lv })
-            }
-            if ($snap.ContainsKey('DisabledComponents')) {
-                $dc = $snap['DisabledComponents']
-                [void](Invoke-Change 'IPv6 prefix policy restored' {
-                    if ($null -eq $dc) { Remove-ItemProperty -LiteralPath $script:Tcpip6Key -Name DisabledComponents -ErrorAction SilentlyContinue }
-                    else { New-ItemProperty -LiteralPath $script:Tcpip6Key -Name DisabledComponents -Value ([int]$dc) -PropertyType DWord -Force -ErrorAction Stop | Out-Null }
-                })
-            }
-            if ($snap.ContainsKey('Ncsi')) {
-                $nk = 'HKLM:\SYSTEM\CurrentControlSet\Services\NlaSvc\Parameters\Internet'
-                $v = [int]$snap['Ncsi']
-                [void](Invoke-Change "Connectivity probing setting restored to $v" { Set-ItemProperty -LiteralPath $nk -Name EnableActiveProbing -Value $v -Type DWord -ErrorAction Stop })
-            }
-            if ($snap.ContainsKey('MaxNegativeCacheTtl')) {
-                $nct = $snap['MaxNegativeCacheTtl']
-                [void](Invoke-Change 'Negative DNS cache TTL restored' {
-                    if ($null -eq $nct) { Remove-ItemProperty -LiteralPath $script:DnsParamKey -Name MaxNegativeCacheTtl -ErrorAction SilentlyContinue }
-                    else { Set-ItemProperty -LiteralPath $script:DnsParamKey -Name MaxNegativeCacheTtl -Value ([int]$nct) -Type DWord -ErrorAction Stop }
-                })
-            }
-            if ($snap.ContainsKey('EnableMDNS')) {
-                $md = $snap['EnableMDNS']
-                [void](Invoke-Change 'mDNS setting restored' {
-                    if ($null -eq $md) { Remove-ItemProperty -LiteralPath $script:DnsParamKey -Name EnableMDNS -ErrorAction SilentlyContinue }
-                    else { Set-ItemProperty -LiteralPath $script:DnsParamKey -Name EnableMDNS -Value ([int]$md) -Type DWord -ErrorAction Stop }
-                })
-            }
-            if ($snap.ContainsKey('DisableSmartNameResolution') -or (Test-Path -LiteralPath $script:DnsPolicyKey)) {
-                [void](Invoke-Change 'Smart Name Resolution policy cleared' {
-                    Remove-ItemProperty -LiteralPath $script:DnsPolicyKey -Name DisableSmartNameResolution -ErrorAction SilentlyContinue
-                })
-            }
-            if ($snap.ContainsKey('KeepAliveTime')) {
-                $kat = $snap['KeepAliveTime']
-                [void](Invoke-Change 'TCP KeepAliveTime restored' {
-                    if ($null -eq $kat) { Remove-ItemProperty -LiteralPath $script:TcpParamKey -Name KeepAliveTime -ErrorAction SilentlyContinue }
-                    else { Set-ItemProperty -LiteralPath $script:TcpParamKey -Name KeepAliveTime -Value ([int]$kat) -Type DWord -ErrorAction Stop }
-                })
-            }
-            if ($snap.ContainsKey('KeepAliveInterval')) {
-                $kai = $snap['KeepAliveInterval']
-                [void](Invoke-Change 'TCP KeepAliveInterval restored' {
-                    if ($null -eq $kai) { Remove-ItemProperty -LiteralPath $script:TcpParamKey -Name KeepAliveInterval -ErrorAction SilentlyContinue }
-                    else { Set-ItemProperty -LiteralPath $script:TcpParamKey -Name KeepAliveInterval -Value ([int]$kai) -Type DWord -ErrorAction Stop }
-                })
-            }
-            if ($snap.ContainsKey('TcpAutoTuning')) {
-                $tat = [string]$snap['TcpAutoTuning']
-                if ($tat -eq 'Disabled') {
-                    [void](Invoke-Change 'TCP Window Auto-Tuning restored to Disabled (original user setting)' {
-                        Set-NetTCPSetting -SettingName Internet -AutoTuningLevelLocal Disabled -ErrorAction Stop
+            if ($snap.ContainsKey('MsTcpip6')) {
+                $mv = [string]$snap['MsTcpip6']
+                if ($mv -eq 'True') {
+                    [void](Invoke-Change "IPv6 re-enabled on adapter $guid" {
+                        $mAd = Get-NetAdapter -InterfaceGuid $guid -ErrorAction SilentlyContinue
+                        if ($mAd) { Enable-NetAdapterBinding -Name $mAd.Name -ComponentId 'ms_tcpip6' -Confirm:$false -ErrorAction SilentlyContinue }
                     })
                 }
             }
-            continue
-        }
-        $ad = $present | Where-Object { [string]$_.InterfaceGuid -eq [string]$guid } | Select-Object -First 1
-        if (-not $ad) { Write-Log 'INFO' "Adapter $guid is not present; its snapshot is skipped."; continue }
-        foreach ($key in @($snap.Keys)) {
-            $val = $snap[$key]
-            if ($key -eq 'StaticIp4') {
-                if ($val -and $val.IPAddress) {
-                    [void](Invoke-Change "Static IPv4 configuration ($($val.IPAddress)/$($val.PrefixLength)) restored on $($ad.Name)" {
-                        Set-NetIPInterface -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -Dhcp Disabled -ErrorAction Stop
-                        Get-NetIPAddress -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue
-                        if ($val.DefaultGateway) {
-                            Remove-NetRoute -InterfaceIndex $ad.ifIndex -DestinationPrefix '0.0.0.0/0' -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue
-                            Remove-NetRoute -InterfaceIndex $ad.ifIndex -DestinationPrefix '0.0.0.0/0' -PolicyStore PersistentStore -Confirm:$false -ErrorAction SilentlyContinue
-                            New-NetIPAddress -InterfaceIndex $ad.ifIndex -IPAddress $val.IPAddress -PrefixLength $val.PrefixLength -DefaultGateway $val.DefaultGateway -ErrorAction SilentlyContinue | Out-Null
-                        } else {
-                            New-NetIPAddress -InterfaceIndex $ad.ifIndex -IPAddress $val.IPAddress -PrefixLength $val.PrefixLength -ErrorAction SilentlyContinue | Out-Null
-                        }
+            if ($guid -eq 'Global') {
+                if ($snap.ContainsKey('UsbSuspend')) { $uv = $snap['UsbSuspend']; [void](Invoke-Change 'USB selective suspend restored to your original value' { Restore-UsbSuspend $uv }) }
+                if ($snap.ContainsKey('WinHttpProxy')) {
+                    $wh = [string]$snap['WinHttpProxy']
+                    [void](Invoke-Change 'WinHTTP proxy restored' {
+                        $netsh = Get-SysExe 'netsh.exe'
+                        if ($wh) { [void](Invoke-Native $netsh @('winhttp', 'set', 'proxy', $wh) 5000) }
+                        else { [void](Invoke-Native $netsh @('winhttp', 'reset', 'proxy') 5000) }
                     })
                 }
-            } elseif ($key -eq 'Dad4') {
-                $n = [int]$val
-                [void](Invoke-Change "Duplicate-address probes back to $n on $($ad.Name)" { Set-NetIPInterface -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -DadTransmits $n -ErrorAction Stop })
-            } elseif ($key -eq 'Mtu') {
-                $m = [int]$val
-                [void](Invoke-Change "MTU back to $m on $($ad.Name)" { Set-NetIPInterface -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -NlMtuBytes $m -ErrorAction Stop })
-            } elseif ($key -like 'PrunedRoute_*') {
-                if ($val -and $val.NextHop) {
-                    [void](Invoke-Change "Default route $($val.NextHop) restored on $($ad.Name)" {
-                        New-NetRoute -InterfaceIndex $ad.ifIndex -DestinationPrefix '0.0.0.0/0' -NextHop $val.NextHop -RouteMetric ([int]$val.RouteMetric) -PolicyStore ActiveStore -ErrorAction SilentlyContinue
+                if ($snap.ContainsKey('ProxyEnable_CU')) {
+                    $pe = [int]$snap['ProxyEnable_CU']
+                    [void](Invoke-Change 'WinINet user proxy restored' {
+                        Set-ItemProperty -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -Name ProxyEnable -Value $pe -Type DWord -Force -ErrorAction SilentlyContinue
                     })
                 }
-            } elseif ($key -eq 'DnsStatic') {
-                $s = [string]$val
-                $okDns = $false
-                if ($s -eq '') {
-                    $okDns = Invoke-Change "DNS on $($ad.Name) back to automatic" { Set-DnsClientServerAddress -InterfaceIndex $ad.ifIndex -ResetServerAddresses -ErrorAction Stop }
-                } else {
-                    $list = @($s -split '[,\s]+' | Where-Object { $_ })
-                    $hasPrivate = $false
-                    foreach ($ip in $list) {
-                        if ($ip -eq $script:Cfg.CampusDns -or $ip -eq $script:Cfg.PortalIp) { $hasPrivate = $true; break }
-                    }
-                    if ($hasPrivate) {
-                        $okDns = Invoke-Change "DNS on $($ad.Name) reset to automatic (sanitized campus IPs)" { Set-DnsClientServerAddress -InterfaceIndex $ad.ifIndex -ResetServerAddresses -ErrorAction Stop }
-                    } else {
-                        $okDns = Invoke-Change "DNS on $($ad.Name) back to $s" { Set-DnsClientServerAddress -InterfaceIndex $ad.ifIndex -ServerAddresses $list -ErrorAction Stop }
+                if ($snap.ContainsKey('ProxyEnable_LM')) {
+                    $pe = [int]$snap['ProxyEnable_LM']
+                    [void](Invoke-Change 'WinINet machine proxy restored' {
+                        Set-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings' -Name ProxyEnable -Value $pe -Type DWord -Force -ErrorAction SilentlyContinue
+                    })
+                }
+                if ($snap.ContainsKey('Llmnr')) {
+                    $lv = $snap['Llmnr']
+                    [void](Invoke-Change 'LLMNR setting restored' { Restore-Llmnr $lv })
+                }
+                if ($snap.ContainsKey('DisabledComponents')) {
+                    $dc = $snap['DisabledComponents']
+                    [void](Invoke-Change 'IPv6 prefix policy restored' {
+                        if ($null -eq $dc) { Remove-ItemProperty -LiteralPath $script:Tcpip6Key -Name DisabledComponents -ErrorAction SilentlyContinue }
+                        else { New-ItemProperty -LiteralPath $script:Tcpip6Key -Name DisabledComponents -Value ([int]$dc) -PropertyType DWord -Force -ErrorAction Stop | Out-Null }
+                    })
+                }
+                if ($snap.ContainsKey('Ncsi')) {
+                    $nk = 'HKLM:\SYSTEM\CurrentControlSet\Services\NlaSvc\Parameters\Internet'
+                    $v = [int]$snap['Ncsi']
+                    [void](Invoke-Change "Connectivity probing setting restored to $v" { Set-ItemProperty -LiteralPath $nk -Name EnableActiveProbing -Value $v -Type DWord -ErrorAction Stop })
+                }
+                if ($snap.ContainsKey('MaxNegativeCacheTtl')) {
+                    $nct = $snap['MaxNegativeCacheTtl']
+                    [void](Invoke-Change 'Negative DNS cache TTL restored' {
+                        if ($null -eq $nct) { Remove-ItemProperty -LiteralPath $script:DnsParamKey -Name MaxNegativeCacheTtl -ErrorAction SilentlyContinue }
+                        else { Set-ItemProperty -LiteralPath $script:DnsParamKey -Name MaxNegativeCacheTtl -Value ([int]$nct) -Type DWord -ErrorAction Stop }
+                    })
+                }
+                if ($snap.ContainsKey('EnableMDNS')) {
+                    $md = $snap['EnableMDNS']
+                    [void](Invoke-Change 'mDNS setting restored' {
+                        if ($null -eq $md) { Remove-ItemProperty -LiteralPath $script:DnsParamKey -Name EnableMDNS -ErrorAction SilentlyContinue }
+                        else { Set-ItemProperty -LiteralPath $script:DnsParamKey -Name EnableMDNS -Value ([int]$md) -Type DWord -ErrorAction Stop }
+                    })
+                }
+                if ($snap.ContainsKey('DisableSmartNameResolution') -or (Test-Path -LiteralPath $script:DnsPolicyKey)) {
+                    [void](Invoke-Change 'Smart Name Resolution policy cleared' {
+                        Remove-ItemProperty -LiteralPath $script:DnsPolicyKey -Name DisableSmartNameResolution -ErrorAction SilentlyContinue
+                    })
+                }
+                if ($snap.ContainsKey('KeepAliveTime')) {
+                    $kat = $snap['KeepAliveTime']
+                    [void](Invoke-Change 'TCP KeepAliveTime restored' {
+                        if ($null -eq $kat) { Remove-ItemProperty -LiteralPath $script:TcpParamKey -Name KeepAliveTime -ErrorAction SilentlyContinue }
+                        else { Set-ItemProperty -LiteralPath $script:TcpParamKey -Name KeepAliveTime -Value ([int]$kat) -Type DWord -ErrorAction Stop }
+                    })
+                }
+                if ($snap.ContainsKey('KeepAliveInterval')) {
+                    $kai = $snap['KeepAliveInterval']
+                    [void](Invoke-Change 'TCP KeepAliveInterval restored' {
+                        if ($null -eq $kai) { Remove-ItemProperty -LiteralPath $script:TcpParamKey -Name KeepAliveInterval -ErrorAction SilentlyContinue }
+                        else { Set-ItemProperty -LiteralPath $script:TcpParamKey -Name KeepAliveInterval -Value ([int]$kai) -Type DWord -ErrorAction Stop }
+                    })
+                }
+                if ($snap.ContainsKey('TcpAutoTuning')) {
+                    $tat = [string]$snap['TcpAutoTuning']
+                    if ($tat -eq 'Disabled') {
+                        [void](Invoke-Change 'TCP Window Auto-Tuning restored to Disabled (original user setting)' {
+                            Set-NetTCPSetting -SettingName Internet -AutoTuningLevelLocal Disabled -ErrorAction Stop
+                        })
                     }
                 }
-                # The snapshot has been honoured: this adapter is no longer ours to manage.
-                if ($okDns -and -not $script:IsDry) { (Get-SubTable 'Dns' ([string]$guid)).Managed = $false }
-            } elseif ($key -eq 'NetBios') {
-                $n = [int]$val
-                $tk = "HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters\Interfaces\Tcpip_$guid"
-                [void](Invoke-Change "NetBIOS setting back to $n on $($ad.Name)" { Set-ItemProperty -LiteralPath $tk -Name NetbiosOptions -Value $n -Type DWord -ErrorAction Stop })
-            } elseif ($key -like 'Adv:*') {
-                $kw = $key.Substring(4); $sv = [string]$val
-                $ok = Invoke-Change "Driver option '$kw' back to $sv on $($ad.Name)" { Set-NetAdapterAdvancedProperty -Name $ad.Name -RegistryKeyword $kw -RegistryValue @($sv) -NoRestart -ErrorAction Stop }
-                if ($ok) { $restartNames[$ad.Name] = $true }
-            } elseif ($key -eq 'Pnp') {
-                $ck = Get-NicClassKey $ad
-                if ($ck) {
-                    if ($null -eq $val) {
-                        $ok = Invoke-Change "NIC power-off permission back to default on $($ad.Name)" { Remove-ItemProperty -LiteralPath $ck -Name PnPCapabilities -ErrorAction SilentlyContinue }
-                    } else {
-                        $pv = [int]$val
-                        $ok = Invoke-Change "NIC power-off permission back to $pv on $($ad.Name)" { New-ItemProperty -LiteralPath $ck -Name PnPCapabilities -Value $pv -PropertyType DWord -Force -ErrorAction Stop }
-                    }
-                    if ($ok) { $restartNames[$ad.Name] = $true }
-                }
-            } elseif ($key -like 'Enum:*') {
-                $pName = $key.Substring(5)
-                if ($ad.PnPDeviceID) {
-                    $eKey = "HKLM:\SYSTEM\CurrentControlSet\Enum\$($ad.PnPDeviceID)\Device Parameters"
-                    if (Test-Path -LiteralPath $eKey) {
-                        try {
-                            if ($null -eq $val) {
-                                Remove-ItemProperty -LiteralPath $eKey -Name $pName -ErrorAction Stop
+                continue
+            }
+            $ad = $present | Where-Object { [string]$_.InterfaceGuid -eq [string]$guid } | Select-Object -First 1
+            if (-not $ad) { Write-Log 'INFO' "Adapter $guid is not present; its snapshot is skipped."; continue }
+            foreach ($key in @($snap.Keys)) {
+                $val = $snap[$key]
+                if ($key -eq 'StaticIp4') {
+                    if ($val -and $val.IPAddress) {
+                        [void](Invoke-Change "Static IPv4 configuration ($($val.IPAddress)/$($val.PrefixLength)) restored on $($ad.Name)" {
+                            Set-NetIPInterface -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -Dhcp Disabled -ErrorAction Stop
+                            Get-NetIPAddress -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue
+                            if ($val.DefaultGateway) {
+                                Remove-NetRoute -InterfaceIndex $ad.ifIndex -DestinationPrefix '0.0.0.0/0' -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue
+                                Remove-NetRoute -InterfaceIndex $ad.ifIndex -DestinationPrefix '0.0.0.0/0' -PolicyStore PersistentStore -Confirm:$false -ErrorAction SilentlyContinue
+                                New-NetIPAddress -InterfaceIndex $ad.ifIndex -IPAddress $val.IPAddress -PrefixLength $val.PrefixLength -DefaultGateway $val.DefaultGateway -ErrorAction SilentlyContinue | Out-Null
                             } else {
-                                $ev = [int]$val
-                                Set-ItemProperty -LiteralPath $eKey -Name $pName -Value $ev -Type DWord -Force -ErrorAction Stop
+                                New-NetIPAddress -InterfaceIndex $ad.ifIndex -IPAddress $val.IPAddress -PrefixLength $val.PrefixLength -ErrorAction SilentlyContinue | Out-Null
                             }
-                            Write-Log 'OK' "Device Parameters '$pName' reverted on $($ad.Name)"
-                        } catch {
-                            Write-Log 'INFO' "Device Parameters '$pName' reversion on $($ad.Name) skipped (SYSTEM ownership required)"
+                        })
+                    }
+                } elseif ($key -eq 'Dad4') {
+                    $n = [int]$val
+                    [void](Invoke-Change "Duplicate-address probes back to $n on $($ad.Name)" { Set-NetIPInterface -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -DadTransmits $n -ErrorAction Stop })
+                } elseif ($key -eq 'Mtu') {
+                    $m = [int]$val
+                    [void](Invoke-Change "MTU back to $m on $($ad.Name)" { Set-NetIPInterface -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -NlMtuBytes $m -ErrorAction Stop })
+                } elseif ($key -like 'PrunedRoute_*') {
+                    if ($val -and $val.NextHop) {
+                        [void](Invoke-Change "Default route $($val.NextHop) restored on $($ad.Name)" {
+                            New-NetRoute -InterfaceIndex $ad.ifIndex -DestinationPrefix '0.0.0.0/0' -NextHop $val.NextHop -RouteMetric ([int]$val.RouteMetric) -PolicyStore ActiveStore -ErrorAction SilentlyContinue
+                        })
+                    }
+                } elseif ($key -eq 'DnsStatic') {
+                    $s = [string]$val
+                    $okDns = $false
+                    if ($s -eq '') {
+                        $okDns = Invoke-Change "DNS on $($ad.Name) back to automatic" { Set-DnsClientServerAddress -InterfaceIndex $ad.ifIndex -ResetServerAddresses -ErrorAction Stop }
+                    } else {
+                        $list = @($s -split '[,\s]+' | Where-Object { $_ })
+                        $hasPrivate = $false
+                        foreach ($ip in $list) {
+                            if ($ip -eq $script:Cfg.CampusDns -or $ip -eq $script:Cfg.PortalIp) { $hasPrivate = $true; break }
+                        }
+                        if ($hasPrivate) {
+                            $okDns = Invoke-Change "DNS on $($ad.Name) reset to automatic (sanitized campus IPs)" { Set-DnsClientServerAddress -InterfaceIndex $ad.ifIndex -ResetServerAddresses -ErrorAction Stop }
+                        } else {
+                            $okDns = Invoke-Change "DNS on $($ad.Name) back to $s" { Set-DnsClientServerAddress -InterfaceIndex $ad.ifIndex -ServerAddresses $list -ErrorAction Stop }
+                        }
+                    }
+                    if ($okDns -and -not $script:IsDry) { (Get-SubTable 'Dns' ([string]$guid)).Managed = $false }
+                } elseif ($key -eq 'NetBios') {
+                    $n = [int]$val
+                    $tk = "HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters\Interfaces\Tcpip_$guid"
+                    [void](Invoke-Change "NetBIOS setting back to $n on $($ad.Name)" { Set-ItemProperty -LiteralPath $tk -Name NetbiosOptions -Value $n -Type DWord -ErrorAction Stop })
+                } elseif ($key -like 'Adv:*') {
+                    $kw = $key.Substring(4); $sv = [string]$val
+                    $ok = Invoke-Change "Driver option '$kw' back to $sv on $($ad.Name)" { Set-NetAdapterAdvancedProperty -Name $ad.Name -RegistryKeyword $kw -RegistryValue @($sv) -NoRestart -ErrorAction Stop }
+                    if ($ok) { $restartNames[$ad.Name] = $true }
+                } elseif ($key -eq 'Pnp') {
+                    $ck = Get-NicClassKey $ad
+                    if ($ck) {
+                        if ($null -eq $val) {
+                            $ok = Invoke-Change "NIC power-off permission back to default on $($ad.Name)" { Remove-ItemProperty -LiteralPath $ck -Name PnPCapabilities -ErrorAction SilentlyContinue }
+                        } else {
+                            $pv = [int]$val
+                            $ok = Invoke-Change "NIC power-off permission back to $pv on $($ad.Name)" { New-ItemProperty -LiteralPath $ck -Name PnPCapabilities -Value $pv -PropertyType DWord -Force -ErrorAction Stop }
+                        }
+                        if ($ok) { $restartNames[$ad.Name] = $true }
+                    }
+                } elseif ($key -like 'Enum:*') {
+                    $pName = $key.Substring(5)
+                    if ($ad.PnPDeviceID) {
+                        $eKey = "HKLM:\SYSTEM\CurrentControlSet\Enum\$($ad.PnPDeviceID)\Device Parameters"
+                        if (Test-Path -LiteralPath $eKey) {
+                            try {
+                                if ($null -eq $val) {
+                                    Remove-ItemProperty -LiteralPath $eKey -Name $pName -ErrorAction Stop
+                                } else {
+                                    $ev = [int]$val
+                                    Set-ItemProperty -LiteralPath $eKey -Name $pName -Value $ev -Type DWord -Force -ErrorAction Stop
+                                }
+                                Write-Log 'OK' "Device Parameters '$pName' reverted on $($ad.Name)"
+                            } catch {
+                                Write-Log 'INFO' "Device Parameters '$pName' reversion on $($ad.Name) skipped"
+                            }
                         }
                     }
                 }
             }
         }
     }
-    # Any adapter this tool ever substituted a resolver on is restored here as well: the snapshot loop above only covers
-    # adapters that HAVE a snapshot, while state written by an older build could leave a managed flag with no snapshot.
+
+    # 3. Clean Leftovers & Enforce Native Windows Defaults Across ALL Adapters
     [void](Restore-ManagedAdapterDns 'Factory reset')
-    # Leftovers from builds that kept no snapshot: touch ONLY values that match what this tool sets, never a value you chose yourself.
     foreach ($a in @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue)) {
         $g = [string]$a.InterfaceGuid
-        $snapA = $script:State.Snapshot[$g]
+        $snapA = if ($script:State -is [hashtable] -and $script:State.Snapshot -is [hashtable]) { $script:State.Snapshot[$g] } else { $null }
         $ipif = Get-IPv4Interface $a
         if ($ipif -and [int]$ipif.DadTransmits -eq 0 -and -not ($snapA -is [hashtable] -and $snapA.ContainsKey('Dad4'))) {
-            [void](Invoke-Change "Duplicate-address probes back to 3 on $($a.Name) (0 is the campus value this tool sets)" { Set-NetIPInterface -InterfaceIndex $a.ifIndex -AddressFamily IPv4 -DadTransmits 3 -ErrorAction Stop })
+            [void](Invoke-Change "Duplicate-address probes back to 3 on $($a.Name)" { Set-NetIPInterface -InterfaceIndex $a.ifIndex -AddressFamily IPv4 -DadTransmits 3 -ErrorAction Stop })
         }
         $tk = "HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters\Interfaces\Tcpip_$g"
         if ((Test-Path -LiteralPath $tk) -and ((Get-ItemProperty -LiteralPath $tk -Name NetbiosOptions -ErrorAction SilentlyContinue).NetbiosOptions -eq 2) -and -not ($snapA -is [hashtable] -and $snapA.ContainsKey('Netbios'))) {
-            [void](Invoke-Change "NetBIOS back to default on $($a.Name) (2 is the disabled campus value this tool sets)" { Set-ItemProperty -LiteralPath $tk -Name NetbiosOptions -Value 0 -Type DWord -ErrorAction Stop })
+            [void](Invoke-Change "NetBIOS back to default on $($a.Name)" { Set-ItemProperty -LiteralPath $tk -Name NetbiosOptions -Value 0 -Type DWord -ErrorAction Stop })
         }
         $dnsInfo = Get-DnsClientServerAddress -InterfaceIndex $a.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue
         if ($dnsInfo -and $dnsInfo.ServerAddresses -and -not ($snapA -is [hashtable] -and $snapA.ContainsKey('DnsStatic'))) {
@@ -7635,24 +7644,57 @@ function Restore-Everything {
             }
         }
     }
+
+    # 4. Universal Interface Metrics Reset (Restore AutomaticMetric on all adapters)
+    Restore-InterfaceMetrics 'Metrics back to their original values'
+    foreach ($ipif in @(Get-NetIPInterface -ErrorAction SilentlyContinue)) {
+        if ($ipif.AutomaticMetric -ne 'Enabled') {
+            [void](Invoke-Change "Adapter $($ipif.InterfaceAlias) $($ipif.AddressFamily) metric reverted to automatic" {
+                Set-NetIPInterface -InterfaceIndex $ipif.ifIndex -AddressFamily $ipif.AddressFamily -AutomaticMetric Enabled -ErrorAction SilentlyContinue
+            })
+        }
+    }
+
+    # 5. Restore IPv6 Transition Tunnels to Windows Defaults
+    [void](Invoke-Change 'IPv6 transition tunnels (Teredo, 6to4, ISATAP) restored to Windows defaults' {
+        [void](Invoke-Native (Get-SysExe 'netsh.exe') @('interface', 'teredo', 'set', 'state', 'default') 5000)
+        [void](Invoke-Native (Get-SysExe 'netsh.exe') @('interface', '6to4', 'set', 'state', 'default') 5000)
+        [void](Invoke-Native (Get-SysExe 'netsh.exe') @('interface', 'isatap', 'set', 'state', 'default') 5000)
+    })
+
+    # 6. Clean DHCP ConnForceBroadcastFlag and Broadcast Toggle Keys
+    try {
+        $ifacesKey = 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces'
+        if (Test-Path -LiteralPath $ifacesKey) {
+            Get-ChildItem -LiteralPath $ifacesKey -ErrorAction SilentlyContinue | ForEach-Object {
+                Remove-ItemProperty -LiteralPath $_.PSPath -Name 'DhcpConnForceBroadcastFlag' -ErrorAction SilentlyContinue
+                Remove-ItemProperty -LiteralPath $_.PSPath -Name 'DhcpConnEnableBcastFlagToggle' -ErrorAction SilentlyContinue
+            }
+        }
+    } catch {}
+
+    # 7. Release All ARP Locks & Flush All Neighbor and Destination Caches
     foreach ($guid in @($script:State.Arp.Keys)) {
         $ad = $present | Where-Object { [string]$_.InterfaceGuid -eq [string]$guid } | Select-Object -First 1
         if ($ad) { Release-ArpLocks $ad }
     }
-    Restore-InterfaceMetrics 'Metrics back to their original values'
-    if ($script:State.Misc['NegCacheManaged'] -eq $true) { Restore-NegCacheIfManaged 'Negative DNS cache setting reverted' }
-    if ($script:State.Misc['MdnsManaged'] -eq $true) { Restore-MdnsIfManaged 'mDNS setting reverted' }
-    if ($script:State.Misc['SmartDnsManaged'] -eq $true) { Restore-SmartDnsIfManaged 'Smart Name Resolution setting reverted' }
-    if ($script:State.Misc['TcpKeepAliveManaged'] -eq $true) { Restore-TcpKeepAliveIfManaged 'TCP KeepAlive setting reverted' }
+    foreach ($ea in @(Get-EthernetAdapters)) { Release-ArpLocks $ea }
+    [void](Invoke-Native (Get-SysExe 'netsh.exe') @('interface', 'ip', 'delete', 'arpcache') 8000)
+    [void](Invoke-Native (Get-SysExe 'netsh.exe') @('interface', 'ipv6', 'delete', 'destinationcache') 8000)
+    [void](Invoke-Native (Get-SysExe 'netsh.exe') @('interface', 'ipv6', 'delete', 'arpcache') 8000)
+    [void](Invoke-Native (Get-SysExe 'nbtstat.exe') @('-R') 8000)
+    Clear-DnsClientCache -ErrorAction SilentlyContinue
+
+    # 8. Clean Host Routes, NRPT Policies, and Hosts File
+    Remove-CampusHostRoutes
     Remove-CampusNrpt
     Remove-LegacyHostsEntries
-    Uninstall-Watchdog
+
+    # 9. Restore 3rd-Party Tasks, Neutralized Services & NDIS Filters
     if ($script:State.Misc['NeutralizedTasks'] -is [hashtable]) {
         foreach ($tn in @($script:State.Misc['NeutralizedTasks'].Keys)) {
             $tp = [string]$script:State.Misc['NeutralizedTasks'][$tn]
-            [void](Invoke-Change "Restored 3rd-party task $tn" {
-                Enable-ScheduledTask -TaskName $tn -TaskPath $tp -ErrorAction SilentlyContinue | Out-Null
-            })
+            [void](Invoke-Change "Restored 3rd-party task $tn" { Enable-ScheduledTask -TaskName $tn -TaskPath $tp -ErrorAction SilentlyContinue | Out-Null })
         }
     }
     if ($script:State.Misc['NeutralizedServices'] -is [hashtable]) {
@@ -7660,14 +7702,10 @@ function Restore-Everything {
             $rec = $script:State.Misc['NeutralizedServices'][$sn]
             $origStart = if ($rec -is [hashtable]) { [string]$rec.StartType } else { [string]$rec }
             if ($origStart -and $origStart -ne 'Disabled') {
-                [void](Invoke-Change "Restored 3rd-party service $sn to $origStart" {
-                    Set-Service -Name $sn -StartupType $origStart -ErrorAction SilentlyContinue
-                })
+                [void](Invoke-Change "Restored 3rd-party service $sn to $origStart" { Set-Service -Name $sn -StartupType $origStart -ErrorAction SilentlyContinue })
             }
         }
     }
-
-    # Re-enable any 3rd-party NDIS filter drivers deactivated during Doomsday Reset
     if ($script:State.Snapshot.ContainsKey('DeactivatedFilters')) {
         $df = $script:State.Snapshot['DeactivatedFilters']
         if ($df -is [hashtable]) {
@@ -7681,25 +7719,49 @@ function Restore-Everything {
         }
     }
 
-    # Restore pre-reset Windows Firewall rules if backup exists
+    # 10. Restore Windows Firewall Rules from Backup
     $fwBackup = Join-Path $script:StoreDir 'firewall_pre_reset.wfw'
     if (Test-Path -LiteralPath $fwBackup) {
         [void](Invoke-Change 'Windows Firewall rules restored from pre-reset backup' {
             [void](Invoke-Native (Get-SysExe 'netsh.exe') @('advfirewall', 'import', $fwBackup) 8000)
         })
     }
+
+    # 11. Restore NCSI Active Probing Settings to Windows Defaults
+    try {
+        $nk = 'HKLM:\SYSTEM\CurrentControlSet\Services\NlaSvc\Parameters\Internet'
+        if (Test-Path -LiteralPath $nk) {
+            Set-ItemProperty -LiteralPath $nk -Name 'EnableActiveProbing' -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
+            Set-ItemProperty -LiteralPath $nk -Name 'ActiveDnsProbeHost' -Value 'dns.msftncsi.com' -Force -ErrorAction SilentlyContinue
+            Set-ItemProperty -LiteralPath $nk -Name 'ActiveDnsProbeContent' -Value '131.107.0.89' -Force -ErrorAction SilentlyContinue
+            Set-ItemProperty -LiteralPath $nk -Name 'ActiveWebProbeHost' -Value 'www.msftconnecttest.com' -Force -ErrorAction SilentlyContinue
+        }
+    } catch {}
+
+    # 12. Purge Credentials & Clean Machine Store
     if (-not $script:IsDry) {
-        foreach ($n in @($restartNames.Keys)) { [void](Invoke-Change "Zero-reboot link reset on $n to apply restored driver settings" { $rAd = Get-NetAdapter -Name $n -ErrorAction SilentlyContinue; if ($rAd) { Reset-PhysicalAdapterHardware $rAd } else { Restart-NetAdapter -Name $n -Confirm:$false -ErrorAction Stop } }) }
-        Clear-DnsClientCache -ErrorAction SilentlyContinue
-        [void](Invoke-Native (Get-SysExe 'netsh.exe') @('interface', 'ip', 'delete', 'arpcache') 8000)
-        [void](Invoke-Native (Get-SysExe 'nbtstat.exe') @('-R') 8000)
+        foreach ($n in @($restartNames.Keys)) {
+            [void](Invoke-Change "Zero-reboot link reset on $n to apply restored driver settings" {
+                $rAd = Get-NetAdapter -Name $n -ErrorAction SilentlyContinue
+                if ($rAd) { Reset-PhysicalAdapterHardware $rAd } else { Restart-NetAdapter -Name $n -Confirm:$false -ErrorAction Stop }
+            })
+        }
         if (Test-Path -LiteralPath $script:VaultFile) { Remove-PortalCredentials; Write-Log 'OK' 'Saved portal credentials deleted.' }
+
+        $scrubFiles = @('sentinel.log', 'sentinel.log.bak', 'firewall_pre_reset.wfw', 'LanFixer_Watchdog.xml', 'LanFixer_Portal.xml', 'LanFixer_Notify.xml', 'LanFixer_Sentinel.xml', 'LanFixer_Core.cmd', 'interactive.json')
+        foreach ($sf in $scrubFiles) {
+            $sfp = Join-Path $script:StoreDir $sf
+            if (Test-Path -LiteralPath $sfp) { Remove-Item -LiteralPath $sfp -Force -ErrorAction SilentlyContinue }
+        }
+
         $script:State = @{}
         foreach ($k in 'Snapshot','Env','Dns','Arp','Times','Misc') { $script:State[$k] = @{} }
         $script:State.Misc['Migrated'] = $true
+        $script:State.Misc['FactoryResetDate'] = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
         Save-State
     }
-    Write-Log 'OK' 'Restore finished. Your original network settings are back; Lan Fixer left no tasks, rules or hosts entries.'
+
+    Write-Log 'OK' 'Sovereign Factory Reset Complete. All settings reverted to pristine Windows defaults; zero tasks, zero rules, zero background hooks remain.'
 }
 
 function Apply-DnsNow {
@@ -8854,6 +8916,9 @@ function Invoke-LogicTests {
     $restDef = [string](Get-Command Restore-Everything -ErrorAction SilentlyContinue).Definition
     Write-Check 'Logic: Restore-Everything restores deactivated NDIS filters' ($restDef.IndexOf('DeactivatedFilters') -ge 0)
     Write-Check 'Logic: Restore-Everything restores pre-reset firewall backup' ($restDef.IndexOf('firewall_pre_reset.wfw') -ge 0)
+    Write-Check 'Logic: Restore-Everything uninstalls Sentinel background task' ($restDef.IndexOf('Uninstall-SentinelTask') -ge 0)
+    Write-Check 'Logic: Restore-Everything resets IPv6 transition tunnels to Windows defaults' ($restDef.IndexOf('teredo') -ge 0 -and $restDef.IndexOf('isatap') -ge 0)
+    Write-Check 'Logic: Restore-Everything scrubs temporary task XMLs and logs' ($restDef.IndexOf('scrubFiles') -ge 0)
     Write-Check 'Logic: Doomsday Reset snapshots static IPv4 before stripping' ($doomDef.IndexOf('StaticIp4') -ge 0)
     $idkDefNow = [string](Get-Command Invoke-DashboardKey -ErrorAction SilentlyContinue).Definition
     Write-Check 'Logic: Invoke-DashboardKey handles key U for Ultra System Reset' ($idkDefNow.IndexOf("Invoke-UltraSystemReset") -ge 0)

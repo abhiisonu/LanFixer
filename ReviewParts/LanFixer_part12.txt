@@ -1,3 +1,65 @@
+    Write-Check 'Logic: RFC 8910 DHCP option 114 binary decoder extracts captive portal URL' ($decodedOpt114 -ceq $opt114Url)
+    Write-Check 'Logic: sinkhole detector catches 192.0.2.1 and unroutable test blocks' ((Test-IsSinkholeIp '192.0.2.1') -and (Test-IsSinkholeIp '198.51.100.25') -and (Test-IsSinkholeIp '203.0.113.8') -and (Test-IsSinkholeIp '127.0.0.1') -and (-not (Test-IsSinkholeIp '142.251.43.142')) -and (-not (Test-IsSinkholeIp '1.1.1.1')))
+    Write-Check 'Logic: universal DNS verdict engine neutralizes unroutable or sinkholed IPv6 and preserves genuine dual-stack' (((Get-DnsVerdictDecision $false $false 2 $false) -eq 'Neutralize') -and ((Get-DnsVerdictDecision $true $true 2 $true) -eq 'Neutralize') -and ((Get-DnsVerdictDecision $true $true 2 $false) -eq 'Keep') -and ((Get-DnsVerdictDecision $false $false 0 $false) -eq 'None'))
+    # v6.4.2 Hardened Invariant Checks: PnP rate-limit, StartTime ISO round-trip, DryRun guards, Uplink fallback ladder, and Interceptor restoration
+    $pnpDef = [string](Get-Command Rescue-DormantEthernetPnp -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Rescue-DormantEthernetPnp stamps 300s limiter before query and uses -PresentOnly' (($pnpDef.IndexOf("Test-Elapsed 'PnpRescan' 300") -ge 0) -and ($pnpDef.IndexOf("Set-StateTime 'PnpRescan'") -ge 0) -and ($pnpDef.IndexOf('-PresentOnly') -ge 0))
+    $utcNow = (Get-Date).ToUniversalTime()
+    $parsedUtc = [datetime]::Parse($utcNow.ToString('o'), [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
+    Write-Check 'Logic: interactive session timestamp round-trips via ISO-8601 UTC with zero drift' ([math]::Abs(($utcNow - $parsedUtc).TotalSeconds) -lt 0.001)
+    $gwDef = [string](Get-Command Get-GatewayMacs -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Get-GatewayMacs guards Remove-NetNeighbor with -not $script:IsDry' (($gwDef.IndexOf('if (-not $script:IsDry)') -ge 0) -and ($gwDef.IndexOf('Remove-NetNeighbor') -ge 0))
+    $rnDef = [string](Get-Command Restore-NeutralizedInterceptors -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Restore-NeutralizedInterceptors restores DelayedAutostart and restarts running services' (($rnDef.IndexOf('WasRunning') -ge 0) -and ($rnDef.IndexOf('DelayedAutostart') -ge 0) -and ($rnDef.IndexOf('Start-Service') -ge 0))
+    $ssDef = [string](Get-Command Shield-SystemStack -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Shield-SystemStack falls back to DHCP DNS and gateway before public resolvers' (($ssDef.IndexOf('Get-DhcpDnsServers') -ge 0) -and ($ssDef.IndexOf('IPv4DefaultGateway') -ge 0) -and ($ssDef.IndexOf('fallbackDns') -ge 0))
+
+    # ---- Omniscient Layer 1-7 Adaptive Engine & Sentinel Daemon Test Assertions ----
+    Write-Check 'Logic: Test-NdisLinkHealth returns structured health object on null' (((Test-NdisLinkHealth $null).Reason) -eq 'NoAdapter' -and ((Test-NdisLinkHealth $null).Healthy -eq $false))
+    Write-Check 'Logic: Resolve-DuplexFlap dry run is non-destructive' ((Resolve-DuplexFlap $null) -eq $false)
+    Write-Check 'Logic: Optimize-PhySiliconBuffers enforces discard threshold lock' ((Optimize-PhySiliconBuffers $null) -eq $false)
+    Write-Check 'Logic: Shield-Dot3Svc handles null adapter safely' ((Shield-Dot3Svc $null) -eq $false)
+    Write-Check 'Logic: Wait-StpConvergence handles dry run / null adapter gracefully' ((Wait-StpConvergence $null) -eq $true)
+    $sub24 = Get-SubnetInfoFromLease $null
+    Write-Check 'Logic: Get-SubnetInfoFromLease handles null adapter' ($null -eq $sub24)
+
+    # Subnet calculus pure math validation
+    $calcFunc = {
+        param([string]$ipStr, [int]$prefix)
+        $ip = [System.Net.IPAddress]::Parse($ipStr)
+        $ipBytes = $ip.GetAddressBytes()
+        $maskBytes = New-Object byte[] 4; $netBytes = New-Object byte[] 4; $bcastBytes = New-Object byte[] 4
+        for ($i = 0; $i -lt 4; $i++) {
+            $bits = [math]::Max(0, [math]::Min(8, $prefix - ($i * 8)))
+            $maskBytes[$i] = [byte]$(if ($bits -eq 0) { 0 } else { 256 - [math]::Pow(2, 8 - $bits) })
+            $netBytes[$i]  = [byte]($ipBytes[$i] -band $maskBytes[$i])
+            $wildcard      = [byte](255 -bxor $maskBytes[$i])
+            $bcastBytes[$i]= [byte]($netBytes[$i] -bor $wildcard)
+        }
+        $minHost = [byte[]]$netBytes.Clone(); $maxHost = [byte[]]$bcastBytes.Clone()
+        if ($prefix -le 30) { $minHost[3] = [byte]($minHost[3] + 1); $maxHost[3] = [byte]($maxHost[3] - 1) }
+        return @{
+            Mask = ($maskBytes -join '.')
+            Net  = ($netBytes -join '.')
+            Bcast= ($bcastBytes -join '.')
+            MinH = ($minHost -join '.')
+            MaxH = ($maxHost -join '.')
+            Total= if ($prefix -ge 31) { 0L } else { [int64]([math]::Pow(2, 32 - $prefix) - 2) }
+        }
+    }
+    $c24 = & $calcFunc '10.114.12.34' 24
+    Write-Check 'Logic: subnet calculus calculates /24 mask, network, broadcast, and host count' ($c24.Mask -eq '255.255.255.0' -and $c24.Net -eq '10.114.12.0' -and $c24.Bcast -eq '10.114.12.255' -and $c24.Total -eq 254)
+    $c23 = & $calcFunc '172.16.5.100' 23
+    Write-Check 'Logic: subnet calculus calculates /23 mask, network, broadcast, and host count' ($c23.Mask -eq '255.255.254.0' -and $c23.Net -eq '172.16.4.0' -and $c23.Bcast -eq '172.16.5.255' -and $c23.Total -eq 510)
+    $c16 = & $calcFunc '192.168.1.50' 16
+    Write-Check 'Logic: subnet calculus calculates /16 mask, network, broadcast, and host count' ($c16.Mask -eq '255.255.0.0' -and $c16.Net -eq '192.168.0.0' -and $c16.Bcast -eq '192.168.255.255' -and $c16.Total -eq 65534)
+
+    Write-Check 'Logic: Find-OptimalPathMtu returns 1500 on null adapter' ((Find-OptimalPathMtu $null) -eq 1500)
+    Write-Check 'Logic: Shield-TcpOffloads handles null adapter safely' ((Shield-TcpOffloads $null) -eq $false)
+    Write-Check 'Logic: Shield-Proxies is safe in DryRun mode' (($script:IsAdmin -eq $false) -or (Shield-Proxies) -is [bool])
+    Write-Check 'Logic: Capture-PreflightSnapshot returns null on null adapter' ($null -eq (Capture-PreflightSnapshot $null))
+    Write-Check 'Logic: Restore-PreflightSnapshot returns false on null snapshot' ((Restore-PreflightSnapshot $null) -eq $false)
+
     # ACID rollback validation
     $acidDef = [string](Get-Command Invoke-AcidMutation -ErrorAction SilentlyContinue).Definition
     Write-Check 'Logic: Invoke-AcidMutation triggers rollback when validation fails' ($acidDef.IndexOf('Restore-PreflightSnapshot') -ge 0)
@@ -54,6 +116,9 @@
     $restDef = [string](Get-Command Restore-Everything -ErrorAction SilentlyContinue).Definition
     Write-Check 'Logic: Restore-Everything restores deactivated NDIS filters' ($restDef.IndexOf('DeactivatedFilters') -ge 0)
     Write-Check 'Logic: Restore-Everything restores pre-reset firewall backup' ($restDef.IndexOf('firewall_pre_reset.wfw') -ge 0)
+    Write-Check 'Logic: Restore-Everything uninstalls Sentinel background task' ($restDef.IndexOf('Uninstall-SentinelTask') -ge 0)
+    Write-Check 'Logic: Restore-Everything resets IPv6 transition tunnels to Windows defaults' ($restDef.IndexOf('teredo') -ge 0 -and $restDef.IndexOf('isatap') -ge 0)
+    Write-Check 'Logic: Restore-Everything scrubs temporary task XMLs and logs' ($restDef.IndexOf('scrubFiles') -ge 0)
     Write-Check 'Logic: Doomsday Reset snapshots static IPv4 before stripping' ($doomDef.IndexOf('StaticIp4') -ge 0)
     $idkDefNow = [string](Get-Command Invoke-DashboardKey -ErrorAction SilentlyContinue).Definition
     Write-Check 'Logic: Invoke-DashboardKey handles key U for Ultra System Reset' ($idkDefNow.IndexOf("Invoke-UltraSystemReset") -ge 0)
@@ -733,68 +798,3 @@ function Show-SentinelLogView {
         $c = 'dim'
         if ($l -like '*[OK   ]*') { $c = 'ok' }
         elseif ($l -like '*[WARN ]*') { $c = 'warn' }
-        elseif ($l -like '*[FAIL ]*') { $c = 'bad' }
-        elseif ($l -like '*[TIER*]*') { $c = 'cyan' }
-        Out-Line @((Seg $c ("  " + $l)))
-    }
-    Out-Line @()
-    Out-Line @((Seg 'dim' '  Press any key to return to sentinel cockpit...'))
-    Wait-AnyKey
-}
-
-function Show-SentinelHud($Adapter, $LinkHealth, [string]$Status, [int]$Cadence) {
-    if (-not $script:UiOn) { return }
-    Clear-Screen
-    $w = [Math]::Min(100, [Math]::Max(60, (Get-UiWidth)))
-    $sep = '-' * ($w - 4)
-    $uptime = (Get-Date) - $script:SentinelStats.StartTime
-    $upStr = "{0:D2}h {1:D2}m {2:D2}s" -f [int]$uptime.TotalHours, $uptime.Minutes, $uptime.Seconds
-    
-    Out-Line @((Seg 'cyan!' ("  LAN FIXER . AUTONOMOUS SENTINEL DAEMON (MARK VI)")), (Seg 'dim' (" . Uptime: " + $upStr)))
-    Out-Line @((Seg 'dim' ("  " + $sep)))
-    
-    $statCol = $(switch -wildcard ($Status) {
-        'Online*'    { 'ok!' }
-        'Recovered*' { 'ok!' }
-        'Captive*'   { 'warn!' }
-        'Breaker*'   { 'bad!' }
-        default      { 'warn!' }
-    })
-    $adName = $(if ($Adapter) { $Adapter.InterfaceDescription } else { 'No Active Ethernet Adapter' })
-    Out-Line @(
-        (Seg 'dim' '  Sentinel Status: '), (Seg $statCol ("[" + $Status.ToUpper() + "]")),
-        (Seg 'dim' ' | Cadence: '), (Seg 'text' ("${Cadence}s (Adaptive)")),
-        (Seg 'dim' ' | Cycles: '), (Seg 'text' ("$($script:SentinelStats.HealthyCycles)/$($script:SentinelStats.TotalCycles) healthy"))
-    )
-    if ($Adapter) {
-        $ip = Get-ValidIPv4 $Adapter
-        $gw = Get-DefaultGateway $Adapter
-        $truncW = [Math]::Max(12, $w - 40)
-        Out-Line @(
-            (Seg 'dim' '  Adapter        : '), (Seg 'text' (Fit $adName $truncW)),
-            (Seg 'dim' ' | IP: '), (Seg 'text' $(if ($ip) { $ip } else { 'APIPA/None' }))
-        )
-        Out-Line @(
-            (Seg 'dim' '  Link Health    : '), (Seg $(if ($LinkHealth -and $LinkHealth.Healthy) { 'ok' } else { 'warn' }) (Fit $(if ($LinkHealth) { $LinkHealth.Reason } else { 'Unchecked' }) $truncW)),
-            (Seg 'dim' ' | Gateway: '), (Seg 'text' $(if ($gw) { $gw } else { 'None' }))
-        )
-    }
-    Out-Line @((Seg 'dim' ("  " + $sep)))
-    Out-Line @((Seg 'text' '  AUTONOMOUS ESCALATION LADDER (INTERVENTIONS SINCE START):'))
-    if ($w -ge 72) {
-        Out-Line @(
-            (Seg 'dim' '  T1 ARP/Route: '), (Seg 'ok' ("{0,-5}" -f $script:SentinelStats.T1_ArpRoute)),
-            (Seg 'dim' '  T2 Captive: '), (Seg 'ok' ("{0,-5}" -f $script:SentinelStats.T2_Captive)),
-            (Seg 'dim' '  T3 DNS/NRPT: '), (Seg 'ok' ("$($script:SentinelStats.T3_Dns)"))
-        )
-        Out-Line @(
-            (Seg 'dim' '  T4 DHCP/STP : '), (Seg 'ok' ("{0,-5}" -f $script:SentinelStats.T4_Dhcp)),
-            (Seg 'dim' '  T5 NDIS/PHY: '), (Seg 'ok' ("{0,-5}" -f $script:SentinelStats.T5_Ndis)),
-            (Seg 'dim' '  T6 DeepStack: '), (Seg 'ok' ("$($script:SentinelStats.T6_Stack)"))
-        )
-    } else {
-        Out-Line @(
-            (Seg 'dim' '  T1 ARP: '), (Seg 'ok' ("{0,-4}" -f $script:SentinelStats.T1_ArpRoute)),
-            (Seg 'dim' 'T2 Captive: '), (Seg 'ok' ("{0,-4}" -f $script:SentinelStats.T2_Captive)),
-            (Seg 'dim' 'T3 DNS: '), (Seg 'ok' ("$($script:SentinelStats.T3_Dns)"))
-        )

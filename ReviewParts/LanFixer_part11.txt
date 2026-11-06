@@ -1,3 +1,65 @@
+        $v6txt = switch ($v6) {
+            'None'      { 'no global IPv6 address (IPv4-only link: nothing to go wrong)' }
+            'NoRoute'   { 'global address but no IPv6 default route (harmless)' }
+            'Untested'  { 'advertised, but IPv4 is not online yet: re-run the audit after login' }
+            'Working'   { 'advertised and reachable' }
+            default     { 'ADVERTISED BUT UNREACHABLE (IPv4 works)' }
+        }
+        Write-KV 'IPv6' $v6txt $(if ($v6 -eq 'Blackhole') { 'Yellow' } else { 'White' })
+        if ($v6 -eq 'Blackhole') { [void]$issues.Add("IPv6 is advertised on this LAN but unreachable while IPv4 works: some apps stall 15-30 s before falling back. Ask IT to filter IPv6 router advertisements, or turn IPv6 off on this adapter yourself: Disable-NetAdapterBinding -Name '$($a.Name)' -ComponentID ms_tcpip6   (undo with Enable-NetAdapterBinding). Lan Fixer does not change this on its own.") }
+        $sys = Resolve-HostBounded 'www.msftconnecttest.com' 2000
+        Write-KV 'System resolver' $(if ($sys) { "ok ($sys)" } else { 'FAILED' }) $(if ($sys) { 'Green' } else { 'Red' })
+        $tests = @(@(Get-DhcpDnsServers $guid) + @($script:Cfg.PublicDns) | Select-Object -Unique)
+        $meas = Measure-ResolversFast $tests
+        foreach ($s in $tests) {
+            $ms = $meas[$s]
+            Write-KV ("Resolver {0}" -f $s) $(if ($null -ne $ms) { "$ms ms (median of 3)" } else { 'no answer' }) $(if ($null -ne $ms) { 'White' } else { 'DarkGray' })
+        }
+        $mtuT = $(if ($conn -eq 'Online') { '1.1.1.1' } else { [string]$h.Gateway })
+        if ($mtuT) {
+            $mtu = Get-PathMtu $mtuT
+            if ($null -ne $mtu) {
+                Write-KV ("Path MTU to " + $mtuT) "$mtu bytes"
+                if ($mtu -lt 1500) { [void]$issues.Add("Path MTU is $mtu (<1500): large pages may hang; consider MTU $mtu on the adapter") }
+            }
+        }
+    }
+
+    Write-Section 'SECONDARY UPLINKS & SYSTEM SERVICES'
+    $secUps = @(Get-OtherUplinkAdapters)
+    if ($secUps.Count -eq 0) { Write-KV 'Secondary uplinks' 'none active' 'DarkGray' }
+    else {
+        foreach ($su in $secUps) {
+            $suIp = Get-ValidIPv4 $su
+            $suDns = @((Get-DnsClientServerAddress -InterfaceIndex $su.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses) -join ', '
+            Write-KV ("Uplink " + $su.Name) ("{0} (DNS: {1})" -f $(if ($suIp) { $suIp } else { 'IPv6/active' }), $(if ($suDns) { $suDns } else { 'auto' })) 'Green'
+        }
+    }
+    $p53Pids = @((Get-NetUDPEndpoint -LocalPort 53 -ErrorAction SilentlyContinue).OwningProcess + (Get-NetTCPConnection -LocalPort 53 -ErrorAction SilentlyContinue).OwningProcess | Where-Object { $_ -gt 4 } | Select-Object -Unique)
+    $p53Names = @($p53Pids | ForEach-Object { (Get-Process -Id $_ -ErrorAction SilentlyContinue).ProcessName } | Where-Object { $_ -and $_ -ne 'svchost' } | Select-Object -Unique)
+    Write-KV 'Local Port 53 listeners' $(if ($p53Names.Count -gt 0) { $p53Names -join ', ' } else { 'none (standard Windows DNS)' }) $(if ($p53Names.Count -gt 0) { 'Yellow' } else { 'White' })
+    $gaIp = Resolve-HostBounded 'accounts.google.com' 2000
+    Write-KV 'Google Auth (CLI DNS)' $(if ($gaIp) { "ok ($gaIp)" } else { 'FAILED' }) $(if ($gaIp) { 'Green' } else { 'Red' })
+    if (-not $gaIp) { [void]$issues.Add('accounts.google.com failed to resolve: press [X] Full Net Reset to heal DNS/WFP') }
+
+    Write-Section 'SYSTEM EVENT LOGS (LAST 7 DAYS / 24 HOURS)'
+    $c4199 = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Tcpip'; Id = 4199; StartTime = (Get-Date).AddDays(-7) } -ErrorAction SilentlyContinue).Count
+    Write-KV 'IP address conflicts' ([string]$c4199) $(if ($c4199 -gt 0) { 'Yellow' } else { 'White' })
+    if ($c4199 -gt 0) { [void]$issues.Add("$c4199 address-conflict events this week. If they are false alarms (the switch answers every ARP probe), DadPolicy 'Auto' turns the probes off on campus; a REAL duplicate IP has to be fixed by IT.") }
+    $flaps = @(Get-WinEvent -FilterHashtable @{ LogName = 'Microsoft-Windows-NetworkProfile/Operational'; Id = 10001; StartTime = (Get-Date).AddHours(-24) } -ErrorAction SilentlyContinue).Count
+    Write-KV 'Network disconnects (24h)' ([string]$flaps) $(if ($flaps -gt 6) { 'Yellow' } else { 'White' })
+    if ($flaps -gt 6) { [void]$issues.Add("$flaps disconnects in 24h: flapping link (cable, port, EEE/power saving)") }
+
+    Write-Section 'LANFIXER CONFIGURATION & PERSISTENCE'
+    Write-KV 'Version' $script:Version
+    Write-KV 'Routing Profile' (Get-RouteProfileName)
+    Write-KV 'Duplicate-probe policy' ([string]$script:Cfg.DadPolicy)
+    $lsrv = [string]$script:State.Misc['LearnedDhcp']
+    Write-KV 'Learned campus DHCP' $(if ($lsrv) { $lsrv } else { 'not yet' })
+    Write-KV 'Watchdog task' $(if (Test-WatchdogInstalled) { 'installed' } else { 'not installed' })
+    Write-KV 'Protected store' $(if ($script:StoreReady) { $(if ($script:StoreSecure) { 'ready, locked down' } else { 'ready, ACL NOT verified' }) } else { 'not initialised (run elevated once)' })
+    $lf = Get-StateTime 'LastFull'
+    Write-KV 'Last full repair' $(if ($lf -gt [datetime]::MinValue) { $lf.ToString('yyyy-MM-dd HH:mm:ss') } else { 'never' })
     $rules = @(Get-OurNrptRules)
     Write-KV 'Campus-domain DNS rule' $(if ($rules.Count -gt 0) { 'present' } else { 'none' })
     try {
@@ -736,65 +798,3 @@ function Invoke-LogicTests {
             $fi += (2 + $flen)
         }
     }
-    Write-Check 'Logic: RFC 8910 DHCP option 114 binary decoder extracts captive portal URL' ($decodedOpt114 -ceq $opt114Url)
-    Write-Check 'Logic: sinkhole detector catches 192.0.2.1 and unroutable test blocks' ((Test-IsSinkholeIp '192.0.2.1') -and (Test-IsSinkholeIp '198.51.100.25') -and (Test-IsSinkholeIp '203.0.113.8') -and (Test-IsSinkholeIp '127.0.0.1') -and (-not (Test-IsSinkholeIp '142.251.43.142')) -and (-not (Test-IsSinkholeIp '1.1.1.1')))
-    Write-Check 'Logic: universal DNS verdict engine neutralizes unroutable or sinkholed IPv6 and preserves genuine dual-stack' (((Get-DnsVerdictDecision $false $false 2 $false) -eq 'Neutralize') -and ((Get-DnsVerdictDecision $true $true 2 $true) -eq 'Neutralize') -and ((Get-DnsVerdictDecision $true $true 2 $false) -eq 'Keep') -and ((Get-DnsVerdictDecision $false $false 0 $false) -eq 'None'))
-    # v6.4.2 Hardened Invariant Checks: PnP rate-limit, StartTime ISO round-trip, DryRun guards, Uplink fallback ladder, and Interceptor restoration
-    $pnpDef = [string](Get-Command Rescue-DormantEthernetPnp -ErrorAction SilentlyContinue).Definition
-    Write-Check 'Logic: Rescue-DormantEthernetPnp stamps 300s limiter before query and uses -PresentOnly' (($pnpDef.IndexOf("Test-Elapsed 'PnpRescan' 300") -ge 0) -and ($pnpDef.IndexOf("Set-StateTime 'PnpRescan'") -ge 0) -and ($pnpDef.IndexOf('-PresentOnly') -ge 0))
-    $utcNow = (Get-Date).ToUniversalTime()
-    $parsedUtc = [datetime]::Parse($utcNow.ToString('o'), [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
-    Write-Check 'Logic: interactive session timestamp round-trips via ISO-8601 UTC with zero drift' ([math]::Abs(($utcNow - $parsedUtc).TotalSeconds) -lt 0.001)
-    $gwDef = [string](Get-Command Get-GatewayMacs -ErrorAction SilentlyContinue).Definition
-    Write-Check 'Logic: Get-GatewayMacs guards Remove-NetNeighbor with -not $script:IsDry' (($gwDef.IndexOf('if (-not $script:IsDry)') -ge 0) -and ($gwDef.IndexOf('Remove-NetNeighbor') -ge 0))
-    $rnDef = [string](Get-Command Restore-NeutralizedInterceptors -ErrorAction SilentlyContinue).Definition
-    Write-Check 'Logic: Restore-NeutralizedInterceptors restores DelayedAutostart and restarts running services' (($rnDef.IndexOf('WasRunning') -ge 0) -and ($rnDef.IndexOf('DelayedAutostart') -ge 0) -and ($rnDef.IndexOf('Start-Service') -ge 0))
-    $ssDef = [string](Get-Command Shield-SystemStack -ErrorAction SilentlyContinue).Definition
-    Write-Check 'Logic: Shield-SystemStack falls back to DHCP DNS and gateway before public resolvers' (($ssDef.IndexOf('Get-DhcpDnsServers') -ge 0) -and ($ssDef.IndexOf('IPv4DefaultGateway') -ge 0) -and ($ssDef.IndexOf('fallbackDns') -ge 0))
-
-    # ---- Omniscient Layer 1-7 Adaptive Engine & Sentinel Daemon Test Assertions ----
-    Write-Check 'Logic: Test-NdisLinkHealth returns structured health object on null' (((Test-NdisLinkHealth $null).Reason) -eq 'NoAdapter' -and ((Test-NdisLinkHealth $null).Healthy -eq $false))
-    Write-Check 'Logic: Resolve-DuplexFlap dry run is non-destructive' ((Resolve-DuplexFlap $null) -eq $false)
-    Write-Check 'Logic: Optimize-PhySiliconBuffers enforces discard threshold lock' ((Optimize-PhySiliconBuffers $null) -eq $false)
-    Write-Check 'Logic: Shield-Dot3Svc handles null adapter safely' ((Shield-Dot3Svc $null) -eq $false)
-    Write-Check 'Logic: Wait-StpConvergence handles dry run / null adapter gracefully' ((Wait-StpConvergence $null) -eq $true)
-    $sub24 = Get-SubnetInfoFromLease $null
-    Write-Check 'Logic: Get-SubnetInfoFromLease handles null adapter' ($null -eq $sub24)
-
-    # Subnet calculus pure math validation
-    $calcFunc = {
-        param([string]$ipStr, [int]$prefix)
-        $ip = [System.Net.IPAddress]::Parse($ipStr)
-        $ipBytes = $ip.GetAddressBytes()
-        $maskBytes = New-Object byte[] 4; $netBytes = New-Object byte[] 4; $bcastBytes = New-Object byte[] 4
-        for ($i = 0; $i -lt 4; $i++) {
-            $bits = [math]::Max(0, [math]::Min(8, $prefix - ($i * 8)))
-            $maskBytes[$i] = [byte]$(if ($bits -eq 0) { 0 } else { 256 - [math]::Pow(2, 8 - $bits) })
-            $netBytes[$i]  = [byte]($ipBytes[$i] -band $maskBytes[$i])
-            $wildcard      = [byte](255 -bxor $maskBytes[$i])
-            $bcastBytes[$i]= [byte]($netBytes[$i] -bor $wildcard)
-        }
-        $minHost = [byte[]]$netBytes.Clone(); $maxHost = [byte[]]$bcastBytes.Clone()
-        if ($prefix -le 30) { $minHost[3] = [byte]($minHost[3] + 1); $maxHost[3] = [byte]($maxHost[3] - 1) }
-        return @{
-            Mask = ($maskBytes -join '.')
-            Net  = ($netBytes -join '.')
-            Bcast= ($bcastBytes -join '.')
-            MinH = ($minHost -join '.')
-            MaxH = ($maxHost -join '.')
-            Total= if ($prefix -ge 31) { 0L } else { [int64]([math]::Pow(2, 32 - $prefix) - 2) }
-        }
-    }
-    $c24 = & $calcFunc '10.114.12.34' 24
-    Write-Check 'Logic: subnet calculus calculates /24 mask, network, broadcast, and host count' ($c24.Mask -eq '255.255.255.0' -and $c24.Net -eq '10.114.12.0' -and $c24.Bcast -eq '10.114.12.255' -and $c24.Total -eq 254)
-    $c23 = & $calcFunc '172.16.5.100' 23
-    Write-Check 'Logic: subnet calculus calculates /23 mask, network, broadcast, and host count' ($c23.Mask -eq '255.255.254.0' -and $c23.Net -eq '172.16.4.0' -and $c23.Bcast -eq '172.16.5.255' -and $c23.Total -eq 510)
-    $c16 = & $calcFunc '192.168.1.50' 16
-    Write-Check 'Logic: subnet calculus calculates /16 mask, network, broadcast, and host count' ($c16.Mask -eq '255.255.0.0' -and $c16.Net -eq '192.168.0.0' -and $c16.Bcast -eq '192.168.255.255' -and $c16.Total -eq 65534)
-
-    Write-Check 'Logic: Find-OptimalPathMtu returns 1500 on null adapter' ((Find-OptimalPathMtu $null) -eq 1500)
-    Write-Check 'Logic: Shield-TcpOffloads handles null adapter safely' ((Shield-TcpOffloads $null) -eq $false)
-    Write-Check 'Logic: Shield-Proxies is safe in DryRun mode' (($script:IsAdmin -eq $false) -or (Shield-Proxies) -is [bool])
-    Write-Check 'Logic: Capture-PreflightSnapshot returns null on null adapter' ($null -eq (Capture-PreflightSnapshot $null))
-    Write-Check 'Logic: Restore-PreflightSnapshot returns false on null snapshot' ((Restore-PreflightSnapshot $null) -eq $false)
-
