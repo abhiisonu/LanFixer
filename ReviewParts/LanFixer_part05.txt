@@ -1,3 +1,4 @@
+                    $script:State.Misc['DiscoveredPortalUrl'] = [string]$lu.AbsoluteUri
                     $script:State.Misc['DiscoveryTime'] = (Get-Date).ToString('o')
                     $tmpIp = $null
                     if ([System.Net.IPAddress]::TryParse($lu.Host, [ref]$tmpIp) -and (Test-AllowedPortalIp $lu.Host)) {
@@ -797,4 +798,3 @@ function Shield-DataLink($Ctx) {
         }
     }
     $validIp = Get-ValidIPv4 $ad
-    if ($validIp -and $Ctx.Env.Env -eq 'Campus' -and -not $script:IsDry) {

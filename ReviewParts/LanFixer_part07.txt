@@ -1,3 +1,4 @@
+            [void](Invoke-Change "$($Why): re-enabled task $tn" {
                 Enable-ScheduledTask -TaskName $tn -TaskPath $tp -ErrorAction SilentlyContinue | Out-Null
             })
         }
@@ -797,4 +798,3 @@ function Invoke-UltraSystemReset {
             [void](Invoke-Native (Get-SysExe 'netsh.exe') @('interface', 'portproxy', 'reset') 5000)
             [void](Invoke-Native (Get-SysExe 'netsh.exe') @('interface', 'httpstunnel', 'reset') 5000)
 
-            # Destroy accidental/rogue network bridges that create packet loops or isolate the physical NIC

@@ -193,7 +193,7 @@ exit /b %errorlevel%
 
 [CmdletBinding()]
 param(
-    [ValidateSet('Interactive','Heal','QuickHeal','AutoHeal','Omnifix','NetReset','FullNetReset','UltraReset','Ultra','DoomsdayReset','Doomsday','ArmageddonReset','Armageddon','ResetOptions','ResetMenu','Diagnose','Audit','QuickProbe','Probe','FlushCache','Flush','InstallWatchdog','UninstallWatchdog','InstallShield','UninstallShield','ResetFactory','Reset','LaunchPortal','Login','SetDnsProfile','Dns','DnsMenu','SetRouteProfile','Route','RouteMenu','SelfTest','Verify','Report','Daemon','Vault','Guide','Help')]
+    [ValidateSet('Interactive','Heal','QuickHeal','AutoHeal','Omnifix','NetReset','FullNetReset','UltraReset','Ultra','DoomsdayReset','Doomsday','ArmageddonReset','Armageddon','ResetOptions','ResetMenu','Diagnose','Audit','QuickProbe','Probe','FlushCache','Flush','InstallWatchdog','UninstallWatchdog','InstallShield','UninstallShield','InstallSentinel','UninstallSentinel','ResetFactory','Reset','LaunchPortal','Login','SetDnsProfile','Dns','DnsMenu','SetRouteProfile','Route','RouteMenu','SelfTest','Verify','Report','Daemon','Sentinel','Vault','Guide','Help')]
     [string]$Mode = 'Interactive',
     [ValidateSet('Adaptive','DHCP','Hybrid','Cloudflare','ResetDHCP')]
     [string]$DnsProfile = 'Adaptive',
@@ -202,6 +202,7 @@ param(
     [switch]$DryRun,
     [switch]$NoPause,
     [switch]$Force,
+    [switch]$Headless,
     [Parameter(DontShow)][switch]$LfElevated
 )
 
@@ -216,7 +217,7 @@ $script:Version = '6.5.0'
 $script:Sys32   = Join-Path $env:SystemRoot 'System32'
 $script:SelfPath = if ($env:LANFIXER_SELF -and (Test-Path -LiteralPath $env:LANFIXER_SELF)) { $env:LANFIXER_SELF } elseif ($PSCommandPath -and (Test-Path -LiteralPath $PSCommandPath)) { $PSCommandPath } elseif ($MyInvocation.MyCommand.Path -and (Test-Path -LiteralPath $MyInvocation.MyCommand.Path)) { $MyInvocation.MyCommand.Path } elseif ($PSScriptRoot -and (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'LanFixer.cmd'))) { (Join-Path $PSScriptRoot 'LanFixer.cmd') } else { (Join-Path (Get-Location).Path 'LanFixer.cmd') }
 $script:IsDry   = [bool]$DryRun
-$script:UiOn    = ($Mode -ne 'AutoHeal')
+$script:UiOn    = ($Mode -ne 'AutoHeal' -and $Mode -ne 'InstallSentinel' -and $Mode -ne 'UninstallSentinel' -and -not $Headless)
 $script:Cfg = @{
     StoreDir        = (Join-Path $env:ProgramData 'LanFixer')
     SelfName        = 'LanFixer_Core.cmd'
@@ -797,4 +798,3 @@ function Enter-Lock([int]$TimeoutMs = 1000) {
             $script:LockDepth = 1
             $script:HasMutex = $true
             try {
-                $lf = Join-Path $script:StoreDir 'lock.json'

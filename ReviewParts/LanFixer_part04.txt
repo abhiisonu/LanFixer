@@ -1,3 +1,4 @@
+    if ($right.Length -gt $maxRightLen) {
         if ($t.UplinkActive -and $t.UplinkName) {
             $tag = if ($t.UplinkIsPrimary) { '(Standby)' } else { '(Primary)' }
             $right = ('Eth ' + $t.Speed + ' ' + $tag + ' ' + $script:G.mid + ' ' + $t.UplinkName)
@@ -372,7 +373,7 @@ function Invoke-DashboardKey([string]$Key, $adv) {
             Show-View 'autonomous sentinel daemon' {
                 if (-not (Assert-Admin)) { return }
                 Start-AutonomousDaemon
-            }
+            } -NoWait
         }
         '1' { Start-Repair 'quick heal' }
         'm' { Show-View 'routing priority' { Show-RouteMenu } -NoWait }
@@ -797,4 +798,3 @@ function Get-InternetState {
             try {
                 $lu = [uri]$loc
                 if ($lu.IsAbsoluteUri -and ($lu.Scheme -eq 'http' -or $lu.Scheme -eq 'https')) {
-                    $script:State.Misc['DiscoveredPortalUrl'] = [string]$lu.AbsoluteUri

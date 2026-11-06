@@ -1,3 +1,4 @@
+    if ($validIp -and $Ctx.Env.Env -eq 'Campus' -and -not $script:IsDry) {
         $gw = @(Get-GatewaysV4 $ad) | Select-Object -First 1
         if ($gw) { $script:State.Misc['LastCampusLease'] = @{ Ip = [string]$validIp; Gateway = [string]$gw; Time = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss') } }
     }
@@ -797,4 +798,3 @@ function Restore-NeutralizedInterceptors([string]$Why = 'Non-campus network') {
     if ($script:State.Misc['NeutralizedTasks'] -is [hashtable]) {
         foreach ($tn in @($script:State.Misc['NeutralizedTasks'].Keys)) {
             $tp = [string]$script:State.Misc['NeutralizedTasks'][$tn]
-            [void](Invoke-Change "$($Why): re-enabled task $tn" {

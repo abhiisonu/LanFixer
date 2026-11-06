@@ -1,3 +1,4 @@
+    <Enabled>true</Enabled>
     <Hidden>false</Hidden>
     <RunOnlyIfIdle>false</RunOnlyIfIdle>
     <WakeToRun>false</WakeToRun>
@@ -797,4 +798,3 @@ function Show-Diagnostics {
     Write-KV 'Protected store' $(if ($script:StoreReady) { $(if ($script:StoreSecure) { 'ready, locked down' } else { 'ready, ACL NOT verified' }) } else { 'not initialised (run elevated once)' })
     $lf = Get-StateTime 'LastFull'
     Write-KV 'Last full repair' $(if ($lf -gt [datetime]::MinValue) { $lf.ToString('yyyy-MM-dd HH:mm:ss') } else { 'never' })
-    $rules = @(Get-OurNrptRules)

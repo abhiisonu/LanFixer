@@ -1,3 +1,4 @@
+        $sock = New-Object System.Net.Sockets.Socket([System.Net.Sockets.AddressFamily]::InterNetwork, [System.Net.Sockets.SocketType]::Stream, [System.Net.Sockets.ProtocolType]::Tcp)
         if ($SourceIp) {
             try { $sock.Bind((New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Parse($SourceIp), 0))) } catch { $r.Error = 'BindFailure'; return $r }
         }
@@ -797,4 +798,3 @@ function Get-DashboardModel($t, $adv, [int]$Width = 0) {
     }
     $heroL = @((Seg 'faint' '  ['), (Seg ($adv.Role + '!') (' ' + $script:G.dot + ' ' + $adv.Word.ToUpper() + ' ')), (Seg 'faint' ']'))
     $maxRightLen = [Math]::Max(10, ($w + 2) - (Get-SegsLength $heroL) - 2)
-    if ($right.Length -gt $maxRightLen) {

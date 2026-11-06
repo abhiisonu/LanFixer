@@ -1,3 +1,4 @@
+    $rules = @(Get-OurNrptRules)
     Write-KV 'Campus-domain DNS rule' $(if ($rules.Count -gt 0) { 'present' } else { 'none' })
     try {
         $hp = Join-Path $script:Sys32 'drivers\etc\hosts'
@@ -797,4 +798,3 @@ function Invoke-LogicTests {
     Write-Check 'Logic: Capture-PreflightSnapshot returns null on null adapter' ($null -eq (Capture-PreflightSnapshot $null))
     Write-Check 'Logic: Restore-PreflightSnapshot returns false on null snapshot' ((Restore-PreflightSnapshot $null) -eq $false)
 
-    # ACID rollback validation

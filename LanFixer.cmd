@@ -193,7 +193,7 @@ exit /b %errorlevel%
 
 [CmdletBinding()]
 param(
-    [ValidateSet('Interactive','Heal','QuickHeal','AutoHeal','Omnifix','NetReset','FullNetReset','UltraReset','Ultra','DoomsdayReset','Doomsday','ArmageddonReset','Armageddon','ResetOptions','ResetMenu','Diagnose','Audit','QuickProbe','Probe','FlushCache','Flush','InstallWatchdog','UninstallWatchdog','InstallShield','UninstallShield','ResetFactory','Reset','LaunchPortal','Login','SetDnsProfile','Dns','DnsMenu','SetRouteProfile','Route','RouteMenu','SelfTest','Verify','Report','Daemon','Vault','Guide','Help')]
+    [ValidateSet('Interactive','Heal','QuickHeal','AutoHeal','Omnifix','NetReset','FullNetReset','UltraReset','Ultra','DoomsdayReset','Doomsday','ArmageddonReset','Armageddon','ResetOptions','ResetMenu','Diagnose','Audit','QuickProbe','Probe','FlushCache','Flush','InstallWatchdog','UninstallWatchdog','InstallShield','UninstallShield','InstallSentinel','UninstallSentinel','ResetFactory','Reset','LaunchPortal','Login','SetDnsProfile','Dns','DnsMenu','SetRouteProfile','Route','RouteMenu','SelfTest','Verify','Report','Daemon','Sentinel','Vault','Guide','Help')]
     [string]$Mode = 'Interactive',
     [ValidateSet('Adaptive','DHCP','Hybrid','Cloudflare','ResetDHCP')]
     [string]$DnsProfile = 'Adaptive',
@@ -202,6 +202,7 @@ param(
     [switch]$DryRun,
     [switch]$NoPause,
     [switch]$Force,
+    [switch]$Headless,
     [Parameter(DontShow)][switch]$LfElevated
 )
 
@@ -216,7 +217,7 @@ $script:Version = '6.5.0'
 $script:Sys32   = Join-Path $env:SystemRoot 'System32'
 $script:SelfPath = if ($env:LANFIXER_SELF -and (Test-Path -LiteralPath $env:LANFIXER_SELF)) { $env:LANFIXER_SELF } elseif ($PSCommandPath -and (Test-Path -LiteralPath $PSCommandPath)) { $PSCommandPath } elseif ($MyInvocation.MyCommand.Path -and (Test-Path -LiteralPath $MyInvocation.MyCommand.Path)) { $MyInvocation.MyCommand.Path } elseif ($PSScriptRoot -and (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'LanFixer.cmd'))) { (Join-Path $PSScriptRoot 'LanFixer.cmd') } else { (Join-Path (Get-Location).Path 'LanFixer.cmd') }
 $script:IsDry   = [bool]$DryRun
-$script:UiOn    = ($Mode -ne 'AutoHeal')
+$script:UiOn    = ($Mode -ne 'AutoHeal' -and $Mode -ne 'InstallSentinel' -and $Mode -ne 'UninstallSentinel' -and -not $Headless)
 $script:Cfg = @{
     StoreDir        = (Join-Path $env:ProgramData 'LanFixer')
     SelfName        = 'LanFixer_Core.cmd'
@@ -2772,7 +2773,7 @@ function Invoke-DashboardKey([string]$Key, $adv) {
             Show-View 'autonomous sentinel daemon' {
                 if (-not (Assert-Admin)) { return }
                 Start-AutonomousDaemon
-            }
+            } -NoWait
         }
         '1' { Start-Repair 'quick heal' }
         'm' { Show-View 'routing priority' { Show-RouteMenu } -NoWait }
@@ -8802,7 +8803,13 @@ function Invoke-LogicTests {
     Write-Check 'Logic: Invoke-AcidMutation triggers rollback when validation fails' ($acidDef.IndexOf('Restore-PreflightSnapshot') -ge 0)
 
     Write-Check 'Logic: Daemon mode exists in ValidateSet' ($srcTxt -match "ValidateSet\([^)]*'Daemon'")
-    Write-Check 'Logic: Start-AutonomousDaemon is defined' ($null -ne (Get-Command Start-AutonomousDaemon -ErrorAction SilentlyContinue))
+    Write-Check 'Logic: Sentinel mode exists in ValidateSet' ($srcTxt -match "ValidateSet\([^)]*'Sentinel'")
+    Write-Check 'Logic: Install-SentinelTask is defined' ($null -ne (Get-Command Install-SentinelTask -ErrorAction SilentlyContinue))
+    Write-Check 'Logic: Write-SentinelLog is defined' ($null -ne (Get-Command Write-SentinelLog -ErrorAction SilentlyContinue))
+    $daemonDef = [string](Get-Command Start-AutonomousDaemon -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Start-AutonomousDaemon is defined' ($null -ne $daemonDef -and $daemonDef.Length -gt 0)
+    Write-Check 'Logic: Start-AutonomousDaemon handles captive portal authentication' ($daemonDef.IndexOf('Invoke-HeadlessPortalLogin') -ge 0)
+    Write-Check 'Logic: Start-AutonomousDaemon registers reactive NetworkChange events' ($daemonDef.IndexOf('NetworkChange') -ge 0)
     $idkDef = [string](Get-Command Invoke-DashboardKey -ErrorAction SilentlyContinue).Definition
     Write-Check 'Logic: Invoke-DashboardKey handles key B for autonomous daemon' ($idkDef.IndexOf("Start-AutonomousDaemon") -ge 0)
     $omniWinsock = [string](Get-Command Invoke-SupremeOmnifix -ErrorAction SilentlyContinue).Definition
@@ -8905,7 +8912,7 @@ function Invoke-SelfTest {
         Write-Check 'Watchdog runs the current protected copy' (($null -ne $wa) -and ($wa -eq (Get-WatchdogExpectedArguments))) $true 'run menu option 2 or any elevated heal to repoint it'
     }
     $xmlOk = $false
-    try { [void][xml](New-WatchdogXml '/c test' '2026-01-01T00:00:00'); [void][xml](New-PortalTaskXml); $xmlOk = $true } catch {}
+    try { [void][xml](New-WatchdogXml '/c test' '2026-01-01T00:00:00'); [void][xml](New-PortalTaskXml); [void][xml](New-SentinelTaskXml '/c test'); $xmlOk = $true } catch {}
     Write-Check 'Task XML is well-formed' $xmlOk
     $ip = Resolve-HostBounded 'connectivitycheck.gstatic.com' 2500
     Write-Check 'DNS resolution works right now' ([bool]$ip) $true
@@ -9403,84 +9410,533 @@ function Invoke-AcidMutation([string]$Description, [scriptblock]$Mutation, [scri
     return $true
 }
 
-function Start-AutonomousDaemon([int]$IntervalSec = 10) {
-    if (-not (Assert-Admin)) { return }
-    Write-Banner "Daemon Mode (Autonomous Sentinel)"
-    Write-Log 'OK' ("Autonomous LAN Remediation Daemon activated (Interval: {0}s, Breaker: {1})." -f $IntervalSec, $script:Cfg.BreakerFails)
-    Write-Log 'INFO' "Press Ctrl+C to terminate sentinel daemon safely."
+function Write-SentinelLog([string]$Level, [string]$Message) {
+    $ts = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+    $line = "[{0}] [{1,-5}] {2}" -f $ts, $Level.ToUpperInvariant(), $Message
+    if ($null -eq $script:SentinelEvents) { $script:SentinelEvents = New-Object System.Collections.ArrayList }
+    [void]$script:SentinelEvents.Add($line)
+    while ($script:SentinelEvents.Count -gt 25) { $script:SentinelEvents.RemoveAt(0) }
+    if ($script:StoreReady) {
+        $logPath = Join-Path $script:StoreDir 'sentinel.log'
+        $bakPath = Join-Path $script:StoreDir 'sentinel.log.bak'
+        try {
+            if (Test-Path -LiteralPath $logPath) {
+                $fi = Get-Item -LiteralPath $logPath -ErrorAction SilentlyContinue
+                if ($fi -and $fi.Length -gt 524288) {
+                    Move-Item -LiteralPath $logPath -Destination $bakPath -Force -ErrorAction SilentlyContinue
+                }
+            }
+            [System.IO.File]::AppendAllText($logPath, $line + "`r`n", [System.Text.Encoding]::ASCII)
+        } catch {}
+    }
+}
 
+function New-SentinelTaskXml([string]$CmdArgs) {
+    return @"
+<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>Lan Fixer 24/7 Autonomous Sentinel Daemon (Continuous Reactive Self-Healing)</Description>
+    <Author>Lan Fixer</Author>
+  </RegistrationInfo>
+  <Triggers>
+    <BootTrigger>
+      <Enabled>true</Enabled>
+      <Delay>PT15S</Delay>
+    </BootTrigger>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <Delay>PT10S</Delay>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>S-1-5-18</UserId>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Priority>4</Priority>
+    <RestartOnFailure>
+      <Interval>PT1M</Interval>
+      <Count>999</Count>
+    </RestartOnFailure>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>%SystemRoot%\System32\cmd.exe</Command>
+      <Arguments>$CmdArgs</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+"@
+}
+
+function Install-SentinelTask {
+    if (-not (Assert-Admin)) { return $false }
+    if (-not $script:StoreReady -or -not $script:StoreSecure) {
+        Write-Log 'FAIL' 'Protected store folder unavailable. Cannot register Sentinel task.'
+        return $false
+    }
+    $cmdArgs = '/c ""' + $script:SelfCopy + '" -Mode Daemon -Headless -NoPause"'
+    $xml = New-SentinelTaskXml $cmdArgs
+    $ok = Register-LfTask 'LanFixer_Sentinel' $xml 'LanFixer_Sentinel.xml'
+    if ($ok) {
+        $r = Invoke-Native (Get-SysExe 'schtasks.exe') @('/run', '/tn', 'LanFixer_Sentinel') 10000
+        Write-Log 'OK' 'Lan Fixer 24/7 Autonomous Sentinel task registered and activated.'
+        Write-Log 'INFO' 'The Sentinel is now guarding your network 24/7 in the background with zero window.'
+        return $true
+    }
+    Write-Log 'FAIL' 'Failed to register LanFixer_Sentinel scheduled task.'
+    return $false
+}
+
+function Uninstall-SentinelTask {
+    if (-not (Assert-Admin)) { return $false }
+    $r1 = Invoke-Native (Get-SysExe 'schtasks.exe') @('/end', '/tn', 'LanFixer_Sentinel') 5000
+    $r2 = Invoke-Native (Get-SysExe 'schtasks.exe') @('/delete', '/tn', 'LanFixer_Sentinel', '/f') 10000
+    if ($r2.ExitCode -eq 0) {
+        Write-Log 'OK' 'Lan Fixer 24/7 Autonomous Sentinel task terminated and removed.'
+        return $true
+    }
+    Write-Log 'WARN' 'LanFixer_Sentinel task was not found or already deleted.'
+    return $true
+}
+
+function Show-SentinelLogView {
+    $logPath = Join-Path $script:StoreDir 'sentinel.log'
+    if (-not (Test-Path -LiteralPath $logPath)) {
+        Write-Log 'INFO' 'No sentinel.log file found yet.'
+        Start-Sleep -Seconds 2
+        return
+    }
+    Clear-Screen
+    Write-Banner 'SENTINEL FLIGHT RECORDER LOG (LAST 40 LINES)'
+    $lines = @(Get-Content -LiteralPath $logPath -Tail 40 -ErrorAction SilentlyContinue)
+    foreach ($l in $lines) {
+        $c = 'dim'
+        if ($l -like '*[OK   ]*') { $c = 'ok' }
+        elseif ($l -like '*[WARN ]*') { $c = 'warn' }
+        elseif ($l -like '*[FAIL ]*') { $c = 'bad' }
+        elseif ($l -like '*[TIER*]*') { $c = 'cyan' }
+        Out-Line @((Seg $c ("  " + $l)))
+    }
+    Out-Line @()
+    Out-Line @((Seg 'dim' '  Press any key to return to sentinel cockpit...'))
+    Wait-AnyKey
+}
+
+function Show-SentinelHud($Adapter, $LinkHealth, [string]$Status, [int]$Cadence) {
+    if (-not $script:UiOn) { return }
+    Clear-Screen
+    $w = [Math]::Min(100, [Math]::Max(60, (Get-UiWidth)))
+    $sep = '-' * ($w - 4)
+    $uptime = (Get-Date) - $script:SentinelStats.StartTime
+    $upStr = "{0:D2}h {1:D2}m {2:D2}s" -f [int]$uptime.TotalHours, $uptime.Minutes, $uptime.Seconds
+    
+    Out-Line @((Seg 'cyan!' ("  LAN FIXER . AUTONOMOUS SENTINEL DAEMON (MARK VI)")), (Seg 'dim' (" . Uptime: " + $upStr)))
+    Out-Line @((Seg 'dim' ("  " + $sep)))
+    
+    $statCol = $(switch -wildcard ($Status) {
+        'Online*'    { 'ok!' }
+        'Recovered*' { 'ok!' }
+        'Captive*'   { 'warn!' }
+        'Breaker*'   { 'bad!' }
+        default      { 'warn!' }
+    })
+    $adName = $(if ($Adapter) { $Adapter.InterfaceDescription } else { 'No Active Ethernet Adapter' })
+    Out-Line @(
+        (Seg 'dim' '  Sentinel Status: '), (Seg $statCol ("[" + $Status.ToUpper() + "]")),
+        (Seg 'dim' ' | Cadence: '), (Seg 'text' ("${Cadence}s (Adaptive)")),
+        (Seg 'dim' ' | Cycles: '), (Seg 'text' ("$($script:SentinelStats.HealthyCycles)/$($script:SentinelStats.TotalCycles) healthy"))
+    )
+    if ($Adapter) {
+        $ip = Get-ValidIPv4 $Adapter
+        $gw = Get-DefaultGateway $Adapter
+        $truncW = [Math]::Max(12, $w - 40)
+        Out-Line @(
+            (Seg 'dim' '  Adapter        : '), (Seg 'text' (Fit $adName $truncW)),
+            (Seg 'dim' ' | IP: '), (Seg 'text' $(if ($ip) { $ip } else { 'APIPA/None' }))
+        )
+        Out-Line @(
+            (Seg 'dim' '  Link Health    : '), (Seg $(if ($LinkHealth -and $LinkHealth.Healthy) { 'ok' } else { 'warn' }) (Fit $(if ($LinkHealth) { $LinkHealth.Reason } else { 'Unchecked' }) $truncW)),
+            (Seg 'dim' ' | Gateway: '), (Seg 'text' $(if ($gw) { $gw } else { 'None' }))
+        )
+    }
+    Out-Line @((Seg 'dim' ("  " + $sep)))
+    Out-Line @((Seg 'text' '  AUTONOMOUS ESCALATION LADDER (INTERVENTIONS SINCE START):'))
+    if ($w -ge 72) {
+        Out-Line @(
+            (Seg 'dim' '  T1 ARP/Route: '), (Seg 'ok' ("{0,-5}" -f $script:SentinelStats.T1_ArpRoute)),
+            (Seg 'dim' '  T2 Captive: '), (Seg 'ok' ("{0,-5}" -f $script:SentinelStats.T2_Captive)),
+            (Seg 'dim' '  T3 DNS/NRPT: '), (Seg 'ok' ("$($script:SentinelStats.T3_Dns)"))
+        )
+        Out-Line @(
+            (Seg 'dim' '  T4 DHCP/STP : '), (Seg 'ok' ("{0,-5}" -f $script:SentinelStats.T4_Dhcp)),
+            (Seg 'dim' '  T5 NDIS/PHY: '), (Seg 'ok' ("{0,-5}" -f $script:SentinelStats.T5_Ndis)),
+            (Seg 'dim' '  T6 DeepStack: '), (Seg 'ok' ("$($script:SentinelStats.T6_Stack)"))
+        )
+    } else {
+        Out-Line @(
+            (Seg 'dim' '  T1 ARP: '), (Seg 'ok' ("{0,-4}" -f $script:SentinelStats.T1_ArpRoute)),
+            (Seg 'dim' 'T2 Captive: '), (Seg 'ok' ("{0,-4}" -f $script:SentinelStats.T2_Captive)),
+            (Seg 'dim' 'T3 DNS: '), (Seg 'ok' ("$($script:SentinelStats.T3_Dns)"))
+        )
+        Out-Line @(
+            (Seg 'dim' '  T4 DHCP: '), (Seg 'ok' ("{0,-4}" -f $script:SentinelStats.T4_Dhcp)),
+            (Seg 'dim' 'T5 NDIS: '), (Seg 'ok' ("{0,-4}" -f $script:SentinelStats.T5_Ndis)),
+            (Seg 'dim' 'T6 Stack: '), (Seg 'ok' ("$($script:SentinelStats.T6_Stack)"))
+        )
+    }
+    Out-Line @((Seg 'dim' ("  " + $sep)))
+    Out-Line @((Seg 'text' '  FLIGHT RECORDER (RECENT SENTINEL EVENTS):'))
+    if ($script:SentinelEvents -and $script:SentinelEvents.Count -gt 0) {
+        $startIdx = [Math]::Max(0, $script:SentinelEvents.Count - 6)
+        for ($i = $startIdx; $i -lt $script:SentinelEvents.Count; $i++) {
+            $ev = $script:SentinelEvents[$i]
+            $evCol = 'dim'
+            if ($ev -like '*[OK   ]*') { $evCol = 'ok' }
+            elseif ($ev -like '*[WARN ]*') { $evCol = 'warn' }
+            elseif ($ev -like '*[FAIL ]*') { $evCol = 'bad' }
+            elseif ($ev -like '*[TIER*]*') { $evCol = 'cyan' }
+            Out-Line @((Seg $evCol ("  " + (Fit $ev ($w - 6)))))
+        }
+    } else {
+        Out-Line @((Seg 'dim' '  (No events recorded yet. System stable.)'))
+    }
+    Out-Line @((Seg 'dim' ("  " + $sep)))
+    if ($w -ge 72) {
+        Out-Line @(
+            (Seg 'ok' '  [R]'), (Seg 'dim' ' Force Probe  '),
+            (Seg 'ok' '[L]'), (Seg 'dim' ' View Log  '),
+            (Seg 'ok' '[I]'), (Seg 'dim' ' Install 24/7  '),
+            (Seg 'warn' '[U]'), (Seg 'dim' ' Uninstall  '),
+            (Seg 'bad' '[Q]'), (Seg 'dim' ' Quit')
+        )
+    } else {
+        Out-Line @(
+            (Seg 'ok' '  [R]'), (Seg 'dim' ' Probe '),
+            (Seg 'ok' '[L]'), (Seg 'dim' ' Log '),
+            (Seg 'ok' '[I]'), (Seg 'dim' ' 24/7 '),
+            (Seg 'warn' '[U]'), (Seg 'dim' ' Uninst '),
+            (Seg 'bad' '[Q]'), (Seg 'dim' ' Quit')
+        )
+    }
+}
+
+function Wait-SentinelCadence([int]$Seconds, [bool]$Interactive) {
+    $ticks = [int]($Seconds * 10)
+    for ($i = 0; $i -lt $ticks; $i++) {
+        if (-not $script:SentinelRunning) { break }
+        if ($script:SentinelEventTriggered) {
+            $script:SentinelEventTriggered = $false
+            Write-SentinelLog 'EVENT' "Reactive event: Network change detected via .NET kernel event! Resuming immediately."
+            break
+        }
+        if ($Interactive -and [Console]::KeyAvailable) {
+            $k = [Console]::ReadKey($true)
+            if ($k.KeyChar -eq 'q' -or $k.KeyChar -eq 'Q' -or $k.Key -eq [ConsoleKey]::Escape) {
+                $script:SentinelRunning = $false
+                break
+            }
+            if ($k.KeyChar -eq 'r' -or $k.KeyChar -eq 'R') {
+                Write-SentinelLog 'USER' "Manual trigger: Immediate scan forced by operator."
+                break
+            }
+            if ($k.KeyChar -eq 'l' -or $k.KeyChar -eq 'L') {
+                Show-SentinelLogView
+                break
+            }
+            if ($k.KeyChar -eq 'i' -or $k.KeyChar -eq 'I') {
+                [void](Invoke-WithLock { Install-SentinelTask })
+                Start-Sleep -Seconds 1
+                break
+            }
+            if ($k.KeyChar -eq 'u' -or $k.KeyChar -eq 'U') {
+                [void](Invoke-WithLock { Uninstall-SentinelTask })
+                Start-Sleep -Seconds 1
+                break
+            }
+        }
+        Start-Sleep -Milliseconds 100
+    }
+}
+
+function Start-AutonomousDaemon([int]$IntervalSec = 10, [switch]$Headless) {
+    if (-not (Assert-Admin)) { return }
     $script:DaemonConsecutiveFails = 0
     $script:DaemonLastHwCheck = [DateTime]::MinValue
+    $script:SentinelRunning = $true
+    $script:SentinelEventTriggered = $false
+
+    $isConsole = (-not $Headless -and -not (Test-InputRedirected) -and $Host.Name -eq 'ConsoleHost')
+
+    if ($null -eq $script:SentinelStats) {
+        $script:SentinelStats = @{
+            StartTime       = Get-Date
+            TotalCycles     = 0
+            HealthyCycles   = 0
+            T1_ArpRoute     = 0
+            T2_Captive      = 0
+            T3_Dns          = 0
+            T4_Dhcp         = 0
+            T5_Ndis         = 0
+            T6_Stack        = 0
+            LastRemediation = 'None'
+            LastRemTime     = $null
+        }
+    }
+
+    Write-Banner "Daemon Mode (Autonomous Sentinel)"
+    Write-SentinelLog 'INFO' ("Supreme Autonomous Sentinel Daemon activated (Interval: {0}s, Breaker: {1}, Mode: {2})." -f $IntervalSec, $script:Cfg.BreakerFails, $(if ($isConsole) { 'Interactive Cockpit' } else { 'Headless Background' }))
+    if ($isConsole) {
+        Write-Log 'OK' ("Autonomous Sentinel active. Press 'q' to stop, 'r' to force scan, 'l' to view log.")
+    }
+
+    $addressHandler = $null
+    $availHandler = $null
+    try {
+        $addressHandler = [System.Net.NetworkInformation.NetworkAddressChangedEventHandler]{
+            $script:SentinelEventTriggered = $true
+        }
+        $availHandler = [System.Net.NetworkInformation.NetworkAvailabilityChangedEventHandler]{
+            param($s, $e)
+            $script:SentinelEventTriggered = $true
+        }
+        [System.Net.NetworkInformation.NetworkChange]::add_NetworkAddressChanged($addressHandler)
+        [System.Net.NetworkInformation.NetworkChange]::add_NetworkAvailabilityChanged($availHandler)
+    } catch {}
+
+    $currentCadence = $IntervalSec
+    $lastHudRender = [DateTime]::MinValue
 
     try {
-        while ($true) {
-            $locked = Invoke-WithLock -WaitMs 3000 -Block {
-                $ads = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })
-                if ($ads.Count -eq 0) {
-                    if ((Get-Date) - $script:DaemonLastHwCheck -gt [TimeSpan]::FromSeconds(60)) {
-                        Rescue-DormantEthernetPnp
-                        $script:DaemonLastHwCheck = Get-Date
-                    }
-                    return 'NoLink'
-                }
+        while ($script:SentinelRunning) {
+            $script:SentinelStats.TotalCycles++
 
-                $ad = $ads[0]
-                $linkHealth = Test-NdisLinkHealth $ad
-                $state = Get-InternetState -NoCache
-                if ($state.State -eq 'Online' -and $linkHealth.Healthy) {
-                    if ($script:DaemonConsecutiveFails -gt 0) {
-                        Write-Log 'OK' "Daemon: Link confirmed healthy and Online. Resetting circuit breaker."
-                        $script:DaemonConsecutiveFails = 0
-                    }
-                    return 'Online'
-                }
-
-                if ($script:DaemonConsecutiveFails -ge $script:Cfg.BreakerFails) {
-                    Write-Log 'WARN' ("Circuit breaker tripped ({0} consecutive failures). Throttling daemon to prevent port-flap/DHCP ban." -f $script:DaemonConsecutiveFails)
-                    Start-Sleep -Seconds 60
-                    return 'Throttled'
-                }
-
-                Write-Log 'WARN' ("Daemon detected degradation: State={0}, LinkReason={1}. Escalating remediation ladder..." -f $state.State, $linkHealth.Reason)
-                $script:DaemonConsecutiveFails++
-
-                if ($state.State -eq 'NoDns') {
-                    Flush-NetworkCache
-                    Shield-Dns @{ Ad = $ad; Env = (Get-AdapterEnvironment $ad) } $state.State
-                    $st1 = (Get-InternetState -NoCache).State
-                    if ($st1 -eq 'Online') { return 'RecoveredTier1' }
-                }
-
-                $ip = Get-ValidIPv4 $ad
-                if (-not $ip -or $ip -like '169.254*') {
-                    [void](Repair-Dhcp $ad)
-                    [void](Wait-StpConvergence $ad ([int]$script:Cfg.StpMaxSec))
-                    $st2 = (Get-InternetState -NoCache).State
-                    if ($st2 -eq 'Online') { return 'RecoveredTier2' }
-                }
-
-                Shield-Hardware $ad
-                [void](Shield-TcpOffloads $ad)
-                if (-not $linkHealth.Healthy) {
-                    [void](Resolve-DuplexFlap $ad)
-                    [void](Optimize-PhySiliconBuffers $ad)
-                }
-                $st3 = (Get-InternetState -NoCache).State
-                if ($st3 -eq 'Online') { return 'RecoveredTier3' }
-
-                [void](Reset-PhysicalAdapterHardware $ad)
-                [void](Wait-StpConvergence $ad ([int]$script:Cfg.StpMaxSec))
-                Shield-SystemStack
-                $st4 = (Get-InternetState -NoCache).State
-                if ($st4 -eq 'Online') { return 'RecoveredTier4' }
-
-                return 'Degraded'
+            if ($script:SentinelStats.TotalCycles % 100 -eq 0) {
+                [System.GC]::Collect()
+                [System.GC]::WaitForPendingFinalizers()
             }
 
-            Start-Sleep -Seconds $IntervalSec
+            # Phase 1: Physical Link & Dormant PnP Health
+            $ads = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })
+            if ($ads.Count -eq 0) {
+                if ((Get-Date) - $script:DaemonLastHwCheck -gt [TimeSpan]::FromSeconds(60)) {
+                    Write-SentinelLog 'WARN' "No active Ethernet link. Checking for dormant or crashed PnP hardware..."
+                    [void](Invoke-WithLock -WaitMs 3000 { Rescue-DormantEthernetPnp })
+                    $script:DaemonLastHwCheck = Get-Date
+                }
+                $currentCadence = [Math]::Min(15, $IntervalSec)
+                if ($isConsole) { Show-SentinelHud $null $null 'NoLink' $currentCadence }
+                Wait-SentinelCadence $currentCadence $isConsole
+                continue
+            }
+
+            $ad = $ads[0]
+
+            # Phase 2: Non-mutating Health Probe (OUTSIDE lock to eliminate contention)
+            $linkHealth = Test-NdisLinkHealth $ad
+            $state = Get-InternetState -NoCache
+            $gw = Get-DefaultGateway $ad
+            $gwOk = $true
+            if ($gw) {
+                $gwRtt = Test-LatencySample $gw 800
+                if ($gwRtt -lt 0) { $gwOk = $false }
+            }
+
+            # Phase 3: Condition Evaluation & Self-Healing Ladder
+            if ($state.State -eq 'Online' -and $linkHealth.Healthy -and $gwOk) {
+                $script:SentinelStats.HealthyCycles++
+                if ($script:DaemonConsecutiveFails -gt 0) {
+                    Write-SentinelLog 'OK' ("Link recovered! All health checks passed. Resetting circuit breaker (was {0} fails)." -f $script:DaemonConsecutiveFails)
+                    $script:DaemonConsecutiveFails = 0
+                }
+                $currentCadence = $IntervalSec
+                if ($isConsole -and ((Get-Date) - $lastHudRender).TotalMilliseconds -ge 800) {
+                    Show-SentinelHud $ad $linkHealth $state.State $currentCadence
+                    $lastHudRender = Get-Date
+                }
+                Wait-SentinelCadence $currentCadence $isConsole
+                continue
+            }
+
+            # Degradation Detected
+            $script:DaemonConsecutiveFails++
+            Write-SentinelLog 'WARN' ("Degradation detected (Fail #{0}): State={1}, Ndis={2}, Gateway={3}" -f $script:DaemonConsecutiveFails, $state.State, $linkHealth.Reason, $(if ($gwOk) { 'OK' } else { 'Timeout' }))
+
+            # Circuit Breaker Check
+            if ($script:DaemonConsecutiveFails -ge $script:Cfg.BreakerFails) {
+                $currentCadence = [Math]::Min(120, 15 * [Math]::Pow(2, [Math]::Min(3, $script:DaemonConsecutiveFails - $script:Cfg.BreakerFails)))
+                Write-SentinelLog 'WARN' ("Circuit breaker active ({0} fails). Upstream network down. Throttling scan to {1}s to protect switch port security." -f $script:DaemonConsecutiveFails, $currentCadence)
+                if ($isConsole) { Show-SentinelHud $ad $linkHealth "Breaker ($($state.State))" $currentCadence }
+                Wait-SentinelCadence $currentCadence $isConsole
+                continue
+            }
+
+            # Engaging 6-Tier Self-Healing Ladder (Brief atomic lock acquisitions)
+            $recovered = $false
+            $remedTier = ''
+
+            # Tier 1: Gateway ARP & Routing Priority Enforcement
+            if (-not $gwOk -or (-not $script:State.Misc['RouteProfile'] -or $script:State.Misc['RouteProfile'] -eq 'Adaptive')) {
+                Write-SentinelLog 'TIER1' "Executing Tier 1: Locking gateway ARP binding and asserting Ethernet routing priority..."
+                [void](Invoke-WithLock -WaitMs 3000 {
+                    if ($script:Cfg.ArpLock) { Lock-GatewayArp $ad }
+                    Shield-RouteMetrics $ad
+                    Save-State
+                })
+                $st1 = (Get-InternetState -NoCache).State
+                if ($st1 -eq 'Online') {
+                    $recovered = $true; $remedTier = 'Tier 1 (ARP/Route)'
+                    $script:SentinelStats.T1_ArpRoute++
+                }
+            }
+
+            # Tier 2: Autonomous Captive Portal Authentication (Headless Login)
+            if (-not $recovered -and $state.State -eq 'Captive') {
+                Write-SentinelLog 'TIER2' "Executing Tier 2: Captive portal detected! Inspecting DPAPI secure vault for stored credentials..."
+                $creds = Get-PortalCredentials
+                if ($creds) {
+                    Write-SentinelLog 'TIER2' ("Vault credentials present for user '{0}'. Executing autonomous headless login..." -f $creds.User)
+                    $loginOk = [bool](Invoke-WithLock -WaitMs 5000 {
+                        $auth = Invoke-HeadlessPortalLogin $state -Manual
+                        if ($auth) {
+                            Complete-Authentication
+                            Shield-Dns @{ Ad = $ad; Env = (Get-AdapterEnvironment $ad) } 'Online'
+                            Save-State
+                        }
+                        $auth
+                    })
+                    if ($loginOk) {
+                        Write-SentinelLog 'OK' "Autonomous captive portal sign-in SUCCESSFUL! Restored high-speed DNS path."
+                        $recovered = $true; $remedTier = 'Tier 2 (Captive Login)'
+                        $script:SentinelStats.T2_Captive++
+                    } else {
+                        Write-SentinelLog 'WARN' "Autonomous portal login failed or gateway handshake timed out."
+                    }
+                } else {
+                    Write-SentinelLog 'INFO' "No credentials stored in vault. Triggering portal launch task..."
+                    [void](Invoke-WithLock -WaitMs 2000 { Open-Portal -Force; Save-State })
+                }
+            }
+
+            # Tier 3: DNS Cache Purge & NRPT Cleansing
+            if (-not $recovered -and ($state.State -eq 'NoDns' -or -not $state.DnsOk)) {
+                Write-SentinelLog 'TIER3' "Executing Tier 3: DNS failure detected. Purging resolver cache, clearing NRPT & re-asserting profile..."
+                [void](Invoke-WithLock -WaitMs 3000 {
+                    Flush-NetworkCache
+                    Shield-Dns @{ Ad = $ad; Env = (Get-AdapterEnvironment $ad) } $state.State
+                    Save-State
+                })
+                $st3 = (Get-InternetState -NoCache).State
+                if ($st3 -eq 'Online') {
+                    $recovered = $true; $remedTier = 'Tier 3 (DNS/NRPT)'
+                    $script:SentinelStats.T3_Dns++
+                }
+            }
+
+            # Tier 4: DHCP Lease Re-acquisition & STP Switch Convergence
+            $ip = Get-ValidIPv4 $ad
+            if (-not $recovered -and (-not $ip -or $ip -like '169.254*')) {
+                Write-SentinelLog 'TIER4' ("Executing Tier 4: DHCP lease invalid (IP={0}). Forcing DHCP renew and awaiting STP convergence..." -f $(if ($ip) { $ip } else { 'None' }))
+                [void](Invoke-WithLock -WaitMs 10000 {
+                    Repair-Dhcp $ad
+                    Wait-StpConvergence $ad ([int]$script:Cfg.StpMaxSec)
+                    Save-State
+                })
+                $st4 = (Get-InternetState -NoCache).State
+                if ($st4 -eq 'Online') {
+                    $recovered = $true; $remedTier = 'Tier 4 (DHCP/STP)'
+                    $script:SentinelStats.T4_Dhcp++
+                }
+            }
+
+            # Tier 5: Silicon NDIS Buffers & Physical PHY Power Shield
+            if (-not $recovered -and -not $linkHealth.Healthy) {
+                Write-SentinelLog 'TIER5' ("Executing Tier 5: NDIS packet drops or duplex issue ({0}). Calibrating PHY buffers and disabling power glitches..." -f $linkHealth.Reason)
+                [void](Invoke-WithLock -WaitMs 5000 {
+                    Resolve-DuplexFlap $ad
+                    Optimize-PhySiliconBuffers $ad
+                    Shield-Hardware $ad
+                    Shield-TcpOffloads $ad
+                    Save-State
+                })
+                $st5 = (Get-InternetState -NoCache).State
+                if ($st5 -eq 'Online') {
+                    $recovered = $true; $remedTier = 'Tier 5 (NDIS/PHY)'
+                    $script:SentinelStats.T5_Ndis++
+                } else {
+                    Write-SentinelLog 'TIER5' "NDIS recalibration insufficient. Initiating physical silicon PnP adapter restart..."
+                    [void](Invoke-WithLock -WaitMs 10000 {
+                        Reset-PhysicalAdapterHardware $ad
+                        Wait-StpConvergence $ad ([int]$script:Cfg.StpMaxSec)
+                        Save-State
+                    })
+                    $st5b = (Get-InternetState -NoCache).State
+                    if ($st5b -eq 'Online') {
+                        $recovered = $true; $remedTier = 'Tier 5 (PnP Restart)'
+                        $script:SentinelStats.T5_Ndis++
+                    }
+                }
+            }
+
+            # Tier 6: Deep Stack Resuscitation (ACID Omnifix)
+            if (-not $recovered) {
+                Write-SentinelLog 'TIER6' "Executing Tier 6: Deep stack degradation. Resuscitating TCP/IP heuristics, Winsock catalog and core services..."
+                [void](Invoke-WithLock -WaitMs 10000 {
+                    Shield-SystemStack
+                    Save-State
+                })
+                $st6 = (Get-InternetState -NoCache).State
+                if ($st6 -eq 'Online') {
+                    $recovered = $true; $remedTier = 'Tier 6 (Deep Stack)'
+                    $script:SentinelStats.T6_Stack++
+                }
+            }
+
+            if ($recovered) {
+                $script:SentinelStats.LastRemediation = $remedTier
+                $script:SentinelStats.LastRemTime = Get-Date
+                Write-SentinelLog 'OK' ("Autonomous remediation SUCCEEDED via {0}. Network restored to Online!" -f $remedTier)
+                $script:DaemonConsecutiveFails = 0
+                $currentCadence = 3
+            } else {
+                Write-SentinelLog 'FAIL' "All 6 autonomous escalation tiers exhausted without full online recovery."
+                $currentCadence = [Math]::Min(30, $IntervalSec * 2)
+            }
+
+            if ($isConsole) {
+                Show-SentinelHud $ad $linkHealth $(if ($recovered) { 'Recovered' } else { 'Degraded' }) $currentCadence
+                $lastHudRender = Get-Date
+            }
+
+            Wait-SentinelCadence $currentCadence $isConsole
         }
     } finally {
-        Write-Log 'INFO' "Autonomous Sentinel Daemon shutdown cleanly."
+        if ($addressHandler) {
+            try { [System.Net.NetworkInformation.NetworkChange]::remove_NetworkAddressChanged($addressHandler) } catch {}
+        }
+        if ($availHandler) {
+            try { [System.Net.NetworkInformation.NetworkChange]::remove_NetworkAvailabilityChanged($availHandler) } catch {}
+        }
+        Write-SentinelLog 'INFO' "Autonomous Sentinel Daemon shutdown cleanly."
     }
 }
 
@@ -9604,7 +10060,7 @@ function Start-Interactive {
     }
 }
 $script:IsAdmin = Test-IsAdmin
-$adminModes = @('Interactive', 'Heal', 'QuickHeal', 'AutoHeal', 'Omnifix', 'NetReset', 'FullNetReset', 'UltraReset', 'Ultra', 'DoomsdayReset', 'Doomsday', 'ArmageddonReset', 'Armageddon', 'ResetOptions', 'ResetMenu', 'FlushCache', 'Flush', 'InstallWatchdog', 'UninstallWatchdog', 'InstallShield', 'UninstallShield', 'ResetFactory', 'Reset', 'SetDnsProfile', 'Dns', 'DnsMenu', 'SetRouteProfile', 'Route', 'RouteMenu', 'Daemon', 'Vault')
+$adminModes = @('Interactive', 'Heal', 'QuickHeal', 'AutoHeal', 'Omnifix', 'NetReset', 'FullNetReset', 'UltraReset', 'Ultra', 'DoomsdayReset', 'Doomsday', 'ArmageddonReset', 'Armageddon', 'ResetOptions', 'ResetMenu', 'FlushCache', 'Flush', 'InstallWatchdog', 'UninstallWatchdog', 'InstallShield', 'UninstallShield', 'InstallSentinel', 'UninstallSentinel', 'ResetFactory', 'Reset', 'SetDnsProfile', 'Dns', 'DnsMenu', 'SetRouteProfile', 'Route', 'RouteMenu', 'Daemon', 'Sentinel', 'Vault')
 if ($Mode -eq 'Interactive') {
     $intFile = Join-Path $script:Cfg.StoreDir 'interactive.json'
     if (Test-Path -LiteralPath $intFile) {
@@ -9722,7 +10178,10 @@ try {
         'DnsMenu'           { Show-DnsMenu }
         'SelfTest'          { Invoke-SelfTest; if ($script:TestFail -gt 0) { $exitCode = 1 } }
         'Verify'            { Invoke-SelfTest; if ($script:TestFail -gt 0) { $exitCode = 1 } }
-        'Daemon'            { Start-AutonomousDaemon }
+        'Daemon'            { Start-AutonomousDaemon -Headless:$Headless }
+        'Sentinel'          { Start-AutonomousDaemon -Headless:$Headless }
+        'InstallSentinel'   { [void](Invoke-WithLock { Install-SentinelTask }) }
+        'UninstallSentinel' { [void](Invoke-WithLock { Uninstall-SentinelTask }) }
         'Vault'             { Show-VaultMenu }
         'Guide'             { Show-Advisory }
         'Help'              { Show-Advisory }

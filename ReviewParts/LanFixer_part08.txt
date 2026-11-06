@@ -1,3 +1,4 @@
+            # Destroy accidental/rogue network bridges that create packet loops or isolate the physical NIC
             try {
                 $brOut = Invoke-Native (Get-SysExe 'netsh.exe') @('bridge', 'list') 5000
                 if ($brOut.Output -match '([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})') {
@@ -797,4 +798,3 @@ function Invoke-DoomsdayReset {
 # ==============================================================================
 # ARMAGEDDON SYSTEM RESET - KERNEL PROTOCOL & NETWORK ADAPTER REINSTALL WEAPON
 # ==============================================================================
-function Invoke-ArmageddonReset([switch]$RebootNow) {

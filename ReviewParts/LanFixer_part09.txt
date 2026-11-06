@@ -1,3 +1,4 @@
+function Invoke-ArmageddonReset([switch]$RebootNow) {
     if (-not (Assert-Admin)) { return }
     $swArm = [System.Diagnostics.Stopwatch]::StartNew()
     Write-Section 'ARMAGEDDON SYSTEM RESET (KERNEL PROTOCOL & NETWORK ADAPTER REINSTALL)'
@@ -797,4 +798,3 @@ function New-WatchdogXml([string]$CmdArgs, [string]$Start) {
       <RestartOnIdle>false</RestartOnIdle>
     </IdleSettings>
     <AllowStartOnDemand>true</AllowStartOnDemand>
-    <Enabled>true</Enabled>
