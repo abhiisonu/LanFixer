@@ -1844,7 +1844,10 @@ function Ensure-CampusPortalPath([uri]$RedirectUri = $null) {
             $have = @(Get-NetRoute -InterfaceIndex $a.ifIndex -DestinationPrefix "$hip/32" -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Select-Object -First 1)
             if ($have -and ([string]$have[0].NextHop -eq [string]$nextHopTarget)) { continue }
             # A route left pointing at a previous gateway (VRRP/HSRP failover) is worse than no route at all.
-            if ($have) { Remove-NetRoute -InterfaceIndex $a.ifIndex -DestinationPrefix "$hip/32" -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue }
+            if ($have) {
+                Remove-NetRoute -InterfaceIndex $a.ifIndex -DestinationPrefix "$hip/32" -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue
+                Remove-NetRoute -InterfaceIndex $a.ifIndex -DestinationPrefix "$hip/32" -PolicyStore PersistentStore -Confirm:$false -ErrorAction SilentlyContinue
+            }
             New-NetRoute -InterfaceIndex $a.ifIndex -DestinationPrefix "$hip/32" -NextHop $nextHopTarget -RouteMetric 5 -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Out-Null
             Add-TrackedHostRoute ([string]$hip)
         }
@@ -3384,6 +3387,7 @@ function Test-WatchdogInstalled {
 # ==============================================================================
 function Reset-PhysicalAdapterHardware($Ad) {
     if (-not $Ad) { return $false }
+    if ($script:IsDry) { Write-Log 'DRY' "Would cycle transceiver/driver on $($Ad.Name)"; return $true }
     $pnpId = [string]$Ad.PnPDeviceID
     $pnpExe = Get-SysExe 'pnputil.exe'
     $restarted = $false
@@ -3496,7 +3500,7 @@ function Shield-Hardware($Ad) {
                 $paramNames = @('DeviceSelectiveSuspended','IdleInWorkingState','SelectiveSuspendEnabled','AutoPowerSave','IdlePowerSave','ReduceSpeedOnPowerDown','UltraLowPowerMode')
                 foreach ($pName in $paramNames) {
                     $cur = (Get-ItemProperty -LiteralPath $enumKey -Name $pName -ErrorAction SilentlyContinue).$pName
-                    if ($cur -eq 0) { continue }
+                    if ($null -ne $cur -and [int]$cur -eq 0) { continue }
                     Save-Original $guid ("Enum:$pName") $cur
                     [void](Invoke-Change "Device Parameters '$pName' set to 0 on $($Ad.Name)" {
                         Set-ItemProperty -LiteralPath $enumKey -Name $pName -Value 0 -Type DWord -Force -ErrorAction Stop
@@ -3711,6 +3715,7 @@ function Get-GatewayMacs($Ad, [string]$Gw, [int]$Samples = 3) {
     return $macs
 }
 function Remove-GatewayLock($Ad, [string]$Gw) {
+    if ($script:IsDry) { Write-Log 'DRY' "Would release ARP lock for $Gw on $($Ad.Name)"; return }
     Remove-NetNeighbor -InterfaceIndex $Ad.ifIndex -IPAddress $Gw -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue
     Remove-NetNeighbor -InterfaceIndex $Ad.ifIndex -IPAddress $Gw -PolicyStore PersistentStore -Confirm:$false -ErrorAction SilentlyContinue
     Remove-NetNeighbor -InterfaceIndex $Ad.ifIndex -IPAddress $Gw -Confirm:$false -ErrorAction SilentlyContinue
