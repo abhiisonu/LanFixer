@@ -1,3 +1,12 @@
+        $chips += (Seg $dotRole $glyph); $chips += (Seg 'dim' (' ' + $c[2] + '  '))
+    }
+    $pad = ($w + 2) - (Get-SegsLength $left) - (Get-SegsLength $chips)
+    [void]$L.Add(@($left + (Seg 'text' (' ' * [Math]::Max(2, $pad))) + $chips))
+    [void]$L.Add(@((Seg 'text' '  '), (Seg 'faint' ($script:G.rule * $w))))
+    # hero capsule
+    $right = ''
+    if ($t.LinkUp) {
+        if ($t.UplinkActive -and $t.UplinkName) {
             $uLabel = if ($t.UplinkProfile) { "$($t.UplinkName) ($($t.UplinkProfile))" } else { $t.UplinkName }
             if ($t.UplinkIsPrimary) {
                 $right = ('Eth ' + $t.Speed + ' (Standby) ' + $script:G.mid + ' Uplink: ' + $uLabel)
@@ -140,10 +149,9 @@
         if ($uiH -eq 0 -or $uiH -ge 32) { [void]$L.Add(@()) }
         [void]$L.Add(@((Seg 'accent!' ('  PREVIEW & REPORTS'.PadRight($col1W + 2))), (Seg 'accent!' 'SYSTEM & RECOVERY')))
         [void]$L.Add(@((Seg 'text' ('  [T] Dry-Run Simulation'.PadRight($col1W + 2))), (Seg 'text' '[8] Disarm Watchdog')))
-        [void]$L.Add(@((Seg 'text' ('  [R] Export Support Report'.PadRight($col1W + 2))), (Seg 'text' '[9] Factory Reset')))
-        [void]$L.Add(@((Seg 'text' ('  [S] Run Self-Test Suite'.PadRight($col1W + 2))), (Seg 'text' '[B] Autonomous Daemon')))
-        [void]$L.Add(@((Seg $(if ($adv.Key -eq 'x') { 'ok!' } else { 'accent!' }) ('  [X] Reset Options'.PadRight($col1W + 2))), (Seg 'dim' '[Q] Quit')))
-        [void]$L.Add(@((Seg 'text' ('  [0] Guide'.PadRight($col1W + 2))), (Seg 'dim' ' ')))
+        [void]$L.Add(@((Seg 'text' ('  [R] Export Support Report'.PadRight($col1W + 2))), (Seg 'text' '[B] Autonomous Daemon')))
+        [void]$L.Add(@((Seg 'text' ('  [S] Run Self-Test Suite'.PadRight($col1W + 2))), (Seg $(if ($adv.Key -eq 'x') { 'ok!' } else { 'accent!' }) '[X] Reset Options')))
+        [void]$L.Add(@((Seg 'text' ('  [0] Guide'.PadRight($col1W + 2))), (Seg 'dim' '[Q] Quit')))
         if ($t.ArpPending) { [void]$L.Add(@((Seg 'warn!' ('  [K] Approve Gateway MAC Change'.PadRight($col1W + 2))), (Seg 'warn' 'Router MAC changed; review to lock ARP'))) }
     } else {
         $legend = @(@('1', 'QuickHeal'), @('X', 'ResetOptions'), @('2', 'Guard'), @('A', 'Vault'), @('7', 'Portal'), @('G', 'Login'), @('3', 'DNS'), @('M', 'Route'), @('4', 'Probe'), @('5', 'Flush'), @('6', 'Audit'), @('B', 'Daemon'), @('T', 'Test'), @('R', 'Report'), @('S', 'Verify'), @('8', 'Disarm'), @('9', 'Reset'), @('0', 'Guide'), @('Q', 'Quit'))
@@ -790,11 +798,3 @@ function Get-InternetState {
                 $wr.AllowAutoRedirect = $false
                 $wr.Proxy = $null   # a local proxy answering 204 must not count as internet
                 $resp = $wr.GetResponse()
-                $c = [int]$resp.StatusCode
-                if ($c -eq 204) { $state = 'Online'; $via = 'system' }
-                elseif (($c -ge 300 -and $c -le 399) -or ($c -ge 200 -and $c -le 299) -or $c -eq 401 -or $c -eq 407 -or $c -eq 511) {
-                    $state = 'Captive'; $via = 'system'
-                    $p1 = @{ Code = $c; Location = [string]$resp.Headers['Location'] }
-                }
-                $resp.Close()
-            } catch [System.Net.WebException] {

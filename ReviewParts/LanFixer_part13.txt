@@ -1,3 +1,11 @@
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Priority>4</Priority>
+    <RestartOnFailure>
+      <Interval>PT1M</Interval>
+      <Count>999</Count>
+    </RestartOnFailure>
+  </Settings>
   <Actions Context="Author">
     <Exec>
       <Command>%SystemRoot%\System32\cmd.exe</Command>

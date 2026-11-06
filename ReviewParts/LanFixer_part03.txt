@@ -1,3 +1,16 @@
+        $k = $l.Substring(0, $c).Trim().ToLower(); $v = $l.Substring($c + 1).Trim()
+        if ($k -eq 'set-cookie') { $r.Cookies += $v } else { $r.Headers[$k] = $v }
+    }
+    $r.Location = [string]$r.Headers['location']
+    $bs = $he + $termLen
+    $len = [Math]::Max(0, $Raw.Length - $bs)
+    $bodyBytes = New-Object byte[] $len
+    if ($len -gt 0) { [Array]::Copy($Raw, $bs, $bodyBytes, 0, $len) }
+    if (([string]$r.Headers['transfer-encoding']) -match 'chunked') { $bodyBytes = ConvertFrom-ChunkedBytes $bodyBytes }
+    $bodyBytes = Expand-HttpBody $bodyBytes ([string]$r.Headers['content-encoding'])
+    $r.Body = [System.Text.Encoding]::UTF8.GetString($bodyBytes)
+    return $r
+}
 
 # One HTTPS exchange. Source-bound to the Ethernet IP, TLS 1.2, bounded time and size, no proxy, no auto-redirect.
 function Invoke-TlsHttp {
@@ -519,11 +532,7 @@ function Show-Cursor([bool]$On) { if ($script:Ui.Vt) { [Console]::Write($script:
 function Enter-Screen {
     Set-ConsoleQuickEdit $true
     Clear-InputBuffer
-    try {
-        if ($Host.UI.RawUI.BufferSize.Height -lt 3000) {
-            $Host.UI.RawUI.BufferSize = New-Object System.Management.Automation.Host.Size($Host.UI.RawUI.BufferSize.Width, 3000)
-        }
-    } catch {}
+    if ($script:Ui.Vt) { [Console]::Write($script:Esc + '[?1049h'); $script:Ui.Alt = $true }
     Clear-Screen
 }
 function Exit-Screen {
@@ -789,12 +798,3 @@ function Get-DashboardModel($t, $adv, [int]$Width = 0) {
     foreach ($c in $chipDefs) {
         $dotRole = 'faint'; $glyph = $script:G.ring
         if ($c[1]) { $dotRole = 'ok'; $glyph = $script:G.dot } elseif ($c[0] -eq 'admin') { $dotRole = 'warn'; $glyph = $script:G.dot }
-        $chips += (Seg $dotRole $glyph); $chips += (Seg 'dim' (' ' + $c[2] + '  '))
-    }
-    $pad = ($w + 2) - (Get-SegsLength $left) - (Get-SegsLength $chips)
-    [void]$L.Add(@($left + (Seg 'text' (' ' * [Math]::Max(2, $pad))) + $chips))
-    [void]$L.Add(@((Seg 'text' '  '), (Seg 'faint' ($script:G.rule * $w))))
-    # hero capsule
-    $right = ''
-    if ($t.LinkUp) {
-        if ($t.UplinkActive -and $t.UplinkName) {

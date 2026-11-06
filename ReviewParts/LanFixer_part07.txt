@@ -1,3 +1,11 @@
+# The hostel-only rules (campus-domain DNS rule, LLMNR off) are machine-wide, so they must not follow the laptop home.
+# Called whenever NO Ethernet link is up (the normal repair path only runs with a cable in). If the campus resolver
+# still answers over another link (campus Wi-Fi) the rules are useful there and stay.
+function Invoke-RoamingCleanup {
+    if (-not $script:IsAdmin) { return }
+    $rules = @(Get-OurNrptRules)
+    $flags = @('LlmnrManaged', 'NegCacheManaged', 'MdnsManaged', 'SmartDnsManaged', 'TcpKeepAliveManaged', 'Ipv4PrecedenceManaged')
+    $hasNeutSvc = ($script:State.Misc['NeutralizedServices'] -is [hashtable] -and $script:State.Misc['NeutralizedServices'].Count -gt 0)
     $hasNeutTsk = ($script:State.Misc['NeutralizedTasks'] -is [hashtable] -and $script:State.Misc['NeutralizedTasks'].Count -gt 0)
     # A substituted resolver on Wi-Fi / USB tethering / Bluetooth PAN is a reason to clean up on its own, even when every
     # other hostel-only change has already been reverted.
@@ -790,11 +798,3 @@ function Invoke-UltraSystemReset {
             }
             try {
                 [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'ipv6', 'reset', $ipv6Log) 10000)
-            } finally {
-                if (Test-Path -LiteralPath $ipv6Log) { Remove-Item -LiteralPath $ipv6Log -Force -ErrorAction SilentlyContinue }
-            }
-
-            # Reset global TCP stack heuristics, window autotuning, RSS, RSC, and ECN
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'tcp', 'reset') 5000)
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'tcp', 'set', 'heuristics', 'disabled') 5000)
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'tcp', 'set', 'global', 'autotuninglevel=normal') 5000)

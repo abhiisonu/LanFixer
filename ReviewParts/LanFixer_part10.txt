@@ -1,3 +1,11 @@
+      <Enabled>true</Enabled>
+      <Subscription>&lt;QueryList&gt;&lt;Query Id="0" Path="Microsoft-Windows-NetworkProfile/Operational"&gt;&lt;Select Path="Microsoft-Windows-NetworkProfile/Operational"&gt;*[System[(EventID=10000 or EventID=10001)]]&lt;/Select&gt;&lt;/Query&gt;&lt;/QueryList&gt;</Subscription>
+      <Delay>PT10S</Delay>
+    </EventTrigger>
+    <EventTrigger>
+      <Enabled>true</Enabled>
+      <Subscription>&lt;QueryList&gt;&lt;Query Id="0" Path="System"&gt;&lt;Select Path="System"&gt;*[System[Provider[@Name='Microsoft-Windows-Power-Troubleshooter'] and (EventID=1)]]&lt;/Select&gt;&lt;/Query&gt;&lt;/QueryList&gt;</Subscription>
+      <Delay>PT10S</Delay>
     </EventTrigger>
     <EventTrigger>
       <Enabled>true</Enabled>
@@ -789,12 +797,4 @@ function Show-Diagnostics {
             $c = 'White'
             if ($dv -notmatch 'Auto') { $c = 'Yellow'; [void]$issues.Add("Speed/duplex is forced to '$dv' - a mismatch with the switch causes drops; set it to Auto Negotiation") }
             Write-KV '  Speed/duplex setting' $dv $c
-        }
-        $st = Get-NetAdapterStatistics -Name $a.Name -ErrorAction SilentlyContinue
-        if ($st) {
-            $errs = [long]$st.ReceivedPacketErrors + [long]$st.OutboundPacketErrors
-            $disc = [long]$st.ReceivedDiscardedPackets + [long]$st.OutboundDiscardedPackets
-            $c = $(if ($errs -gt 0) { 'Yellow' } else { 'White' })
-            Write-KV '  Packet errors / discards' ("{0} / {1}" -f $errs, $disc) $c
-            if ($errs -gt 100) { [void]$issues.Add("Adapter reports $errs packet errors: suspect cable, wall port or duplex mismatch") }
         }

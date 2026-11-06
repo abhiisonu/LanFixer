@@ -1,3 +1,11 @@
+            } finally {
+                if (Test-Path -LiteralPath $ipv6Log) { Remove-Item -LiteralPath $ipv6Log -Force -ErrorAction SilentlyContinue }
+            }
+
+            # Reset global TCP stack heuristics, window autotuning, RSS, RSC, and ECN
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'tcp', 'reset') 5000)
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'tcp', 'set', 'heuristics', 'disabled') 5000)
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'tcp', 'set', 'global', 'autotuninglevel=normal') 5000)
             [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'tcp', 'set', 'global', 'rss=enabled') 5000)
             [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'tcp', 'set', 'global', 'rsc=enabled') 5000)
             [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'tcp', 'set', 'global', 'ecncapability=disabled') 5000)
@@ -790,11 +798,3 @@ function Invoke-DoomsdayReset {
             if ($candidateIp) { $primarySrc = $candidateIp; break }
         }
 
-        foreach ($testHost in @('github.com', 'accounts.google.com')) {
-            $ip = Resolve-HostBounded $testHost 3000 $primarySrc
-            if ($ip) {
-                $tcpOk = Test-TcpPort $ip 443 2500 $primarySrc
-                Write-Log ($(if ($tcpOk) { 'OK' } else { 'WARN' })) ("Verified {0} -> {1} (TCP/443: {2})" -f $testHost, $ip, $(if ($tcpOk) { 'OPEN' } else { 'BLOCKED' }))
-            } else {
-                $anyVerifyFail = $true
-                Write-Log 'FAIL' ("DNS resolution still failed for {0}" -f $testHost)

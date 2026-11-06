@@ -1,3 +1,11 @@
+            [void](Invoke-Change "Static IPv4 ($gwLabel) on $($ad.Name): enabling DHCP to acquire valid lease" {
+                if ($stGw) { Remove-NetRoute -InterfaceIndex $ad.ifIndex -DestinationPrefix '0.0.0.0/0' -NextHop $stGw -Confirm:$false -ErrorAction SilentlyContinue }
+                Set-NetIPInterface -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -Dhcp Enabled -ErrorAction Stop
+            })
+            $Ctx.Repaired = (Repair-Dhcp $ad)
+            if (-not $Ctx.Repaired -and $origIpInfo -and -not (Get-ValidIPv4 $ad)) {
+                Write-Log 'WARN' "DHCP failed to acquire lease on $($ad.Name); rolling back to static IP $($origIpInfo.IPAddress)..."
+                [void](Invoke-Change "Rollback to static IP on $($ad.Name)" {
                     Set-NetIPInterface -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -Dhcp Disabled -ErrorAction Stop
                     $params = @{ InterfaceIndex = $ad.ifIndex; IPAddress = $origIpInfo.IPAddress; PrefixLength = $origIpInfo.PrefixLength; ErrorAction = 'Stop' }
                     if ($origIpInfo.DefaultGateway) { $params.DefaultGateway = $origIpInfo.DefaultGateway }
@@ -790,11 +798,3 @@ function Restore-LlmnrIfManaged([string]$Why) {
     $ok = Invoke-Change $Why { Restore-Llmnr $orig }
     if ($ok -and -not $script:IsDry) { $script:State.Misc['LlmnrManaged'] = $false }
 }
-# The hostel-only rules (campus-domain DNS rule, LLMNR off) are machine-wide, so they must not follow the laptop home.
-# Called whenever NO Ethernet link is up (the normal repair path only runs with a cable in). If the campus resolver
-# still answers over another link (campus Wi-Fi) the rules are useful there and stay.
-function Invoke-RoamingCleanup {
-    if (-not $script:IsAdmin) { return }
-    $rules = @(Get-OurNrptRules)
-    $flags = @('LlmnrManaged', 'NegCacheManaged', 'MdnsManaged', 'SmartDnsManaged', 'TcpKeepAliveManaged', 'Ipv4PrecedenceManaged')
-    $hasNeutSvc = ($script:State.Misc['NeutralizedServices'] -is [hashtable] -and $script:State.Misc['NeutralizedServices'].Count -gt 0)

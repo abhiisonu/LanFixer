@@ -1,3 +1,11 @@
+        $st = Get-NetAdapterStatistics -Name $a.Name -ErrorAction SilentlyContinue
+        if ($st) {
+            $errs = [long]$st.ReceivedPacketErrors + [long]$st.OutboundPacketErrors
+            $disc = [long]$st.ReceivedDiscardedPackets + [long]$st.OutboundDiscardedPackets
+            $c = $(if ($errs -gt 0) { 'Yellow' } else { 'White' })
+            Write-KV '  Packet errors / discards' ("{0} / {1}" -f $errs, $disc) $c
+            if ($errs -gt 100) { [void]$issues.Add("Adapter reports $errs packet errors: suspect cable, wall port or duplex mismatch") }
+        }
     }
 
     foreach ($a in @($ads | Where-Object { $_.Status -eq 'Up' })) {
@@ -790,11 +798,3 @@ function Invoke-LogicTests {
     Write-Check 'Logic: the saved password is never sent to a host that only the network itself vouches for (DHCP suffix)' ($ctA -and $ctB -and $ctD)
     Write-Check 'Logic: browser navigation trust is unchanged (discovered domain still opens the login page)' $ctC
     $hlDef = [string](Get-Command Invoke-HeadlessPortalLogin -ErrorAction SilentlyContinue).Definition
-    Write-Check 'Logic: every credential-bearing step of headless login uses the strict trust check' (($hlDef.IndexOf('Get-CredentialPortalUrl') -ge 0) -and ($hlDef.IndexOf('Test-CredentialPortalHost') -ge 0) -and ($hlDef.IndexOf('Test-TrustedPortalHost') -lt 0))
-    $tlDef = [string](Get-Command Invoke-TlsHttp -ErrorAction SilentlyContinue).Definition
-    Write-Check 'Logic: Invoke-TlsHttp resolves host names from the Ethernet source address' ($tlDef.IndexOf('Resolve-HostBounded $hostName 2500 $SourceIp') -ge 0)
-    $hr302 = ConvertFrom-HttpResponse ("HTTP/1.1 302 Found`r`nLocation: http://portal.univ.edu/login`r`n`r`n<html>x</html>")
-    $hrMeta = ConvertFrom-HttpResponse ("HTTP/1.1 200 OK`r`nContent-Type: text/html`r`n`r`n<html><head><meta http-equiv=""refresh"" content=""0; url=http://portal.univ.edu/a?x=1&amp;y=2""></head></html>")
-    $hrJs = ConvertFrom-HttpResponse ("HTTP/1.1 200 OK`r`n`r`n<script>window.location.href = 'http://portal.univ.edu/js';</script>")
-    $hrRel = ConvertFrom-HttpResponse ("HTTP/1.1 200 OK`r`n`r`n<script>location.href='/login'</script>")
-    $hrMs = ConvertFrom-HttpResponse ("HTTP/1.1 200 OK`r`n`r`nMicrosoft Connect Test")

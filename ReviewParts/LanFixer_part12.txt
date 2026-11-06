@@ -1,3 +1,11 @@
+    Write-Check 'Logic: every credential-bearing step of headless login uses the strict trust check' (($hlDef.IndexOf('Get-CredentialPortalUrl') -ge 0) -and ($hlDef.IndexOf('Test-CredentialPortalHost') -ge 0) -and ($hlDef.IndexOf('Test-TrustedPortalHost') -lt 0))
+    $tlDef = [string](Get-Command Invoke-TlsHttp -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Invoke-TlsHttp resolves host names from the Ethernet source address' ($tlDef.IndexOf('Resolve-HostBounded $hostName 2500 $SourceIp') -ge 0)
+    $hr302 = ConvertFrom-HttpResponse ("HTTP/1.1 302 Found`r`nLocation: http://portal.univ.edu/login`r`n`r`n<html>x</html>")
+    $hrMeta = ConvertFrom-HttpResponse ("HTTP/1.1 200 OK`r`nContent-Type: text/html`r`n`r`n<html><head><meta http-equiv=""refresh"" content=""0; url=http://portal.univ.edu/a?x=1&amp;y=2""></head></html>")
+    $hrJs = ConvertFrom-HttpResponse ("HTTP/1.1 200 OK`r`n`r`n<script>window.location.href = 'http://portal.univ.edu/js';</script>")
+    $hrRel = ConvertFrom-HttpResponse ("HTTP/1.1 200 OK`r`n`r`n<script>location.href='/login'</script>")
+    $hrMs = ConvertFrom-HttpResponse ("HTTP/1.1 200 OK`r`n`r`nMicrosoft Connect Test")
     $hr204 = ConvertFrom-HttpResponse ("HTTP/1.1 204 No Content`r`n`r`n")
     Write-Check 'Logic: ConvertFrom-HttpResponse reads Location headers and meta/JS redirects of 200 portal pages' (($hr302.Location -ceq 'http://portal.univ.edu/login') -and ($hrMeta.Location -ceq 'http://portal.univ.edu/a?x=1&y=2') -and ($hrJs.Location -ceq 'http://portal.univ.edu/js'))
     Write-Check 'Logic: ordinary probe answers (Microsoft test page, 204, relative JS) yield no redirect' (($hrRel.Location -eq '') -and ($hrMs.Location -eq '') -and ($hr204.Location -eq '') -and ($hrMs.Body -like 'Microsoft Connect Test*'))
@@ -540,7 +548,7 @@ function Show-ResetMenu {
         @('2', 'Ultra System Reset',  'u', '10-Stage Nuclear Reset (Dual 64/32-bit Winsock, TCP/IP heuristics, DoH wipe, NCSI)'),
         @('3', 'Doomsday Reset',      'd', '12-Stage Universal Reset (All Media: Wi-Fi/BT/USB/LAN, NDIS Filters, PnP Transceiver)'),
         @('4', 'Armageddon OS Wipe',  'a', '4-Stage Kernel Stack Reinstall (netcfg.exe -d, requires immediate system reboot)'),
-        @('5', 'Restore Settings',    'r', 'Rollback to Original Settings (100% reversible ACID restore from pre-reset backup)')
+        @('5', 'Sovereign Factory Reset', 'r', 'Full System Rollback (Reverts all tasks, registry, DNS, credentials to Windows defaults)')
     )
     foreach ($opt in $options) {
         $color = switch ($opt[0]) {
@@ -790,11 +798,3 @@ function New-SentinelTaskXml([string]$CmdArgs) {
     <Enabled>true</Enabled>
     <Hidden>false</Hidden>
     <RunOnlyIfIdle>false</RunOnlyIfIdle>
-    <WakeToRun>false</WakeToRun>
-    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
-    <Priority>4</Priority>
-    <RestartOnFailure>
-      <Interval>PT1M</Interval>
-      <Count>999</Count>
-    </RestartOnFailure>
-  </Settings>

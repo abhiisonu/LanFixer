@@ -1,3 +1,11 @@
+                $c = [int]$resp.StatusCode
+                if ($c -eq 204) { $state = 'Online'; $via = 'system' }
+                elseif (($c -ge 300 -and $c -le 399) -or ($c -ge 200 -and $c -le 299) -or $c -eq 401 -or $c -eq 407 -or $c -eq 511) {
+                    $state = 'Captive'; $via = 'system'
+                    $p1 = @{ Code = $c; Location = [string]$resp.Headers['Location'] }
+                }
+                $resp.Close()
+            } catch [System.Net.WebException] {
                 $webResp = $_.Exception.Response -as [System.Net.HttpWebResponse]
                 if ($webResp) {
                     $c = [int]$webResp.StatusCode
@@ -790,11 +798,3 @@ function Shield-DataLink($Ctx) {
                 Save-Original $guid 'StaticIp4' $origIpInfo
             }
             $gwLabel = if ($stGw) { "gateway $stGw unreachable" } else { "no default gateway configured" }
-            [void](Invoke-Change "Static IPv4 ($gwLabel) on $($ad.Name): enabling DHCP to acquire valid lease" {
-                if ($stGw) { Remove-NetRoute -InterfaceIndex $ad.ifIndex -DestinationPrefix '0.0.0.0/0' -NextHop $stGw -Confirm:$false -ErrorAction SilentlyContinue }
-                Set-NetIPInterface -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -Dhcp Enabled -ErrorAction Stop
-            })
-            $Ctx.Repaired = (Repair-Dhcp $ad)
-            if (-not $Ctx.Repaired -and $origIpInfo -and -not (Get-ValidIPv4 $ad)) {
-                Write-Log 'WARN' "DHCP failed to acquire lease on $($ad.Name); rolling back to static IP $($origIpInfo.IPAddress)..."
-                [void](Invoke-Change "Rollback to static IP on $($ad.Name)" {

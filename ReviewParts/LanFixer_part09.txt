@@ -1,3 +1,11 @@
+        foreach ($testHost in @('github.com', 'accounts.google.com')) {
+            $ip = Resolve-HostBounded $testHost 3000 $primarySrc
+            if ($ip) {
+                $tcpOk = Test-TcpPort $ip 443 2500 $primarySrc
+                Write-Log ($(if ($tcpOk) { 'OK' } else { 'WARN' })) ("Verified {0} -> {1} (TCP/443: {2})" -f $testHost, $ip, $(if ($tcpOk) { 'OPEN' } else { 'BLOCKED' }))
+            } else {
+                $anyVerifyFail = $true
+                Write-Log 'FAIL' ("DNS resolution still failed for {0}" -f $testHost)
             }
         }
         if ($anyVerifyFail -and -not $script:IsDry -and ($resHeal.Conn -ne 'Captive')) {
@@ -790,11 +798,3 @@ function New-WatchdogXml([string]$CmdArgs, [string]$Start) {
   </RegistrationInfo>
   <Triggers>
     <EventTrigger>
-      <Enabled>true</Enabled>
-      <Subscription>&lt;QueryList&gt;&lt;Query Id="0" Path="Microsoft-Windows-NetworkProfile/Operational"&gt;&lt;Select Path="Microsoft-Windows-NetworkProfile/Operational"&gt;*[System[(EventID=10000 or EventID=10001)]]&lt;/Select&gt;&lt;/Query&gt;&lt;/QueryList&gt;</Subscription>
-      <Delay>PT10S</Delay>
-    </EventTrigger>
-    <EventTrigger>
-      <Enabled>true</Enabled>
-      <Subscription>&lt;QueryList&gt;&lt;Query Id="0" Path="System"&gt;&lt;Select Path="System"&gt;*[System[Provider[@Name='Microsoft-Windows-Power-Troubleshooter'] and (EventID=1)]]&lt;/Select&gt;&lt;/Query&gt;&lt;/QueryList&gt;</Subscription>
-      <Delay>PT10S</Delay>

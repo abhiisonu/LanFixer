@@ -1343,12 +1343,25 @@ function Restore-InterfaceMetrics([string]$Why) {
             $ad = $present | Where-Object { [string]$_.InterfaceGuid -eq $guid } | Select-Object -First 1
             if (-not $ad) { continue }
             $af = [string]$rec.Af
+            $targetIf = Get-NetIPInterface -InterfaceIndex $ad.ifIndex -AddressFamily $af -ErrorAction SilentlyContinue | Select-Object -First 1
+            if (-not $targetIf) {
+                if (-not $script:IsDry) { $orig.Remove($k) }
+                continue
+            }
             $ok = $false
             if ([string]$rec.Auto -eq 'Enabled') {
-                $ok = Invoke-Change ('{0}: {1} {2} metric back to automatic' -f $Why, $rec.Alias, $af) { Set-NetIPInterface -InterfaceIndex $ad.ifIndex -AddressFamily $af -AutomaticMetric Enabled -ErrorAction Stop }
+                if ([string]$targetIf.AutomaticMetric -ne 'Enabled') {
+                    $ok = Invoke-Change ('{0}: {1} {2} metric back to automatic' -f $Why, $rec.Alias, $af) { Set-NetIPInterface -InterfaceIndex $ad.ifIndex -AddressFamily $af -AutomaticMetric Enabled -ErrorAction Stop }
+                } else {
+                    $ok = $true
+                }
             } else {
                 $mv = [int]$rec.Metric
-                $ok = Invoke-Change ('{0}: {1} {2} metric back to {3}' -f $Why, $rec.Alias, $af, $mv) { Set-NetIPInterface -InterfaceIndex $ad.ifIndex -AddressFamily $af -InterfaceMetric $mv -ErrorAction Stop }
+                if ([int]$targetIf.InterfaceMetric -ne $mv -or [string]$targetIf.AutomaticMetric -eq 'Enabled') {
+                    $ok = Invoke-Change ('{0}: {1} {2} metric back to {3}' -f $Why, $rec.Alias, $af, $mv) { Set-NetIPInterface -InterfaceIndex $ad.ifIndex -AddressFamily $af -InterfaceMetric $mv -ErrorAction Stop }
+                } else {
+                    $ok = $true
+                }
             }
             if ($ok -and -not $script:IsDry) { $orig.Remove($k) }
         }
@@ -2119,11 +2132,7 @@ function Show-Cursor([bool]$On) { if ($script:Ui.Vt) { [Console]::Write($script:
 function Enter-Screen {
     Set-ConsoleQuickEdit $true
     Clear-InputBuffer
-    try {
-        if ($Host.UI.RawUI.BufferSize.Height -lt 3000) {
-            $Host.UI.RawUI.BufferSize = New-Object System.Management.Automation.Host.Size($Host.UI.RawUI.BufferSize.Width, 3000)
-        }
-    } catch {}
+    if ($script:Ui.Vt) { [Console]::Write($script:Esc + '[?1049h'); $script:Ui.Alt = $true }
     Clear-Screen
 }
 function Exit-Screen {
@@ -2540,10 +2549,9 @@ function Get-DashboardModel($t, $adv, [int]$Width = 0) {
         if ($uiH -eq 0 -or $uiH -ge 32) { [void]$L.Add(@()) }
         [void]$L.Add(@((Seg 'accent!' ('  PREVIEW & REPORTS'.PadRight($col1W + 2))), (Seg 'accent!' 'SYSTEM & RECOVERY')))
         [void]$L.Add(@((Seg 'text' ('  [T] Dry-Run Simulation'.PadRight($col1W + 2))), (Seg 'text' '[8] Disarm Watchdog')))
-        [void]$L.Add(@((Seg 'text' ('  [R] Export Support Report'.PadRight($col1W + 2))), (Seg 'text' '[9] Factory Reset')))
-        [void]$L.Add(@((Seg 'text' ('  [S] Run Self-Test Suite'.PadRight($col1W + 2))), (Seg 'text' '[B] Autonomous Daemon')))
-        [void]$L.Add(@((Seg $(if ($adv.Key -eq 'x') { 'ok!' } else { 'accent!' }) ('  [X] Reset Options'.PadRight($col1W + 2))), (Seg 'dim' '[Q] Quit')))
-        [void]$L.Add(@((Seg 'text' ('  [0] Guide'.PadRight($col1W + 2))), (Seg 'dim' ' ')))
+        [void]$L.Add(@((Seg 'text' ('  [R] Export Support Report'.PadRight($col1W + 2))), (Seg 'text' '[B] Autonomous Daemon')))
+        [void]$L.Add(@((Seg 'text' ('  [S] Run Self-Test Suite'.PadRight($col1W + 2))), (Seg $(if ($adv.Key -eq 'x') { 'ok!' } else { 'accent!' }) '[X] Reset Options')))
+        [void]$L.Add(@((Seg 'text' ('  [0] Guide'.PadRight($col1W + 2))), (Seg 'dim' '[Q] Quit')))
         if ($t.ArpPending) { [void]$L.Add(@((Seg 'warn!' ('  [K] Approve Gateway MAC Change'.PadRight($col1W + 2))), (Seg 'warn' 'Router MAC changed; review to lock ARP'))) }
     } else {
         $legend = @(@('1', 'QuickHeal'), @('X', 'ResetOptions'), @('2', 'Guard'), @('A', 'Vault'), @('7', 'Portal'), @('G', 'Login'), @('3', 'DNS'), @('M', 'Route'), @('4', 'Probe'), @('5', 'Flush'), @('6', 'Audit'), @('B', 'Daemon'), @('T', 'Test'), @('R', 'Report'), @('S', 'Verify'), @('8', 'Disarm'), @('9', 'Reset'), @('0', 'Guide'), @('Q', 'Quit'))
@@ -9340,7 +9348,7 @@ function Show-ResetMenu {
         @('2', 'Ultra System Reset',  'u', '10-Stage Nuclear Reset (Dual 64/32-bit Winsock, TCP/IP heuristics, DoH wipe, NCSI)'),
         @('3', 'Doomsday Reset',      'd', '12-Stage Universal Reset (All Media: Wi-Fi/BT/USB/LAN, NDIS Filters, PnP Transceiver)'),
         @('4', 'Armageddon OS Wipe',  'a', '4-Stage Kernel Stack Reinstall (netcfg.exe -d, requires immediate system reboot)'),
-        @('5', 'Restore Settings',    'r', 'Rollback to Original Settings (100% reversible ACID restore from pre-reset backup)')
+        @('5', 'Sovereign Factory Reset', 'r', 'Full System Rollback (Reverts all tasks, registry, DNS, credentials to Windows defaults)')
     )
     foreach ($opt in $options) {
         $color = switch ($opt[0]) {
