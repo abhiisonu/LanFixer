@@ -236,8 +236,122 @@ function Reset-PhysicalAdapterHardware($Ad) {
     return $restarted
 }
 
-# LAYER 1 - HARDWARE & POWER SHIELD (only touches settings the driver really exposes)
+# LAYER 1 - HARDWARE, NDIS LINK HEALTH & POWER SHIELD
 # ==============================================================================
+function Test-NdisLinkHealth($Ad) {
+    if (-not $Ad) { return [PSCustomObject]@{ Healthy = $false; Discards = 0L; Errors = 0L; LinkSpeed = '0 bps'; Duplex = 'Unknown'; Reason = 'NoAdapter' } }
+    $stats = $null
+    try { $stats = Get-NetAdapterStatistics -Name $Ad.Name -ErrorAction SilentlyContinue } catch {}
+    $discards = 0L
+    $errors = 0L
+    if ($stats) {
+        $discards = [int64]$stats.ReceivedDiscardedPackets + [int64]$stats.OutboundDiscardedPackets
+        $errors   = [int64]$stats.ReceivedPacketErrors + [int64]$stats.OutboundPacketErrors
+    } else {
+        try {
+            $cimStats = Get-CimInstance -ClassName MSFT_NetAdapterStatisticsSettingData -Namespace 'Root/StandardCimv2' -Filter ("Name='{0}'" -f $Ad.Name) -ErrorAction SilentlyContinue
+            if ($cimStats) {
+                $discards = [int64]$cimStats.ReceivedDiscardedPackets + [int64]$cimStats.OutboundDiscardedPackets
+                $errors   = [int64]$cimStats.ReceivedPacketErrors + [int64]$cimStats.OutboundPacketErrors
+            }
+        } catch {}
+    }
+    $speed = [string]$Ad.LinkSpeed
+    $duplex = 'Unknown'
+    try {
+        $advDuplex = Get-NetAdapterAdvancedProperty -Name $Ad.Name -RegistryKeyword '*SpeedDuplex' -ErrorAction SilentlyContinue
+        if ($advDuplex) { $duplex = [string]$advDuplex.DisplayValue }
+    } catch {}
+
+    $healthy = $true
+    $reasons = @()
+    if ($Ad.Status -ne 'Up') {
+        $healthy = $false
+        $reasons += 'LinkDown'
+    } elseif ($speed -match '^\s*10\s*M') {
+        $healthy = $false
+        $reasons += 'FlapTo10Mbps'
+    }
+    if ($errors -gt 100) { $reasons += ("PacketErrors({0})" -f $errors) }
+    if ($discards -gt 1000) { $reasons += ("HighDiscards({0})" -f $discards) }
+    $reasonStr = if ($reasons.Count -gt 0) { $reasons -join ', ' } else { 'Healthy' }
+    return [PSCustomObject]@{
+        Healthy   = $healthy
+        Discards  = $discards
+        Errors    = $errors
+        LinkSpeed = $speed
+        Duplex    = $duplex
+        Reason    = $reasonStr
+    }
+}
+
+function Resolve-DuplexFlap($Ad) {
+    if (-not $Ad -or $script:IsDry) {
+        if ($script:IsDry -and $Ad) { Write-Log 'DRY' ("Would evaluate and remediate link speed/duplex flap on {0}" -f $Ad.Name) }
+        return $false
+    }
+    $guid = [string]$Ad.InterfaceGuid
+    $speed = [string]$Ad.LinkSpeed
+    if ($speed -match '^\s*10\s*M' -or $Ad.InterfaceDescription -match 'Gigabit|GbE|RTL81|I21|I22|1000') {
+        $prop = Get-NetAdapterAdvancedProperty -Name $Ad.Name -RegistryKeyword '*SpeedDuplex' -ErrorAction SilentlyContinue
+        if ($prop) {
+            $curVal = [string](@($prop.RegistryValue) | Select-Object -First 1)
+            if ($curVal -ne '0') {
+                Save-Original $guid 'Adv:*SpeedDuplex' $curVal
+                return (Invoke-Change ("Reset *SpeedDuplex to Auto-Negotiation on {0}" -f $Ad.Name) {
+                    Set-NetAdapterAdvancedProperty -Name $Ad.Name -RegistryKeyword '*SpeedDuplex' -RegistryValue @('0') -NoRestart -ErrorAction Stop
+                })
+            }
+        }
+    }
+    return $false
+}
+
+function Optimize-PhySiliconBuffers($Ad) {
+    if (-not $Ad -or $script:IsDry) {
+        if ($script:IsDry -and $Ad) { Write-Log 'DRY' ("Would check ring buffers on {0}" -f $Ad.Name) }
+        return $false
+    }
+    $health = Test-NdisLinkHealth $Ad
+    if ($health.Discards -lt 1000) { return $false }
+
+    $guid = [string]$Ad.InterfaceGuid
+    $modified = $false
+    $rxKw = '*ReceiveBuffers'
+    $txKw = '*TransmitBuffers'
+    $props = @(Get-NetAdapterAdvancedProperty -Name $Ad.Name -AllProperties -ErrorAction SilentlyContinue)
+
+    foreach ($kw in @($rxKw, $txKw)) {
+        $p = $props | Where-Object { $_.RegistryKeyword -eq $kw } | Select-Object -First 1
+        if (-not $p) { continue }
+        $cur = $null
+        try { $cur = [int](@($p.RegistryValue) | Select-Object -First 1) } catch { $cur = $null }
+        if ($null -eq $cur) { continue }
+
+        $target = if ($cur -lt 512) { 512 } elseif ($cur -lt 1024) { 1024 } else { 2048 }
+        if ($target -gt $cur) {
+            Save-Original $guid ("Adv:" + $kw) [string]$cur
+            $ok = Invoke-Change ("Scaled ring buffer {0} from {1} to {2} on {3} (NDIS discard mitigation)" -f $kw, $cur, $target, $Ad.Name) {
+                Set-NetAdapterAdvancedProperty -Name $Ad.Name -RegistryKeyword $kw -RegistryValue @([string]$target) -NoRestart -ErrorAction Stop
+            }
+            if ($ok) { $modified = $true; $script:PendingRestart[$guid] = $Ad.Name }
+        }
+    }
+    return $modified
+}
+
+function Shield-Aspm {
+    if ($script:IsDry) { Write-Log 'DRY' 'Would disable PCIe Link State Power Management (ASPM) on AC'; return }
+    try {
+        $powercfg = Get-SysExe 'powercfg.exe'
+        if (Test-Path -LiteralPath $powercfg) {
+            [void](Invoke-Native $powercfg @('/setacvalueindex', 'scheme_current', 'sub_pcipexpress', 'express', '0') 5000)
+            [void](Invoke-Native $powercfg @('/setactive', 'scheme_current') 5000)
+            Write-Log 'INFO' 'PCIe Link State Power Management (ASPM) verified disabled on active AC power scheme.'
+        }
+    } catch {}
+}
+
 function Get-NicClassKey($Ad) {
     $base = 'HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e972-e325-11ce-bfc1-08002be10318}'
     foreach ($k in @(Get-ChildItem -LiteralPath $base -ErrorAction SilentlyContinue)) {
@@ -311,6 +425,7 @@ function Shield-Hardware($Ad) {
     }
     # Windows Power Scheme: Disable USB Selective Suspend so the USB host controller never sleeps the dongle
     Set-UsbSuspendOff
+    Shield-Aspm
     if ($touched) {
         $script:PendingRestart[$guid] = $Ad.Name
         Write-Log 'INFO' "Driver power settings changed on $($Ad.Name); they take effect at the next link reset."
@@ -323,6 +438,66 @@ $script:PendingRestart = @{}
 # ==============================================================================
 # LAYER 2 - DATA LINK: duplicate-address guard + DHCP/APIPA recovery ladder
 # ==============================================================================
+function Shield-Dot3Svc($Ad) {
+    if (-not $script:IsAdmin) { return $false }
+    if ($script:IsDry) { Write-Log 'DRY' 'Would check Wired AutoConfig (dot3svc) service'; return $false }
+    try {
+        $svc = Get-Service -Name 'dot3svc' -ErrorAction SilentlyContinue
+        if ($svc) {
+            $changed = $false
+            if ($svc.StartType -eq 'Disabled') {
+                $changed = Invoke-Change 'Re-enabled Wired AutoConfig service (dot3svc) for IEEE 802.1X campus auth' {
+                    Set-Service -Name 'dot3svc' -StartupType Automatic -ErrorAction Stop
+                }
+            }
+            if ($svc.Status -ne 'Running') {
+                $started = Invoke-Change 'Started Wired AutoConfig service (dot3svc)' {
+                    Start-Service -Name 'dot3svc' -ErrorAction Stop
+                }
+                if ($started) { $changed = $true }
+            }
+            if ($changed -and $Ad) {
+                $netsh = Get-SysExe 'netsh.exe'
+                if (Test-Path -LiteralPath $netsh) {
+                    [void](Invoke-Native $netsh @('lan', 'reconnect', ("interface=`"{0}`"" -f $Ad.Name)) 5000)
+                }
+            }
+            return $changed
+        }
+    } catch {}
+    return $false
+}
+
+function Wait-StpConvergence($Ad, [int]$MaxWaitSec = 45) {
+    if (-not $Ad -or $script:IsDry) { return $true }
+    Write-Log 'INFO' ("Evaluating switch-port STP convergence on {0} (up to {1}s)..." -f $Ad.Name, $MaxWaitSec)
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $converged = $false
+    while ($sw.Elapsed.TotalSeconds -lt $MaxWaitSec) {
+        $curAd = Get-NetAdapter -Name $Ad.Name -ErrorAction SilentlyContinue
+        if ($curAd -and $curAd.Status -eq 'Up') {
+            $ip = Get-ValidIPv4 $curAd
+            if ($ip) {
+                $gw = @(Get-GatewaysV4 $curAd) | Select-Object -First 1
+                if ($gw) {
+                    $chk = Test-GatewayAlive $curAd $gw
+                    if ($chk.Alive) { $converged = $true; break }
+                } else {
+                    $converged = $true; break
+                }
+            }
+        }
+        Start-Sleep -Milliseconds 1000
+    }
+    $sw.Stop()
+    if ($converged) {
+        Write-Log 'OK' ("STP convergence achieved on {0} after {1}s." -f $Ad.Name, [math]::Round($sw.Elapsed.TotalSeconds, 1))
+    } else {
+        Write-Log 'WARN' ("STP convergence window expired after {0}s on {1}." -f [math]::Round($sw.Elapsed.TotalSeconds, 1), $Ad.Name)
+    }
+    return $converged
+}
+
 function Get-IPv4Interface($Ad) { return (Get-NetIPInterface -InterfaceIndex $Ad.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue) }
 
 function Get-DhcpFailureDiagnosis($Ad) { return (Get-DhcpFailureText (Get-DhcpErrorCode) ([string]$Ad.MacAddress)) }
@@ -581,220 +756,45 @@ function Shield-GatewayArp($Ctx, [string]$ConnState) {
         }
     }
 }
-# Layer 3 Path MTU Clamping: Eliminates campus router blackhole drops on large TCP frames
-# Ping.Send cannot bind to an adapter: with a second uplink the echo may leave through Wi-Fi/hotspot and the measured
-# MTU would then be clamped onto the Ethernet adapter. Only measure when the route to the target really uses $Ad.
-function Test-RouteViaAdapter($Ad, [string]$Target) {
-    try {
-        $r = @(Find-NetRoute -RemoteIPAddress $Target -ErrorAction Stop | Select-Object -First 1)
-        if ($r.Count -eq 0 -or $null -eq $r[0].InterfaceIndex) { return $true }
-        return ([int]$r[0].InterfaceIndex -eq [int]$Ad.ifIndex)
-    } catch { return $true }
-}
-function Get-PathMtuForAdapter($Ad, [string]$Target = '9.9.9.9') {
-    foreach ($t in @($Target, '1.1.1.1') | Where-Object { $_ } | Select-Object -Unique) {
-        if (-not (Test-RouteViaAdapter $Ad $t)) {
-            Write-Log 'INFO' ("Path-MTU probe to {0} skipped on {1}: route uses another interface." -f $t, $Ad.Name)
-            continue
-        }
-        if ($null -eq (Test-Ping $t 600)) { continue }
-        $res = Get-PathMtu $t
-        if ($null -ne $res) { return $res }
-    }
-    return $null
-}
-function Shield-PathMtu($Ctx, [string]$ConnState) {
-    if (-not $script:Cfg.AutoClampMtu) { return }
-    $ad = $Ctx.Ad
-    if ($Ctx.Env.Env -eq 'Other') {
-        $snap = Get-SubTable 'Snapshot' ([string]$ad.InterfaceGuid)
-        if ($snap.ContainsKey('Mtu')) {
-            $orig = [int]$snap['Mtu']
-            $ipif = Get-IPv4Interface $ad
-            if ($ipif -and [int]$ipif.NlMtu -ne $orig -and ($ConnState -ne 'Online' -or (Get-PathMtuForAdapter $ad) -ge $orig)) {
-                [void](Invoke-Change "Non-campus network supports full frame size: restoring MTU to $orig on $($ad.Name)" {
-                    Set-NetIPInterface -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -NlMtuBytes $orig -ErrorAction Stop
-                })
-                return
-            }
-        }
-    }
-    if ($ConnState -ne 'Online') { return }
-    if ($script:IsDry) { Write-Log 'DRY' 'Would measure the path MTU and lower the adapter MTU only if a blackhole is confirmed twice.'; return }
-    $ipif = Get-IPv4Interface $ad
-    if (-not $ipif -or [int]$ipif.NlMtu -lt 1500) { return }
-    $pmtu = Get-PathMtuForAdapter $ad
-    $candKey = 'MtuCandidate:' + [string]$ad.InterfaceGuid
-    $d = Get-MtuDecision $pmtu ([int]$ipif.NlMtu) $script:State.Misc[$candKey]
-    if ($d.Action -eq 'candidate') { $script:State.Misc[$candKey] = $d.Value; Write-Log 'INFO' ("A path MTU of {0} was measured; it is applied only if the next measurement agrees." -f $d.Value) }
-    elseif ($d.Action -eq 'clamp') {
-        Save-Original ([string]$ad.InterfaceGuid) 'Mtu' ([int]$ipif.NlMtu)
-        $v = [int]$d.Value
-        $ok = Invoke-Change "Adapter MTU lowered to $v on $($ad.Name) (path MTU confirmed twice)" { Set-NetIPInterface -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -NlMtuBytes $v -ErrorAction Stop }
-        if ($ok) { $script:State.Misc.Remove($candKey) }
-    } else { if ($null -ne $script:State.Misc[$candKey]) { $script:State.Misc.Remove($candKey) } }
-}
-# Layer 3 Route Shield: Verify reachability and prune unreachable duplicate default gateways
-function Shield-DefaultRoutes($Ctx) {
-    $ad = $Ctx.Ad
-    $gws = @(Get-GatewaysV4 $ad)
-    if ($gws.Count -le 1) { return }
-    if ($script:IsDry) { Write-Log 'DRY' "Would verify and prune unreachable duplicate default gateways on $($ad.Name)"; return }
-    $aliveGws = @()
-    $deadGws = @()
-    foreach ($gw in $gws) {
-        # a gateway under OUR ARP lock has an unknowable liveness here (its entry is permanent): never prune it on that basis
-        $locked = Get-NetNeighbor -InterfaceIndex $ad.ifIndex -IPAddress $gw -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { [string]$_.State -eq 'Permanent' } | Select-Object -First 1
-        if ($locked) { $aliveGws += $gw; continue }
-        $check = Test-GatewayAlive $ad $gw
-        if ($check.Alive) { $aliveGws += $gw } else { $deadGws += $gw }
-    }
-    if ($aliveGws.Count -ge 1 -and $deadGws.Count -ge 1) {
-        foreach ($dgw in $deadGws) {
-            $routes = @(Get-NetRoute -InterfaceIndex $ad.ifIndex -DestinationPrefix '0.0.0.0/0' -NextHop $dgw -AddressFamily IPv4 -ErrorAction SilentlyContinue)
-            if ($routes.Count -gt 0) {
-                Save-Original ([string]$ad.InterfaceGuid) ("PrunedRoute_$dgw") @{ DestinationPrefix = '0.0.0.0/0'; NextHop = $dgw; RouteMetric = [int]$routes[0].RouteMetric }
-            }
-            [void](Invoke-Change "Pruned dead default gateway route $dgw on $($ad.Name) (prevents blackhole routing)" {
-                Remove-NetRoute -InterfaceIndex $ad.ifIndex -DestinationPrefix '0.0.0.0/0' -NextHop $dgw -Confirm:$false -ErrorAction Stop
-            })
-        }
-    }
-}
-# Layer 3 Multi-Homing: Ensure Gigabit Ethernet takes priority over metered Wi-Fi hotspot when Ethernet is Online (Dual-Stack IPv4 & IPv6)
-# Pure decision (unit-tested). THREE mutually exclusive plans, so a NON-campus wired network can never be demoted and
-# never gets the NITJSR /32 host routes pointed at a foreign router. The v4.5.1 bug was one compound condition
-# ('not Campus OR not Online'): on a home/office network (Env = 'Other') that is perfectly Online it was true, so a
-# working gigabit link was pushed to metric 50, Wi-Fi boosted to 15 and the campus host routes injected off-campus.
-function Get-RouteMetricPlan([string]$EnvName, [string]$ConnState, [int]$OtherCount, [string]$Profile = '') {
-    if (-not $Profile) { $Profile = Get-RouteProfileName }
-    if ($Profile -eq 'Windows') {
-        return @{ Mode = 'Restore'; Ethernet = 0; Others = 0; CampusRoutes = $false; Why = 'Windows Default: automatic metrics enabled' }
-    }
-    if ($Profile -eq 'Ethernet') {
-        return @{ Mode = 'Promote'; Ethernet = 10; Others = 40; CampusRoutes = $false; Why = 'Forced Ethernet First: wired priority active' }
-    }
-    if ($Profile -eq 'Wifi') {
-        if ($OtherCount -le 0) {
-            return @{ Mode = 'Restore'; Ethernet = 0; Others = 0; CampusRoutes = $false; Why = 'Forced Wi-Fi First: no secondary uplink active, metrics restored' }
-        }
-        $hasCampus = ($EnvName -eq 'Campus')
-        return @{ Mode = 'Protect'; Ethernet = 50; Others = 15; CampusRoutes = $hasCampus; Why = 'Forced Wi-Fi First: hotspot primary, campus routes on Ethernet' }
-    }
-    # Adaptive (Default): Smart campus-aware multi-homing
-    if ($EnvName -ne 'Campus') {
-        # Branch 1: not the campus network. Nothing here justifies touching routing at all.
-        return @{ Mode = 'Restore'; Ethernet = 0; Others = 0; CampusRoutes = $false; Why = 'Non-campus network: metrics restored' }
-    }
-    if ($ConnState -ne 'Online') {
-        if ($OtherCount -gt 0) {
-            # Branch 2: campus portal still unauthenticated while a secondary uplink works: protect that uplink.
-            return @{ Mode = 'Protect'; Ethernet = 50; Others = 15; CampusRoutes = $true; Why = 'Campus link not authenticated: secondary uplink kept primary' }
-        }
-        # Branch 2b: nothing to protect and nothing verified: leave the system exactly as the user had it.
-        return @{ Mode = 'Restore'; Ethernet = 0; Others = 0; CampusRoutes = $false; Why = 'Ethernet not online and no secondary uplink active' }
-    }
-    # Branch 3: campus link verified online: Ethernet first, the rest behind it.
-    return @{ Mode = 'Promote'; Ethernet = 10; Others = 40; CampusRoutes = $false; Why = 'Campus link verified online: Ethernet first' }
-}
-function Shield-RouteMetrics($Ctx, [string]$ConnState) {
-    if (-not $script:Cfg.ManageMetrics) { return }
-    $ad = $Ctx.Ad
-    $others = @(Get-OtherUplinkAdapters)
-    $plan = Get-RouteMetricPlan ([string]$Ctx.Env.Env) $ConnState $others.Count
-    if ($plan.Mode -eq 'Restore') {
-        if (-not $script:IsDry) { Remove-CampusHostRoutes $ad.ifIndex }
-        if ((Test-MetricsManaged) -or (Get-RouteProfileName) -eq 'Windows') { Restore-InterfaceMetrics ([string]$plan.Why) }
-        return
-    }
-    # Branch 3 removes the campus host routes BEFORE promoting; branch 2 injects them AFTER demoting, so the
-    # portal/resolver path is built on a link that is already the lower-priority one.
-    if (-not $plan.CampusRoutes -and -not $script:IsDry) { Remove-CampusHostRoutes $ad.ifIndex }
-    foreach ($af in @('IPv4', 'IPv6')) {
-        $eth = Get-NetIPInterface -InterfaceIndex $ad.ifIndex -AddressFamily $af -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($eth -and [int]$eth.InterfaceMetric -ne [int]$plan.Ethernet) {
-            [void](Set-InterfaceMetric $eth ([int]$plan.Ethernet) ("Ethernet {0} metric set to {1} ({2})" -f $af, $plan.Ethernet, $plan.Why))
-        }
-    }
-    $targetWireless = @(Get-AllWirelessAdapters)
-    $allTargetOthers = @(@($others) + @($targetWireless) | Sort-Object ifIndex -Unique)
-    foreach ($w in $allTargetOthers) {
-        foreach ($af in @('IPv4', 'IPv6')) {
-            $wi = Get-NetIPInterface -InterfaceIndex $w.ifIndex -AddressFamily $af -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($wi -and [int]$wi.InterfaceMetric -ne [int]$plan.Others) {
-                [void](Set-InterfaceMetric $wi ([int]$plan.Others) ("{0} {1} metric set to {2} ({3})" -f $w.Name, $af, $plan.Others, $plan.Why))
-            }
-        }
-    }
-    if ($plan.CampusRoutes) {
-        # Portal + campus resolver stay reachable over THIS cable; the host route also carries a live redirect literal.
-        $redirect = $null
-        try { if ($script:ConnCache -and $script:ConnCache.Result -and $script:ConnCache.Result.Location) { $redirect = [uri][string]$script:ConnCache.Result.Location } } catch { $redirect = $null }
-        Ensure-CampusPortalPath $redirect
-    }
-}
-# ==============================================================================
-# LAYER 4 - ADAPTIVE DNS (measured, not hard-coded) + campus-domain split rule
-# ==============================================================================
-$script:WatchdogOn = $false
+# Layer 3 Subnet Calculus & Adaptive PMTUD (Universal Zero-Hardcode Standard)
+function Get-SubnetInfoFromLease($Ad) {
+    if (-not $Ad) { return $null }
+    $ipObj = Get-NetIPAddress -InterfaceIndex $Ad.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -notlike '169.254*' } | Select-Object -First 1
+    if (-not $ipObj -or -not $ipObj.IPAddress) { return $null }
+    $ipStr = [string]$ipObj.IPAddress
+    $prefix = [int]$ipObj.PrefixLength
+    if ($prefix -lt 0 -or $prefix -gt 32) { $prefix = 24 }
 
-function New-DnsQueryPacket([string]$Name, [int]$Id) {
-    $b = New-Object 'System.Collections.Generic.List[byte]'
-    $b.AddRange([byte[]]@(([byte](($Id -shr 8) -band 255)), ([byte]($Id -band 255)), 1, 0, 0, 1, 0, 0, 0, 0, 0, 0))
-    $cleanName = ([string]$Name).Trim().TrimEnd('.')
-    foreach ($l in $cleanName.Split('.')) { if ($l.Length -gt 0) { $b.Add([byte]$l.Length); $b.AddRange([System.Text.Encoding]::ASCII.GetBytes($l)) } }
-    $b.AddRange([byte[]]@(0, 0, 1, 0, 1))
-    return ,($b.ToArray())
-}
-# Real DNS-over-UDP probe, all servers in PARALLEL.
-#  - A fresh transaction id every round (a late answer to an earlier round can never be mistaken for this one).
-#  - Waits in the kernel with Socket.Select: wakes the instant a reply lands. (Start-Sleep rounds up to the 15.6 ms
-#    Windows timer tick, which made a 2 ms resolver look like 16 ms.)
-#  - Round 1 gets 1.5x the budget (cold resolver cache); a blocked resolver costs ONE round; a refused one returns sooner.
-#  - Sockets are bound to the Ethernet adapter's own IP (strong-host routing keeps them on that link).
-# Returns @{ server = medianMs or $null }.
-function Measure-ResolversFast([string[]]$Servers, [int]$TimeoutMs = 600, [int]$Port = 53, [string]$SourceIp) {
-    $result = @{}
-    $times = @{}
-    foreach ($s in $Servers) { $result[$s] = $null; $times[$s] = @() }
-    if (-not $PSBoundParameters.ContainsKey('SourceIp')) { $SourceIp = ''; if ($script:Cfg.ProbeSourceBind) { $SourceIp = Get-PrimarySourceIp } }
-    $alive = @($Servers)
-    $baseId = Get-Random -Minimum 1000 -Maximum 60000
-    $round = 0
-    foreach ($name in $script:Cfg.DnsTestNames) {
-        if ($alive.Count -eq 0) { break }
-        $round++
-        $id = ($baseId + $round) -band 65535
-        $hi = [byte](($id -shr 8) -band 255)
-        $lo = [byte]($id -band 255)
-        $budget = $TimeoutMs; if ($round -eq 1) { $budget = [int]($TimeoutMs * 1.5) }
-        [byte[]]$pkt = New-DnsQueryPacket $name $id
-        $pending = @{}
-        foreach ($s in $alive) {
-            $u = $null
-            try {
-                if ($SourceIp) {
-                    # A tentative/DAD address cannot be bound yet (WSAEADDRNOTAVAIL). Falling back to an unbound
-                    # socket keeps the measurement going; dropping the server here would report a good resolver as
-                    # 'blocked or down' purely because the adapter had not finished settling.
-                    try { $u = New-Object System.Net.Sockets.UdpClient((New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Parse($SourceIp), 0))) }
-                    catch { if ($u) { try { $u.Close() } catch {} }; $u = $null }
-                }
-                if (-not $u) { $u = New-Object System.Net.Sockets.UdpClient }
-                $u.Connect($s, $Port)
-                [void]$u.Send($pkt, $pkt.Length)
-                $pending[$s] = @{ U = $u; SW = [System.Diagnostics.Stopwatch]::StartNew() }
-            } catch { if ($u) { try { $u.Close() } catch {} } }
-        }
-        $clock = [System.Diagnostics.Stopwatch]::StartNew()
-        while ($pending.Count -gt 0 -and $clock.ElapsedMilliseconds -lt $budget) {
-            $slice = [int][math]::Min(25, [math]::Max(1, $budget - $clock.ElapsedMilliseconds))
-            $rl = New-Object System.Collections.ArrayList
-            foreach ($s in $pending.Keys) { [void]$rl.Add($pending[$s].U.Client) }
-            try { [System.Net.Sockets.Socket]::Select($rl, $null, $null, ($slice * 1000)) } catch { $rl.Clear(); Start-Sleep -Milliseconds 2 }
-            foreach ($s in @($pending.Keys)) {
-                $p = $pending[$s]
-                if ($rl.Contains($p.U.Client)) {
-                    $ms = $p.SW.Elapsed.TotalMilliseconds
-                    $ep = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Any, 0)
-                    try {
+    $ip = [System.Net.IPAddress]::Parse($ipStr)
+    $ipBytes = $ip.GetAddressBytes()
+    $maskBytes = New-Object byte[] 4
+    $netBytes = New-Object byte[] 4
+    $bcastBytes = New-Object byte[] 4
+
+    for ($i = 0; $i -lt 4; $i++) {
+        $bits = [math]::Max(0, [math]::Min(8, $prefix - ($i * 8)))
+        $maskBytes[$i] = [byte]$(if ($bits -eq 0) { 0 } else { 256 - [math]::Pow(2, 8 - $bits) })
+        $netBytes[$i]  = [byte]($ipBytes[$i] -band $maskBytes[$i])
+        $wildcard      = [byte](255 -bxor $maskBytes[$i])
+        $bcastBytes[$i]= [byte]($netBytes[$i] -bor $wildcard)
+    }
+
+    $minHostBytes = [byte[]]$netBytes.Clone()
+    $maxHostBytes = [byte[]]$bcastBytes.Clone()
+    if ($prefix -le 30) {
+        $minHostBytes[3] = [byte]($minHostBytes[3] + 1)
+        $maxHostBytes[3] = [byte]($maxHostBytes[3] - 1)
+    }
+
+    $totalHosts = if ($prefix -ge 31) { 0L } else { [int64]([math]::Pow(2, 32 - $prefix) - 2) }
+
+    return [PSCustomObject]@{
+        IPAddress      = $ipStr
+        PrefixLength   = $prefix
+        SubnetMask     = ($maskBytes -join '.')
+        NetworkAddress = ($netBytes -join '.')
+        Broadcast      = ($bcastBytes -join '.')
+        MinHost        = ($minHostBytes -join '.')
+        MaxHost        = ($maxHostBytes -join '.')
+        TotalHosts     = $totalHosts
+    }

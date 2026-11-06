@@ -1,3 +1,235 @@
+}
+
+function Find-OptimalPathMtu($Ad, [string]$Target = '') {
+    if (-not $Ad) { return 1500 }
+    if (-not $Target) {
+        $gws = @(Get-GatewaysV4 $Ad)
+        $Target = if ($gws.Count -gt 0) { $gws[0] } else { '9.9.9.9' }
+    }
+    $mtu = Get-PathMtuForAdapter $Ad $Target
+    if ($null -ne $mtu -and $mtu -ge 1200 -and $mtu -le 1500) {
+        return $mtu
+    }
+    return 1500
+}
+
+# Layer 3 Path MTU Clamping: Eliminates campus router blackhole drops on large TCP frames
+# Ping.Send cannot bind to an adapter: with a second uplink the echo may leave through Wi-Fi/hotspot and the measured
+# MTU would then be clamped onto the Ethernet adapter. Only measure when the route to the target really uses $Ad.
+function Test-RouteViaAdapter($Ad, [string]$Target) {
+    try {
+        $r = @(Find-NetRoute -RemoteIPAddress $Target -ErrorAction Stop | Select-Object -First 1)
+        if ($r.Count -eq 0 -or $null -eq $r[0].InterfaceIndex) { return $true }
+        return ([int]$r[0].InterfaceIndex -eq [int]$Ad.ifIndex)
+    } catch { return $true }
+}
+function Get-PathMtuForAdapter($Ad, [string]$Target = '9.9.9.9') {
+    foreach ($t in @($Target, '1.1.1.1') | Where-Object { $_ } | Select-Object -Unique) {
+        if (-not (Test-RouteViaAdapter $Ad $t)) {
+            Write-Log 'INFO' ("Path-MTU probe to {0} skipped on {1}: route uses another interface." -f $t, $Ad.Name)
+            continue
+        }
+        if ($null -eq (Test-Ping $t 600)) { continue }
+        $res = Get-PathMtu $t
+        if ($null -ne $res) { return $res }
+    }
+    return $null
+}
+function Shield-PathMtu($Ctx, [string]$ConnState) {
+    if (-not $script:Cfg.AutoClampMtu) { return }
+    $ad = $Ctx.Ad
+    if ($Ctx.Env.Env -eq 'Other') {
+        $snap = Get-SubTable 'Snapshot' ([string]$ad.InterfaceGuid)
+        if ($snap.ContainsKey('Mtu')) {
+            $orig = [int]$snap['Mtu']
+            $ipif = Get-IPv4Interface $ad
+            if ($ipif -and [int]$ipif.NlMtu -ne $orig -and ($ConnState -ne 'Online' -or (Get-PathMtuForAdapter $ad) -ge $orig)) {
+                [void](Invoke-Change "Non-campus network supports full frame size: restoring MTU to $orig on $($ad.Name)" {
+                    Set-NetIPInterface -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -NlMtuBytes $orig -ErrorAction Stop
+                })
+                return
+            }
+        }
+    }
+    if ($ConnState -ne 'Online') { return }
+    if ($script:IsDry) { Write-Log 'DRY' 'Would measure the path MTU and lower the adapter MTU only if a blackhole is confirmed twice.'; return }
+    $ipif = Get-IPv4Interface $ad
+    if (-not $ipif -or [int]$ipif.NlMtu -lt 1500) { return }
+    $pmtu = Get-PathMtuForAdapter $ad
+    $candKey = 'MtuCandidate:' + [string]$ad.InterfaceGuid
+    $d = Get-MtuDecision $pmtu ([int]$ipif.NlMtu) $script:State.Misc[$candKey]
+    if ($d.Action -eq 'candidate') { $script:State.Misc[$candKey] = $d.Value; Write-Log 'INFO' ("A path MTU of {0} was measured; it is applied only if the next measurement agrees." -f $d.Value) }
+    elseif ($d.Action -eq 'clamp') {
+        Save-Original ([string]$ad.InterfaceGuid) 'Mtu' ([int]$ipif.NlMtu)
+        $v = [int]$d.Value
+        $ok = Invoke-Change "Adapter MTU lowered to $v on $($ad.Name) (path MTU confirmed twice)" { Set-NetIPInterface -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -NlMtuBytes $v -ErrorAction Stop }
+        if ($ok) { $script:State.Misc.Remove($candKey) }
+    } else { if ($null -ne $script:State.Misc[$candKey]) { $script:State.Misc.Remove($candKey) } }
+}
+# Layer 3 Route Shield: Verify reachability and prune unreachable duplicate default gateways
+function Shield-DefaultRoutes($Ctx) {
+    $ad = $Ctx.Ad
+    $gws = @(Get-GatewaysV4 $ad)
+    if ($gws.Count -le 1) { return }
+    if ($script:IsDry) { Write-Log 'DRY' "Would verify and prune unreachable duplicate default gateways on $($ad.Name)"; return }
+    $aliveGws = @()
+    $deadGws = @()
+    foreach ($gw in $gws) {
+        # a gateway under OUR ARP lock has an unknowable liveness here (its entry is permanent): never prune it on that basis
+        $locked = Get-NetNeighbor -InterfaceIndex $ad.ifIndex -IPAddress $gw -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { [string]$_.State -eq 'Permanent' } | Select-Object -First 1
+        if ($locked) { $aliveGws += $gw; continue }
+        $check = Test-GatewayAlive $ad $gw
+        if ($check.Alive) { $aliveGws += $gw } else { $deadGws += $gw }
+    }
+    if ($aliveGws.Count -ge 1 -and $deadGws.Count -ge 1) {
+        foreach ($dgw in $deadGws) {
+            $routes = @(Get-NetRoute -InterfaceIndex $ad.ifIndex -DestinationPrefix '0.0.0.0/0' -NextHop $dgw -AddressFamily IPv4 -ErrorAction SilentlyContinue)
+            if ($routes.Count -gt 0) {
+                Save-Original ([string]$ad.InterfaceGuid) ("PrunedRoute_$dgw") @{ DestinationPrefix = '0.0.0.0/0'; NextHop = $dgw; RouteMetric = [int]$routes[0].RouteMetric }
+            }
+            [void](Invoke-Change "Pruned dead default gateway route $dgw on $($ad.Name) (prevents blackhole routing)" {
+                Remove-NetRoute -InterfaceIndex $ad.ifIndex -DestinationPrefix '0.0.0.0/0' -NextHop $dgw -Confirm:$false -ErrorAction Stop
+            })
+        }
+    }
+}
+# Layer 3 Multi-Homing: Ensure Gigabit Ethernet takes priority over metered Wi-Fi hotspot when Ethernet is Online (Dual-Stack IPv4 & IPv6)
+# Pure decision (unit-tested). THREE mutually exclusive plans, so a NON-campus wired network can never be demoted and
+# never gets the NITJSR /32 host routes pointed at a foreign router. The v4.5.1 bug was one compound condition
+# ('not Campus OR not Online'): on a home/office network (Env = 'Other') that is perfectly Online it was true, so a
+# working gigabit link was pushed to metric 50, Wi-Fi boosted to 15 and the campus host routes injected off-campus.
+function Get-RouteMetricPlan([string]$EnvName, [string]$ConnState, [int]$OtherCount, [string]$Profile = '') {
+    if (-not $Profile) { $Profile = Get-RouteProfileName }
+    if ($Profile -eq 'Windows') {
+        return @{ Mode = 'Restore'; Ethernet = 0; Others = 0; CampusRoutes = $false; Why = 'Windows Default: automatic metrics enabled' }
+    }
+    if ($Profile -eq 'Ethernet') {
+        return @{ Mode = 'Promote'; Ethernet = 10; Others = 40; CampusRoutes = $false; Why = 'Forced Ethernet First: wired priority active' }
+    }
+    if ($Profile -eq 'Wifi') {
+        if ($OtherCount -le 0) {
+            return @{ Mode = 'Restore'; Ethernet = 0; Others = 0; CampusRoutes = $false; Why = 'Forced Wi-Fi First: no secondary uplink active, metrics restored' }
+        }
+        $hasCampus = ($EnvName -eq 'Campus')
+        return @{ Mode = 'Protect'; Ethernet = 50; Others = 15; CampusRoutes = $hasCampus; Why = 'Forced Wi-Fi First: hotspot primary, campus routes on Ethernet' }
+    }
+    # Adaptive (Default): Smart campus-aware multi-homing
+    if ($EnvName -ne 'Campus') {
+        # Branch 1: not the campus network. Nothing here justifies touching routing at all.
+        return @{ Mode = 'Restore'; Ethernet = 0; Others = 0; CampusRoutes = $false; Why = 'Non-campus network: metrics restored' }
+    }
+    if ($ConnState -ne 'Online') {
+        if ($OtherCount -gt 0) {
+            # Branch 2: campus portal still unauthenticated while a secondary uplink works: protect that uplink.
+            return @{ Mode = 'Protect'; Ethernet = 50; Others = 15; CampusRoutes = $true; Why = 'Campus link not authenticated: secondary uplink kept primary' }
+        }
+        # Branch 2b: nothing to protect and nothing verified: leave the system exactly as the user had it.
+        return @{ Mode = 'Restore'; Ethernet = 0; Others = 0; CampusRoutes = $false; Why = 'Ethernet not online and no secondary uplink active' }
+    }
+    # Branch 3: campus link verified online: Ethernet first, the rest behind it.
+    return @{ Mode = 'Promote'; Ethernet = 10; Others = 40; CampusRoutes = $false; Why = 'Campus link verified online: Ethernet first' }
+}
+function Shield-RouteMetrics($Ctx, [string]$ConnState) {
+    if (-not $script:Cfg.ManageMetrics) { return }
+    $ad = $Ctx.Ad
+    $others = @(Get-OtherUplinkAdapters)
+    $plan = Get-RouteMetricPlan ([string]$Ctx.Env.Env) $ConnState $others.Count
+    if ($plan.Mode -eq 'Restore') {
+        if (-not $script:IsDry) { Remove-CampusHostRoutes $ad.ifIndex }
+        if ((Test-MetricsManaged) -or (Get-RouteProfileName) -eq 'Windows') { Restore-InterfaceMetrics ([string]$plan.Why) }
+        return
+    }
+    # Branch 3 removes the campus host routes BEFORE promoting; branch 2 injects them AFTER demoting, so the
+    # portal/resolver path is built on a link that is already the lower-priority one.
+    if (-not $plan.CampusRoutes -and -not $script:IsDry) { Remove-CampusHostRoutes $ad.ifIndex }
+    foreach ($af in @('IPv4', 'IPv6')) {
+        $eth = Get-NetIPInterface -InterfaceIndex $ad.ifIndex -AddressFamily $af -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($eth -and [int]$eth.InterfaceMetric -ne [int]$plan.Ethernet) {
+            [void](Set-InterfaceMetric $eth ([int]$plan.Ethernet) ("Ethernet {0} metric set to {1} ({2})" -f $af, $plan.Ethernet, $plan.Why))
+        }
+    }
+    $targetWireless = @(Get-AllWirelessAdapters)
+    $allTargetOthers = @(@($others) + @($targetWireless) | Sort-Object ifIndex -Unique)
+    foreach ($w in $allTargetOthers) {
+        foreach ($af in @('IPv4', 'IPv6')) {
+            $wi = Get-NetIPInterface -InterfaceIndex $w.ifIndex -AddressFamily $af -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($wi -and [int]$wi.InterfaceMetric -ne [int]$plan.Others) {
+                [void](Set-InterfaceMetric $wi ([int]$plan.Others) ("{0} {1} metric set to {2} ({3})" -f $w.Name, $af, $plan.Others, $plan.Why))
+            }
+        }
+    }
+    if ($plan.CampusRoutes) {
+        # Portal + campus resolver stay reachable over THIS cable; the host route also carries a live redirect literal.
+        $redirect = $null
+        try { if ($script:ConnCache -and $script:ConnCache.Result -and $script:ConnCache.Result.Location) { $redirect = [uri][string]$script:ConnCache.Result.Location } } catch { $redirect = $null }
+        Ensure-CampusPortalPath $redirect
+    }
+}
+# ==============================================================================
+# LAYER 4 - ADAPTIVE DNS (measured, not hard-coded) + campus-domain split rule
+# ==============================================================================
+$script:WatchdogOn = $false
+
+function New-DnsQueryPacket([string]$Name, [int]$Id) {
+    $b = New-Object 'System.Collections.Generic.List[byte]'
+    $b.AddRange([byte[]]@(([byte](($Id -shr 8) -band 255)), ([byte]($Id -band 255)), 1, 0, 0, 1, 0, 0, 0, 0, 0, 0))
+    $cleanName = ([string]$Name).Trim().TrimEnd('.')
+    foreach ($l in $cleanName.Split('.')) { if ($l.Length -gt 0) { $b.Add([byte]$l.Length); $b.AddRange([System.Text.Encoding]::ASCII.GetBytes($l)) } }
+    $b.AddRange([byte[]]@(0, 0, 1, 0, 1))
+    return ,($b.ToArray())
+}
+# Real DNS-over-UDP probe, all servers in PARALLEL.
+#  - A fresh transaction id every round (a late answer to an earlier round can never be mistaken for this one).
+#  - Waits in the kernel with Socket.Select: wakes the instant a reply lands. (Start-Sleep rounds up to the 15.6 ms
+#    Windows timer tick, which made a 2 ms resolver look like 16 ms.)
+#  - Round 1 gets 1.5x the budget (cold resolver cache); a blocked resolver costs ONE round; a refused one returns sooner.
+#  - Sockets are bound to the Ethernet adapter's own IP (strong-host routing keeps them on that link).
+# Returns @{ server = medianMs or $null }.
+function Measure-ResolversFast([string[]]$Servers, [int]$TimeoutMs = 600, [int]$Port = 53, [string]$SourceIp) {
+    $result = @{}
+    $times = @{}
+    foreach ($s in $Servers) { $result[$s] = $null; $times[$s] = @() }
+    if (-not $PSBoundParameters.ContainsKey('SourceIp')) { $SourceIp = ''; if ($script:Cfg.ProbeSourceBind) { $SourceIp = Get-PrimarySourceIp } }
+    $alive = @($Servers)
+    $baseId = Get-Random -Minimum 1000 -Maximum 60000
+    $round = 0
+    foreach ($name in $script:Cfg.DnsTestNames) {
+        if ($alive.Count -eq 0) { break }
+        $round++
+        $id = ($baseId + $round) -band 65535
+        $hi = [byte](($id -shr 8) -band 255)
+        $lo = [byte]($id -band 255)
+        $budget = $TimeoutMs; if ($round -eq 1) { $budget = [int]($TimeoutMs * 1.5) }
+        [byte[]]$pkt = New-DnsQueryPacket $name $id
+        $pending = @{}
+        foreach ($s in $alive) {
+            $u = $null
+            try {
+                if ($SourceIp) {
+                    # A tentative/DAD address cannot be bound yet (WSAEADDRNOTAVAIL). Falling back to an unbound
+                    # socket keeps the measurement going; dropping the server here would report a good resolver as
+                    # 'blocked or down' purely because the adapter had not finished settling.
+                    try { $u = New-Object System.Net.Sockets.UdpClient((New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Parse($SourceIp), 0))) }
+                    catch { if ($u) { try { $u.Close() } catch {} }; $u = $null }
+                }
+                if (-not $u) { $u = New-Object System.Net.Sockets.UdpClient }
+                $u.Connect($s, $Port)
+                [void]$u.Send($pkt, $pkt.Length)
+                $pending[$s] = @{ U = $u; SW = [System.Diagnostics.Stopwatch]::StartNew() }
+            } catch { if ($u) { try { $u.Close() } catch {} } }
+        }
+        $clock = [System.Diagnostics.Stopwatch]::StartNew()
+        while ($pending.Count -gt 0 -and $clock.ElapsedMilliseconds -lt $budget) {
+            $slice = [int][math]::Min(25, [math]::Max(1, $budget - $clock.ElapsedMilliseconds))
+            $rl = New-Object System.Collections.ArrayList
+            foreach ($s in $pending.Keys) { [void]$rl.Add($pending[$s].U.Client) }
+            try { [System.Net.Sockets.Socket]::Select($rl, $null, $null, ($slice * 1000)) } catch { $rl.Clear(); Start-Sleep -Milliseconds 2 }
+            foreach ($s in @($pending.Keys)) {
+                $p = $pending[$s]
+                if ($rl.Contains($p.U.Client)) {
+                    $ms = $p.SW.Elapsed.TotalMilliseconds
+                    $ep = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Any, 0)
+                    try {
                         $resp = $p.U.Receive([ref]$ep)
                         # must be OUR transaction id, a response (QR=1) and NOERROR, NXDOMAIN or REFUSED (pre-auth captive liveness)
                         $rcode = ($resp[3] -band 15)
@@ -566,235 +798,3 @@ function Shield-Mdns($Ctxs) {
         }
         if ($ok -and -not $script:IsDry) { $script:State.Misc['MdnsManaged'] = $true }
     } elseif ($anyOther) {
-        Restore-MdnsIfManaged 'Non-campus network: mDNS setting restored'
-    }
-}
-
-$script:DnsPolicyKey = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient'
-function Restore-SmartDnsIfManaged([string]$Why) {
-    $ok = Invoke-Change $Why {
-        Remove-ItemProperty -LiteralPath $script:DnsPolicyKey -Name DisableSmartNameResolution -ErrorAction SilentlyContinue
-    }
-    if ($ok -and -not $script:IsDry) { $script:State.Misc['SmartDnsManaged'] = $false }
-}
-function Shield-SmartDns($Ctxs) {
-    # CRITICAL MULTI-HOMING SAFETY: Smart Multi-Homed Name Resolution (SMHNR) MUST remain enabled.
-    # Setting DisableSmartNameResolution=1 breaks DNS on Wi-Fi and Bluetooth tethering
-    # whenever Ethernet is plugged into an unauthenticated captive portal.
-    # Therefore, we permanently ensure DisableSmartNameResolution is REMOVED so Windows queries all active uplinks.
-    try {
-        if (Test-Path -LiteralPath $script:DnsPolicyKey) {
-            $cur = (Get-ItemProperty -LiteralPath $script:DnsPolicyKey -Name DisableSmartNameResolution -ErrorAction SilentlyContinue).DisableSmartNameResolution
-            if ($null -ne $cur) {
-                [void](Invoke-Change 'Multi-homed DNS safety: removed DisableSmartNameResolution policy to ensure Wi-Fi/Ethernet resolution' {
-                    Remove-ItemProperty -LiteralPath $script:DnsPolicyKey -Name DisableSmartNameResolution -ErrorAction SilentlyContinue
-                })
-            }
-        }
-    } catch {}
-    if (-not $script:IsDry) { $script:State.Misc['SmartDnsManaged'] = $false }
-}
-
-$script:TcpParamKey = 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters'
-function Restore-TcpKeepAliveIfManaged([string]$Why) {
-    if ($script:State.Misc['TcpKeepAliveManaged'] -ne $true) { return }
-    $snap = Get-SubTable 'Snapshot' 'Global'
-    $origKat = $null; $origKai = $null
-    if ($snap.ContainsKey('KeepAliveTime')) { $origKat = $snap['KeepAliveTime'] }
-    if ($snap.ContainsKey('KeepAliveInterval')) { $origKai = $snap['KeepAliveInterval'] }
-    $ok = Invoke-Change $Why {
-        if ($null -eq $origKat) { Remove-ItemProperty -LiteralPath $script:TcpParamKey -Name KeepAliveTime -ErrorAction SilentlyContinue }
-        else { Set-ItemProperty -LiteralPath $script:TcpParamKey -Name KeepAliveTime -Value ([int]$origKat) -Type DWord -ErrorAction Stop }
-        if ($null -eq $origKai) { Remove-ItemProperty -LiteralPath $script:TcpParamKey -Name KeepAliveInterval -ErrorAction SilentlyContinue }
-        else { Set-ItemProperty -LiteralPath $script:TcpParamKey -Name KeepAliveInterval -Value ([int]$origKai) -Type DWord -ErrorAction Stop }
-    }
-    if ($ok -and -not $script:IsDry) { $script:State.Misc['TcpKeepAliveManaged'] = $false }
-}
-function Shield-TcpKeepAlive($Ctxs) {
-    $anyCampus = (@($Ctxs | Where-Object { $_.Env.Env -eq 'Campus' })).Count -gt 0
-    $anyOther  = (@($Ctxs | Where-Object { $_.Env.Env -eq 'Other' })).Count -gt 0
-    $curKat = $null; $curKai = $null
-    try { $curKat = (Get-ItemProperty -LiteralPath $script:TcpParamKey -Name KeepAliveTime -ErrorAction Stop).KeepAliveTime } catch {}
-    try { $curKai = (Get-ItemProperty -LiteralPath $script:TcpParamKey -Name KeepAliveInterval -ErrorAction Stop).KeepAliveInterval } catch {}
-    if ($anyCampus) {
-        if ($null -ne $curKat -and [int]$curKat -eq 60000 -and $null -ne $curKai -and [int]$curKai -eq 1000) { return }
-        Save-Original 'Global' 'KeepAliveTime' $curKat
-        Save-Original 'Global' 'KeepAliveInterval' $curKai
-        $ok = Invoke-Change 'TCP KeepAlive tuned to 60s (prevents campus firewall state-table timeouts on idle SSH/dev connections)' {
-            if (-not (Test-Path -LiteralPath $script:TcpParamKey)) { New-Item -Path $script:TcpParamKey -Force -ErrorAction Stop | Out-Null }
-            New-ItemProperty -LiteralPath $script:TcpParamKey -Name KeepAliveTime -Value 60000 -PropertyType DWord -Force -ErrorAction Stop | Out-Null
-            New-ItemProperty -LiteralPath $script:TcpParamKey -Name KeepAliveInterval -Value 1000 -PropertyType DWord -Force -ErrorAction Stop | Out-Null
-        }
-        if ($ok -and -not $script:IsDry) { $script:State.Misc['TcpKeepAliveManaged'] = $true }
-    } elseif ($anyOther) {
-        Restore-TcpKeepAliveIfManaged 'Non-campus network: TCP KeepAlive parameters restored'
-    }
-}
-
-function Shield-TcpAutoTuning {
-    try {
-        $tcpSetting = Get-NetTCPSetting -SettingName Internet -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($tcpSetting -and [string]$tcpSetting.AutoTuningLevelLocal -eq 'Disabled') {
-            Save-Original 'Global' 'TcpAutoTuning' 'Disabled'
-            [void](Invoke-Change 'TCP Window Auto-Tuning restored to Normal (was Disabled by third-party optimizer)' {
-                Set-NetTCPSetting -SettingName Internet -AutoTuningLevelLocal Normal -ErrorAction Stop
-            })
-        }
-    } catch {}
-}
-
-function Shield-SystemStack([switch]$Aggressive) {
-    if (-not $script:IsAdmin) { return }
-    # Pre-Guard: If unauthenticated Ethernet is up alongside an active Wi-Fi/secondary uplink, demote Ethernet metric first
-    # so system-wide DNS probes below do not route into an unauthenticated Ethernet cable before Layer 3 runs.
-    $ethUps = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })
-    $secUps = @(Get-OtherUplinkAdapters)
-    $onCampusNow = $false
-    foreach ($eu in $ethUps) {
-        $eInfo = Get-AdapterEnvironment $eu -UseCache
-        if ($eInfo.Env -eq 'Campus') { $onCampusNow = $true }
-        if ($secUps.Count -gt 0) {
-            $euIp = Get-ValidIPv4 $eu
-            if (-not $euIp -or (Get-InternetState -SourceIp $euIp).State -ne 'Online') {
-                Shield-RouteMetrics @{ Ad = $eu; Env = $eInfo } 'Captive'
-            }
-        }
-    }
-    # 0. Enforce persistence on previously neutralized rogue interceptor services and tasks ONLY while on campus
-    if ($onCampusNow) {
-        if ($script:State.Misc['NeutralizedServices'] -is [hashtable]) {
-            foreach ($svc in @($script:State.Misc['NeutralizedServices'].Keys)) {
-                $sv = Get-Service -Name $svc -ErrorAction SilentlyContinue
-                if ($sv -and ($sv.Status -eq 'Running' -or $sv.StartType -eq 'Automatic')) {
-                    [void](Invoke-Change "Enforced Manual on respawned interceptor service $svc" {
-                        Stop-Service -Name $svc -Force -ErrorAction SilentlyContinue
-                        Set-Service -Name $svc -StartupType Manual -ErrorAction SilentlyContinue
-                    })
-                }
-            }
-        }
-        if ($script:State.Misc['NeutralizedTasks'] -is [hashtable]) {
-            foreach ($tn in @($script:State.Misc['NeutralizedTasks'].Keys)) {
-                $tp = [string]$script:State.Misc['NeutralizedTasks'][$tn]
-                $tsk = Get-ScheduledTask -TaskName $tn -ErrorAction SilentlyContinue | Where-Object { $_.State -ne 'Disabled' }
-                if ($tsk) {
-                    [void](Invoke-Change "Re-disabled respawned 3rd-party updater task $tn" {
-                        Disable-ScheduledTask -TaskName $tn -TaskPath $tp -ErrorAction SilentlyContinue | Out-Null
-                    })
-                }
-            }
-        }
-    }
-    # 1. Ensure Core Windows Network Services are alive (registry fallback for ACL-locked services)
-    foreach ($svcName in @('Dhcp','Dnscache','NlaSvc','netprofm','WlanSvc','BFE','mpssvc','iphlpsvc')) {
-        $sv = Get-Service -Name $svcName -ErrorAction SilentlyContinue
-        if ($sv) {
-            if ($sv.StartType -eq 'Disabled') {
-                [void](Invoke-Change "Re-enabled critical Windows service $svcName" {
-                    try { Set-Service -Name $svcName -StartupType Automatic -ErrorAction Stop }
-                    catch {
-                        $sk = "HKLM:\SYSTEM\CurrentControlSet\Services\$svcName"
-                        if (Test-Path -LiteralPath $sk) { Set-ItemProperty -LiteralPath $sk -Name Start -Value 2 -Type DWord -Force -ErrorAction SilentlyContinue }
-                    }
-                })
-            }
-            if ($sv.Status -ne 'Running') {
-                [void](Invoke-Change "Started critical Windows service $svcName" { Start-Service -Name $svcName -ErrorAction SilentlyContinue })
-            }
-        }
-    }
-    # 2. Dynamic Detection & Neutralization of Rogue DNS Interceptors, WFP Callouts & Loopback Stubs
-    $wfpDnsRegex = 'portmaster|nextdns|yogadns|dnscrypt|acrylic|adguard|stubby|warp-svc'
-    $dnsBroken = $false
-    $dnsEvidence = ''
-    $testRecs = @(Resolve-DnsName -Name 'accounts.google.com' -QuickTimeout -ErrorAction SilentlyContinue)
-    $hasA = [bool]($testRecs | Where-Object { $_.IPAddress -and [string]$_.Type -eq 'A' })
-    $hasPoison = @($testRecs | Where-Object { ([string]$_.Name -match 'inf\.portmaster|blocked\.|sinkhole|dns\.local') -or ([string]$_.Strings -match 'unsuccessful|expired|blocked|refused|failure') }).Count -gt 0
-    if ($hasPoison) {
-        $dnsBroken = $true
-        $dnsEvidence = 'synthetic interceptor error record detected'
-    } elseif (-not $hasA) {
-        $ethUps = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })
-        $stackSrc = if ($ethUps.Count -gt 0) { Get-ValidIPv4 $ethUps[0] } else { '' }
-        $rawDns = Measure-ResolversFast @('8.8.8.8','1.1.1.1') 400 53 $stackSrc
-        $rawNet = (Test-TcpPort '8.8.8.8' 53 600 $stackSrc) -or (Test-TcpPort '1.1.1.1' 443 600 $stackSrc)
-        if (@($rawDns.Values | Where-Object { $null -ne $_ }).Count -gt 0 -or $rawNet -or $Aggressive) {
-            $dnsBroken = $true
-            $dnsEvidence = if ($Aggressive) { 'system resolver failed during aggressive remediation' } else { 'system resolver failed while raw IPv4 internet (8.8.8.8 / 1.1.1.1) is alive' }
-        }
-    }
-    if ($dnsBroken) {
-        $roguePids = [System.Collections.Generic.HashSet[int]]::new()
-        foreach ($ep in @(Get-NetUDPEndpoint -LocalPort 53 -ErrorAction SilentlyContinue)) {
-            if ($ep.OwningProcess -gt 4) { [void]$roguePids.Add([int]$ep.OwningProcess) }
-        }
-        foreach ($ep in @(Get-NetTCPConnection -LocalPort 53 -ErrorAction SilentlyContinue)) {
-            if ($ep.OwningProcess -gt 4) { [void]$roguePids.Add([int]$ep.OwningProcess) }
-        }
-        # Step 1: Clean loopback DNS from physical adapters first to see if that resolves the issue without killing services.
-        # The ORIGINAL resolver string is snapshotted BEFORE the write and the adapter is marked managed, so this bypass is
-        # undone exactly (and only) when Lan Fixer is finished with the link: no adapter keeps a substituted resolver.
-        $loopbackCleared = $false
-        foreach ($na in @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' })) {
-            $naGuid = [string]$na.InterfaceGuid
-            $dnsAddrs = @(Get-DnsClientServerAddress -InterfaceIndex $na.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses
-            if (@($dnsAddrs | Where-Object { $_ -match '^(127\.|::1)' }).Count -gt 0) {
-                Save-Original $naGuid 'DnsStatic' (Get-StaticDnsString $naGuid)
-                $okLoop = Invoke-Change "Bypassed local loopback DNS on adapter $($na.Name) -> DHCP automatic" {
-                    Set-DnsClientServerAddress -InterfaceIndex $na.ifIndex -ResetServerAddresses -ErrorAction SilentlyContinue
-                }
-                if ($okLoop -and -not $script:IsDry) { (Get-SubTable 'Dns' $naGuid).Managed = $true }
-                if ($okLoop) { $loopbackCleared = $true }
-            }
-        }
-        $skipKill = $false
-        if ($loopbackCleared -and -not $Aggressive) {
-            Clear-DnsClientCache -ErrorAction SilentlyContinue
-            $testAgain = @(Resolve-DnsName -Name 'accounts.google.com' -QuickTimeout -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -and [string]$_.Type -eq 'A' })
-            if ($testAgain.Count -gt 0) {
-                Write-Log 'OK' 'DNS resolution restored by bypassing loopback adapter settings (local proxy service preserved).'
-                $skipKill = $true
-            }
-        }
-        if (-not $loopbackCleared -and -not $hasPoison -and -not $Aggressive) {
-            Write-Log 'INFO' 'System resolver failed, but nothing points at a local resolver and no synthetic error record was seen; local processes and services were left alone.'
-            $skipKill = $true
-        }
-        if (-not $skipKill) {
-            $matchRegex = $wfpDnsRegex
-            $rogueProcs = @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
-                ($_.ProcessName -match $matchRegex) -and
-                ($roguePids.Contains($_.Id) -or $Aggressive -or $hasPoison) -and
-                ($_.ProcessName -notmatch '^(svchost|System|Idle|services|lsass|csrss|smss|wininit)$')
-            })
-            $rogueSvcs = @(Get-Service -ErrorAction SilentlyContinue | Where-Object {
-                ($_.Status -eq 'Running') -and ($_.Name -match $matchRegex -or $_.DisplayName -match $matchRegex)
-            })
-            if ($rogueProcs.Count -gt 0 -or $rogueSvcs.Count -gt 0) {
-                [void](Invoke-Change ("Neutralized rogue/broken local DNS interceptor ($dnsEvidence)") {
-                    if ($script:State.Misc['NeutralizedServices'] -isnot [hashtable]) { $script:State.Misc['NeutralizedServices'] = @{} }
-                    foreach ($s in $rogueSvcs) {
-                        Write-Log 'INFO' ("Stopping rogue DNS interceptor service $($s.Name) (startup set to Manual)...")
-                        if (-not $script:State.Misc['NeutralizedServices'].ContainsKey($s.Name)) {
-                            $isDelayed = [bool]((Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\$($s.Name)" -ErrorAction SilentlyContinue).DelayedAutostart)
-                            $script:State.Misc['NeutralizedServices'][$s.Name] = @{
-                                StartType   = [string]$s.StartType
-                                DelayedAuto = $isDelayed
-                                WasRunning  = ($s.Status -eq 'Running')
-                            }
-                        }
-                        Stop-Service -Name $s.Name -Force -ErrorAction SilentlyContinue
-                        Set-Service -Name $s.Name -StartupType Manual -ErrorAction SilentlyContinue
-                    }
-                    foreach ($p in $rogueProcs) {
-                        Write-Log 'INFO' ("Stopping rogue DNS interceptor process $($p.ProcessName) (PID $($p.Id))...")
-                        Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
-                    }
-                    # Neutralize any auto-restart / updater scheduled tasks for these interceptors
-                    $allTasks = @(Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object {
-                        $_.State -ne 'Disabled' -and
-                        ($_.TaskName -match $matchRegex -or $_.TaskPath -match $matchRegex) -and
-                        $_.TaskName -notmatch 'LanFixer|A07'
-                    })
-                    if ($allTasks.Count -gt 0) {
-                        if ($script:State.Misc['NeutralizedTasks'] -isnot [hashtable]) { $script:State.Misc['NeutralizedTasks'] = @{} }
