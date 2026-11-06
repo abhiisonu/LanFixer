@@ -1,3 +1,253 @@
+        $tk = "HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters\Interfaces\Tcpip_$guid"
+        if (-not (Test-Path -LiteralPath $tk)) { continue }
+        $cur = (Get-ItemProperty -LiteralPath $tk -Name NetbiosOptions -ErrorAction SilentlyContinue).NetbiosOptions
+        if ($null -eq $cur) { $cur = 0 }
+        if ($ctx.Env.Env -eq 'Campus' -and [int]$cur -ne 2) {
+            Save-Original $guid 'NetBios' ([int]$cur)
+            [void](Invoke-Change "NetBIOS-over-TCP off on $($ctx.Ad.Name) (cuts broadcast chatter that hostel switches storm-limit)" {
+                Set-ItemProperty -LiteralPath $tk -Name NetbiosOptions -Value 2 -Type DWord -ErrorAction Stop
+            })
+        } elseif ($ctx.Env.Env -eq 'Other' -and [int]$cur -eq 2) {
+            $snap = Get-SubTable 'Snapshot' $guid
+            if ($snap.ContainsKey('NetBios')) {
+                $orig = [int]$snap['NetBios']
+                [void](Invoke-Change "Non-campus network: NetBIOS restored to $orig on $($ctx.Ad.Name)" {
+                    Set-ItemProperty -LiteralPath $tk -Name NetbiosOptions -Value $orig -Type DWord -ErrorAction Stop
+                })
+            }
+        }
+    }
+    # NCSI: only repair if something (a "tweak" tool) switched active probing off.
+    $nk = 'HKLM:\SYSTEM\CurrentControlSet\Services\NlaSvc\Parameters\Internet'
+    $probe = (Get-ItemProperty -LiteralPath $nk -Name EnableActiveProbing -ErrorAction SilentlyContinue).EnableActiveProbing
+    if ($null -ne $probe -and [int]$probe -eq 0) {
+        Save-Original 'Global' 'Ncsi' 0
+        [void](Invoke-Change 'Windows connectivity probing re-enabled (it was switched off)' { Set-ItemProperty -LiteralPath $nk -Name EnableActiveProbing -Value 1 -Type DWord -ErrorAction Stop })
+    }
+    # Internet works but Windows still says "no internet": nudge the Network List service (rate-limited).
+    if ($ConnState -eq 'Online' -and -not $script:IsDry -and (Test-Elapsed 'NlaNudge' 900)) {
+        foreach ($ctx in $Ctxs) {
+            $np = Get-NetConnectionProfile -InterfaceIndex $ctx.Ad.ifIndex -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($np -and [string]$np.IPv4Connectivity -ne 'Internet') {
+                Start-Sleep -Seconds 5
+                $np = Get-NetConnectionProfile -InterfaceIndex $ctx.Ad.ifIndex -ErrorAction SilentlyContinue | Select-Object -First 1
+                if ($np -and [string]$np.IPv4Connectivity -ne 'Internet') {
+                    Set-StateTime 'NlaNudge'
+                    [void](Invoke-Change 'Network List service refreshed (Windows showed "no internet" while it works)' { Restart-Service -Name NlaSvc -Force -ErrorAction Stop })
+                    break
+                }
+            }
+        }
+    }
+}
+
+# ==============================================================================
+# LEGACY CLEAN-UP (v1 left hosts pins, manual metrics, an old task)
+# ==============================================================================
+function Remove-LegacyHostsEntries {
+    $hp = Join-Path $script:Sys32 'drivers\etc\hosts'
+    if (-not (Test-Path -LiteralPath $hp)) { return }
+    try {
+        $raw = [System.IO.File]::ReadAllText($hp)
+        $lines = $raw -split "\r?\n"
+        $keep = @($lines | Where-Object {
+            $_ -notmatch [regex]::Escape($script:Cfg.PortalHost) -and
+            $_ -notmatch 'Lan Fixer Portal Immunization|A07 Portal Immunization' -and
+            $_ -notmatch '(?i)^\s*(?:127\.0\.0\.1|0\.0\.0\.0|::1)\s+(?:accounts\.google\.com|github\.com|connectivitycheck\.gstatic\.com)'
+        })
+        if ($keep.Count -eq $lines.Count) { return }
+        if ($script:StoreReady -and -not $script:IsDry) { Copy-Item -LiteralPath $hp -Destination (Join-Path $script:StoreDir 'hosts.before-cleanup.bak') -Force -ErrorAction SilentlyContinue }
+        $text = ($keep -join "`r`n")
+        [void](Invoke-Change 'Removed old Lan Fixer v1 entries from the hosts file (backup kept)' { [System.IO.File]::WriteAllText($hp, $text, (New-Object System.Text.UTF8Encoding($false))) })
+    } catch { Write-Log 'WARN' ("hosts cleanup skipped: " + $_.Exception.Message) }
+}
+function Invoke-LegacyMigration {
+    if (-not $script:IsAdmin -or $script:State.Misc['Migrated'] -eq $true) { return }
+    Remove-LegacyHostsEntries
+    if (-not $script:IsDry) {
+        try {
+            if (Test-Path -LiteralPath $script:DnsPolicyKey) {
+                Remove-ItemProperty -LiteralPath $script:DnsPolicyKey -Name DisableSmartNameResolution -ErrorAction SilentlyContinue
+            }
+        } catch {}
+    }
+    if (-not $script:IsDry) { [void](Invoke-Native (Get-SysExe 'schtasks.exe') @('/delete', '/tn', 'A07_NetShield', '/f') 8000) }
+    # v1 forced manual metrics 10/12/14/16/25 on adapters; hand them back to Windows.
+    foreach ($i in @(Get-NetIPInterface -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.AutomaticMetric -eq 'Disabled' -and $_.InterfaceAlias -match 'Ethernet|Wi-?Fi|Wireless|LAN' -and @(10,12,14,16,25) -contains [int]$_.InterfaceMetric })) {
+        [void](Invoke-Change "Automatic metric re-enabled on $($i.InterfaceAlias) (v1 had pinned it)" { Set-NetIPInterface -InterfaceIndex $i.ifIndex -AddressFamily IPv4 -AutomaticMetric Enabled -ErrorAction Stop })
+    }
+    # v1 wrote PnPCapabilities as a string (ignored by Windows); v2 rewrites it as a proper DWORD in Layer 1.
+    $legacy = Join-Path $env:ProgramData 'LanFixer\dns_profile.cfg'
+    if (Test-Path -LiteralPath $legacy) {
+        # A legacy file that says ResetDHCP records an action that already ran; importing it would freeze the profile
+        # on a value that can never apply again, so the reset's own outcome (Adaptive) is what gets migrated.
+        try { $p = (Get-Content -LiteralPath $legacy -Raw).Trim(); if ($p -eq 'ResetDHCP') { $p = 'Adaptive' }; if (@('Adaptive','DHCP','Hybrid','Cloudflare') -contains $p) { $script:State.Misc['DnsProfile'] = $p } } catch {}
+        if (-not $script:IsDry) { Remove-Item -LiteralPath $legacy -Force -ErrorAction SilentlyContinue; Remove-Item -LiteralPath (Join-Path $env:ProgramData 'LanFixer\dad_state.cfg') -Force -ErrorAction SilentlyContinue }
+    }
+    if (-not $script:IsDry) { $script:State.Misc['Migrated'] = $true; Save-State }
+}
+
+# ==============================================================================
+# THE PIPELINE
+# ==============================================================================
+function Invoke-HealPipeline([switch]$SkipSystemStack) {
+    $res = @{ Conn = 'Offline'; Campus = $false; AnyUp = $false; Problem = 'NoAdapter' }
+    Invoke-LegacyMigration
+    $script:WatchdogOn = Test-WatchdogInstalled
+    Update-WatchdogIfStale
+    if (@(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' }).Count -eq 0) { Invoke-RoamingCleanup }
+    if (-not $SkipSystemStack) { Shield-SystemStack }
+    $ads = @(Get-EthernetAdapters)
+    if ($ads.Count -gt 0) {
+        $anyUp = @($ads | Where-Object { $_.Status -eq 'Up' }).Count -gt 0
+        foreach ($a in $ads) {
+            if ($a.Status -eq 'Disabled' -and $Mode -ne 'AutoHeal' -and -not $anyUp) {   # a manual repair may re-enable it; the watchdog never overrides a choice you made
+                [void](Invoke-Change "Enabling disabled physical Ethernet adapter $($a.Name)" {
+                    Enable-NetAdapter -Name $a.Name -Confirm:$false -ErrorAction Stop
+                })
+            }
+        }
+    }
+    if ($ads.Count -eq 0) { Write-Log 'WARN' 'No physical Ethernet adapter found (Wi-Fi/system stack still shielded).'; Invoke-RoamingCleanup; Save-State; return $res }
+
+    Write-Log 'STEP' 'LAYER 1/7  Hardware interface & power state verification'
+    foreach ($a in $ads) { Shield-Hardware $a; [void](Resolve-DuplexFlap $a); [void](Optimize-PhySiliconBuffers $a) }
+    Invoke-LogIntelligence $ads
+    $didHwRestart = $false
+    if (-not $script:IsDry) {
+        foreach ($g in @($script:PendingRestart.Keys)) {
+            $nm = $script:PendingRestart[$g]
+            if (Test-Elapsed ("Restart:" + $g) 300) {
+                Set-StateTime ("Restart:" + $g)
+                if (Invoke-Change "Zero-reboot link reset on $nm to apply driver settings" { $rAd = Get-NetAdapter -Name $nm -ErrorAction SilentlyContinue; if ($rAd) { Reset-PhysicalAdapterHardware $rAd } else { Restart-NetAdapter -Name $nm -Confirm:$false -ErrorAction Stop } }) { $didHwRestart = $true }
+                $script:PendingRestart.Remove($g)
+            }
+        }
+    }
+    $needLongSettling = $didHwRestart
+    if (-not $needLongSettling) {
+        foreach ($a in $ads) {
+            if ($a.Status -eq 'Up' -and -not (Get-ValidIPv4 $a)) { $needLongSettling = $true; break }
+        }
+    }
+    Wait-LinkSettling $(if ($needLongSettling) { ([int]$script:Cfg.StpMaxSec * 1000) } else { 12000 })
+    $ups = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })
+    if ($ups.Count -eq 0) {
+        Write-Log 'WARN' 'Ethernet link is down: plug in the cable / wall port, then run again.'
+        $res.Problem = 'NoLink'
+        foreach ($a in $ads) { (Get-SubTable 'Env' ([string]$a.InterfaceGuid)).Up = $false }
+        Invoke-RoamingCleanup
+        Save-State
+        return $res
+    }
+    $res.AnyUp = $true
+    if ($script:State.Misc -and $script:State.Misc['LinkDownSince']) { $script:State.Misc.Remove('LinkDownSince') }
+    $ctxs = @()
+    foreach ($a in $ups) { $ctxs += @{ Ad = $a; Env = (Get-AdapterEnvironment $a); Repaired = $false } }
+    foreach ($c in $ctxs) {
+        Write-Log 'INFO' ("{0}: {1} (score {2}{3}) {4}" -f $c.Ad.Name, $c.Env.Env.ToUpper(), $c.Env.Score, $(if ($c.Env.Sticky) { ', last known' } else { '' }), (($c.Env.Evidence) -join '; '))
+    }
+
+    Write-Log 'STEP' 'LAYER 2/7  Data link & DHCP lease renewal'
+    foreach ($c in $ctxs) { [void](Shield-Dot3Svc $c.Ad); Shield-DataLink $c }
+    $conn = (Get-InternetState -NoCache).State
+
+    Write-Log 'STEP' 'LAYER 3/7  Gateway ARP integrity & route metrics'
+    foreach ($c in $ctxs) { Shield-GatewayArp $c $conn; Shield-RouteMetrics $c $conn; Shield-PathMtu $c $conn; Shield-DefaultRoutes $c }
+
+    Write-Log 'STEP' 'LAYER 4/7  Adaptive DNS configuration & resolver health'
+    foreach ($c in $ctxs) { [void](Shield-TcpOffloads $c.Ad); Shield-Dns $c $conn }
+
+    $connAfterDns = (Get-InternetState -NoCache).State
+    if ($connAfterDns -eq 'Online' -and $conn -ne 'Online') {
+        $conn = 'Online'
+        foreach ($c in $ctxs) { Shield-RouteMetrics $c $conn; Shield-PathMtu $c $conn }
+    }
+
+    Write-Log 'STEP' 'LAYER 5/7  Captive portal routing & reachability'
+    Shield-Portal $ctxs
+
+    Write-Log 'STEP' 'LAYER 6/7  Network profile & firewall security'
+    foreach ($c in $ctxs) { Shield-Profile $c }
+
+    Write-Log 'STEP' 'LAYER 7/7  Network stack & service synchronization'
+    Shield-Services $ctxs $conn
+
+    foreach ($c in $ctxs) {
+        $h = Get-SubTable 'Env' ([string]$c.Ad.InterfaceGuid)
+        $h.Up = $true
+        $h.Ip = [string](Get-ValidIPv4 $c.Ad)
+        if ($c.Env.Env -eq 'Campus') { $res.Campus = $true }
+    }
+    if (-not $script:IsDry) { Set-StateTime 'LastFull'; $script:State.Misc['Version'] = $script:Version; Save-State }
+    $res.Conn = (Get-InternetState -NoCache).State
+    $res.Ip = if ($ups.Count -gt 0) { [string](Get-ValidIPv4 $ups[0]) } else { '' }
+    $res.Problem = (Get-AdapterHealth $ups[0]).Problem
+    if (Clear-FailStreakIfRecovered ([string]$res.Problem)) { Save-State }
+    return $res
+}
+
+# ==============================================================================
+# PORTAL OPENING / LOGIN WATCH
+# ==============================================================================
+function Test-TrustedPortalHost([string]$HostName) {
+    $h = ([string]$HostName).ToLower().TrimEnd('.')
+    if (-not $h) { return $false }
+    if ($h -eq ([string]$script:Cfg.PortalHost).ToLower() -or $h -eq [string]$script:Cfg.PortalIp) { return $true }
+    $tmpIp = $null
+    if ([System.Net.IPAddress]::TryParse($h, [ref]$tmpIp) -and (Test-AllowedPortalIp $h)) { return $true }
+    $doms = @(([string]$script:Cfg.CampusDomain).ToLower().Trim('.'))
+    $discDom = ([string]$script:State.Misc['DiscoveredDomain']).ToLower().Trim('.')
+    if ($discDom -and $doms -notcontains $discDom) { $doms += $discDom }
+    foreach ($dom in @($doms | Where-Object { $_ })) {
+        if ($h -eq $dom -or $h.EndsWith('.' + $dom)) { return $true }
+    }
+    return $false
+}
+# Returns the redirect URL only if it is an absolute http(s) URL on a campus-controlled host (no user-info tricks).
+# Anything else comes back empty: a rogue device on the LAN must not be able to steer your browser with a fake 302.
+function Get-SafePortalUrl([string]$Location) {
+    if (-not $Location) { return '' }
+    $u = $null
+    try { $u = [uri]$Location } catch { return '' }
+    if (-not $u.IsAbsoluteUri) { return '' }
+    if ($u.Scheme -ne 'http' -and $u.Scheme -ne 'https') { return '' }
+    if ($u.UserInfo) { return '' }
+    if (-not (Test-TrustedPortalHost $u.Host)) { return '' }
+    return [string]$u.AbsoluteUri
+}
+# Dynamic first (survives a changed port / zone / path), configured anchor otherwise (already logged in, probe dropped, untrusted host).
+function Resolve-PortalUrl($Inet) {
+    $anchor = Get-ActivePortalUrl
+    if ($Inet.State -ne 'Captive' -or -not $Inet.Location) { return $anchor }
+    $live = Get-SafePortalUrl ([string]$Inet.Location)
+    if ($live) {
+        if ($live -ne $anchor) { try { Write-Log 'INFO' ('Using the login page the network just redirected to: ' + ([uri]$live).GetLeftPart([System.UriPartial]::Path)) } catch {} }
+        return $live
+    }
+    $rh = ''
+    try { $rh = ([uri][string]$Inet.Location).Host } catch {}
+    Write-Log 'WARN' ("The captive redirect points to '{0}', which is not on the campus domain or the configured portal, so it was NOT opened automatically. Opening the configured portal instead." -f $rh)
+    return $anchor
+}
+# ==============================================================================
+# DPAPI SECURE CREDENTIAL VAULT (Machine + Hardware Entropy, AES/DPAPI)
+# ==============================================================================
+$script:VaultFile = Join-Path $script:StoreDir 'vault.bin'
+
+# CREDENTIAL trust: stricter than Test-TrustedPortalHost on purpose. The DNS suffix a network's own DHCP hands out is
+# attacker-controlled on a rogue LAN, so it must never decide where the saved password goes. Only the configured
+# PortalHost / PortalIp / CampusDomain qualify (set them in config.json for another institution), or an IP literal,
+# which Invoke-TlsHttp still only talks to with a Windows-valid or user-pinned certificate.
+function Test-CredentialPortalHost([string]$HostName) {
+    $h = ([string]$HostName).ToLowerInvariant().TrimEnd('.')
+    if (-not $h) { return $false }
+    if ($script:Cfg.PortalHost -and $h -eq ([string]$script:Cfg.PortalHost).ToLowerInvariant().TrimEnd('.')) { return $true }
+    if ($script:Cfg.PortalIp -and $h -eq [string]$script:Cfg.PortalIp) { return $true }
+    $tmpIp = $null
+    if ([System.Net.IPAddress]::TryParse($h, [ref]$tmpIp)) { return [bool](Test-AllowedPortalIp $h) }
+    $dom = ([string]$script:Cfg.CampusDomain).ToLowerInvariant().Trim('.')
+    return [bool]($dom -and ($h -eq $dom -or $h.EndsWith('.' + $dom)))
 }
 function Get-CredentialPortalUrl([string]$Location) {
     if (-not $Location) { return '' }
@@ -548,253 +798,3 @@ function Show-NativeToast([string]$Title, [string]$Message) {
 function Invoke-RecoveryToast([string]$Ip = '') {
     if (-not (Test-Elapsed 'LastRecoveryToast' 600)) { return }
     $title = 'Lan Fixer'
-    $msg   = if ($Ip) { "Ethernet is back online ($Ip)! You can turn off a mobile hotspot." } else { 'Ethernet is back online! You can turn off a mobile hotspot.' }
-    if (Test-IsSystem) {
-        $u = $null
-        try { $u = (Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).UserName } catch {}
-        if (-not $u) { return }
-        [void](Invoke-Native (Get-SysExe 'schtasks.exe') @('/run', '/tn', $script:Cfg.TaskNotify) 8000)
-    } else {
-        Show-NativeToast $title $msg
-    }
-    Set-StateTime 'LastRecoveryToast'
-}
-
-function New-PortalTaskXml([string]$Url) {
-    if (-not $Url) { $Url = [string]$script:Cfg.PortalUrl }
-    $url = [System.Security.SecurityElement]::Escape($Url)
-    return @"
-<?xml version="1.0" encoding="UTF-16"?>
-<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
-  <RegistrationInfo>
-    <Description>Opens the campus login page in the signed-in user's browser. Started on demand by Lan Fixer.</Description>
-    <Author>Lan Fixer</Author>
-  </RegistrationInfo>
-  <Triggers />
-  <Principals>
-    <Principal id="Users">
-      <GroupId>S-1-5-32-545</GroupId>
-      <RunLevel>LeastPrivilege</RunLevel>
-    </Principal>
-  </Principals>
-  <Settings>
-    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
-    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
-    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
-    <AllowStartOnDemand>true</AllowStartOnDemand>
-    <Enabled>true</Enabled>
-    <Hidden>false</Hidden>
-    <ExecutionTimeLimit>PT1M</ExecutionTimeLimit>
-  </Settings>
-  <Actions Context="Users">
-    <Exec>
-      <Command>%SystemRoot%\System32\rundll32.exe</Command>
-      <Arguments>url.dll,FileProtocolHandler $url</Arguments>
-    </Exec>
-  </Actions>
-</Task>
-"@
-}
-function Register-LfTask([string]$Name, [string]$Xml, [string]$FileName) {
-    $xmlPath = Join-Path $script:StoreDir $FileName
-    return (Invoke-Change "Scheduled task '$Name' registered" {
-        [System.IO.File]::WriteAllText($xmlPath, $Xml, [System.Text.Encoding]::Unicode)
-        $r = Invoke-Native (Get-SysExe 'schtasks.exe') @('/create', '/tn', $Name, '/xml', $xmlPath, '/f') 20000
-        if ($r.ExitCode -ne 0) { throw ("schtasks said: " + $r.Output.Trim()) }
-    })
-}
-function Install-Watchdog {
-    if (-not (Assert-Admin)) { return $false }
-    if (-not $script:StoreReady -or -not $script:StoreSecure) { Write-Log 'FAIL' 'The protected store folder is not available, so Lan Fixer refuses to register a SYSTEM task (security).'; return $false }
-    if (-not $script:IsDry -and -not (Test-Path -LiteralPath $script:SelfCopy)) { Write-Log 'FAIL' 'Could not find the protected copy of Lan Fixer.'; return $false }
-    try {
-        $lg = Get-WinEvent -ListLog 'Microsoft-Windows-NetworkProfile/Operational' -ErrorAction Stop
-        if (-not $lg.IsEnabled) { [void](Invoke-Change 'Windows network-connect event log enabled (watchdog trigger source)' { $lg.IsEnabled = $true; $lg.SaveChanges() }) }
-    } catch {}
-    $cmdArgs = '/c ""' + $script:SelfCopy + '" -Mode AutoHeal"'
-    $start = (Get-Date).ToString('yyyy-MM-ddTHH:mm:ss')
-    $ok1 = Register-LfTask $script:Cfg.TaskWatchdog (New-WatchdogXml $cmdArgs $start) 'LanFixer_Watchdog.xml'
-    $ok2 = Register-LfTask $script:Cfg.TaskPortal (New-PortalTaskXml) 'LanFixer_Portal.xml'
-    $ok3 = Register-LfTask $script:Cfg.TaskNotify (New-NotifyTaskXml) 'LanFixer_Notify.xml'
-    if ($ok2 -and -not $script:IsDry) { $script:State.Misc['PortalTaskUrl'] = [string]$script:Cfg.PortalUrl }
-    if ($script:IsDry) { return $true }
-    $script:WatchdogOn = Test-WatchdogInstalled
-    if ($ok1 -and $script:WatchdogOn) {
-        Write-Log 'OK' 'Watchdog active. It reacts to: cable connect, wake from sleep, address conflicts, boot, logon, and a heartbeat every few minutes.'
-        if (-not $ok2) { Write-Log 'WARN' 'Portal helper task failed; the login page will not auto-open in background runs.' }
-        $script:State.Misc['WatchdogSince'] = (Get-Date).ToString('o')
-        foreach ($old in 'Lan Fixer.cmd', 'LanFixer_v2.cmd') { Remove-Item -LiteralPath (Join-Path $script:StoreDir $old) -Force -ErrorAction SilentlyContinue }   # old mirror names (only after the task points at the new copy)
-        Save-State
-        return $true
-    }
-    Write-Log 'FAIL' 'Watchdog task could not be verified after registration.'
-    return $false
-}
-# Pure (unit-tested): schtasks /xml reports <Settings><Enabled>false</Enabled> for a task disabled in Task Scheduler.
-function Test-WatchdogDisabled([string]$Enabled) {
-    if ([string]::IsNullOrEmpty($Enabled)) { return $false }
-    return ($Enabled.Trim().ToLowerInvariant() -eq 'false')
-}
-function Get-WatchdogArguments {
-    $task = Get-WatchdogTask
-    if ($null -eq $task) { return $null }
-    return [string]$task.Actions.Exec.Arguments
-}
-function Get-WatchdogExpectedArguments { return ('/c ""' + $script:SelfCopy + '" -Mode AutoHeal"') }
-# A task registered by v1/v2.x runs an older copy. Re-point it once, automatically, at the current protected copy.
-function Update-WatchdogIfStale {
-    if (-not $script:IsAdmin -or $script:IsDry) { return }
-    if (-not $script:StoreReady -or -not $script:StoreSecure) { return }
-    if (-not (Test-Path -LiteralPath $script:SelfCopy)) { return }
-    if (-not $script:WatchdogOn -and $script:State.Misc['WatchdogSince']) {
-        if (Test-Elapsed 'Repoint' 600) {
-            Set-StateTime 'Repoint'
-            Write-Log 'WARN' 'Self-healing watchdog: background guard task was missing despite being armed; re-registering automatically.'
-            [void](Install-Watchdog)
-        }
-        return
-    }
-    if (-not $script:WatchdogOn) { return }
-    if (-not (Test-Elapsed 'Repoint' 3600)) { return }   # never loop if the comparison cannot settle
-    $task = Get-WatchdogTask
-    if ($null -eq $task) { return }
-    $taskOff = [bool]($script:State.Misc['WatchdogSince'] -and (Test-WatchdogDisabled ([string]$task.Settings.Enabled)))
-    if (-not $taskOff -and -not (Test-WatchdogStale ([string]$task.Actions.Exec.Arguments) (Get-WatchdogExpectedArguments) ([string]$task.Settings.MultipleInstancesPolicy))) { return }
-    Set-StateTime 'Repoint'
-    if ($taskOff) { Write-Log 'WARN' 'Self-healing watchdog: the background guard task was disabled in Task Scheduler while armed; re-registering it enabled.' }
-    else { Write-Log 'INFO' 'The watchdog task is out of date (older copy or unsafe restart policy). Re-registering it.' }
-    [void](Install-Watchdog)
-}
-function Uninstall-Watchdog {
-    if (-not (Assert-Admin)) { return }
-    foreach ($n in @($script:Cfg.TaskWatchdog, $script:Cfg.TaskPortal, $script:Cfg.TaskNotify, 'A07_NetShield')) {
-        [void](Invoke-Change "Scheduled task '$n' removed (if present)" { [void](Invoke-Native (Get-SysExe 'schtasks.exe') @('/delete', '/tn', $n, '/f') 8000) })
-    }
-    if (-not $script:IsDry -and $script:State.Misc -is [hashtable]) { $script:State.Misc.Remove('WatchdogSince') }
-    $script:WatchdogOn = $false
-    Remove-CampusNrpt   # nothing would auto-remove it off campus any more
-    Remove-CampusHostRoutes
-    if (Test-MetricsManaged) { Restore-InterfaceMetrics 'Watchdog disarmed' }
-    Restore-NeutralizedInterceptors 'Watchdog disarmed'
-    [void](Restore-ManagedAdapterDns 'Watchdog disarmed')
-    Write-Log 'INFO' 'Watchdog removed and any temporary route, DNS, or service holds released.'
-}
-
-# ==============================================================================
-# RESTORE: puts back YOUR snapshotted originals (not assumed "factory" values)
-# ==============================================================================
-function Restore-Everything {
-    if (-not (Assert-Admin)) { return }
-    Write-Log 'INFO' 'Restoring from the snapshot taken before Lan Fixer changed anything...'
-    $restartNames = @{}
-    $present = @(Get-NetAdapter -IncludeHidden -ErrorAction SilentlyContinue)
-    foreach ($guid in @($script:State.Snapshot.Keys)) {
-        $snap = $script:State.Snapshot[$guid]
-        if ($guid -eq 'NetProfiles') {
-            foreach ($k in @($snap.Keys)) {
-                if ($k -like 'Cat:*') {
-                    $nm = $k.Substring(4); $cat = [string]$snap[$k]
-                    [void](Invoke-Change "Network '$nm' set back to $cat" { Set-NetConnectionProfile -Name $nm -NetworkCategory $cat -ErrorAction Stop })
-                }
-            }
-            continue
-        }
-        if ($snap.ContainsKey('MsTcpip6')) {
-            $mv = [string]$snap['MsTcpip6']
-            if ($mv -eq 'True') {
-                [void](Invoke-Change "IPv6 re-enabled on adapter $guid" {
-                    $mAd = Get-NetAdapter -InterfaceGuid $guid -ErrorAction SilentlyContinue
-                    if ($mAd) { Enable-NetAdapterBinding -Name $mAd.Name -ComponentId 'ms_tcpip6' -Confirm:$false -ErrorAction SilentlyContinue }
-                })
-            }
-        }
-        if ($guid -eq 'Global') {
-            if ($snap.ContainsKey('UsbSuspend')) { $uv = $snap['UsbSuspend']; [void](Invoke-Change 'USB selective suspend restored to your original value' { Restore-UsbSuspend $uv }) }
-            if ($snap.ContainsKey('WinHttpProxy')) {
-                $wh = [string]$snap['WinHttpProxy']
-                [void](Invoke-Change 'WinHTTP proxy restored' {
-                    $netsh = Get-SysExe 'netsh.exe'
-                    if ($wh) { [void](Invoke-Native $netsh @('winhttp', 'set', 'proxy', $wh) 5000) }
-                    else { [void](Invoke-Native $netsh @('winhttp', 'reset', 'proxy') 5000) }
-                })
-            }
-            if ($snap.ContainsKey('ProxyEnable_CU')) {
-                $pe = [int]$snap['ProxyEnable_CU']
-                [void](Invoke-Change 'WinINet user proxy restored' {
-                    Set-ItemProperty -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -Name ProxyEnable -Value $pe -Type DWord -Force -ErrorAction SilentlyContinue
-                })
-            }
-            if ($snap.ContainsKey('ProxyEnable_LM')) {
-                $pe = [int]$snap['ProxyEnable_LM']
-                [void](Invoke-Change 'WinINet machine proxy restored' {
-                    Set-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings' -Name ProxyEnable -Value $pe -Type DWord -Force -ErrorAction SilentlyContinue
-                })
-            }
-            if ($snap.ContainsKey('Llmnr')) {
-                $lv = $snap['Llmnr']
-                [void](Invoke-Change 'LLMNR setting restored' { Restore-Llmnr $lv })
-            }
-            if ($snap.ContainsKey('DisabledComponents')) {
-                $dc = $snap['DisabledComponents']
-                [void](Invoke-Change 'IPv6 prefix policy restored' {
-                    if ($null -eq $dc) { Remove-ItemProperty -LiteralPath $script:Tcpip6Key -Name DisabledComponents -ErrorAction SilentlyContinue }
-                    else { New-ItemProperty -LiteralPath $script:Tcpip6Key -Name DisabledComponents -Value ([int]$dc) -PropertyType DWord -Force -ErrorAction Stop | Out-Null }
-                })
-            }
-            if ($snap.ContainsKey('Ncsi')) {
-                $nk = 'HKLM:\SYSTEM\CurrentControlSet\Services\NlaSvc\Parameters\Internet'
-                $v = [int]$snap['Ncsi']
-                [void](Invoke-Change "Connectivity probing setting restored to $v" { Set-ItemProperty -LiteralPath $nk -Name EnableActiveProbing -Value $v -Type DWord -ErrorAction Stop })
-            }
-            if ($snap.ContainsKey('MaxNegativeCacheTtl')) {
-                $nct = $snap['MaxNegativeCacheTtl']
-                [void](Invoke-Change 'Negative DNS cache TTL restored' {
-                    if ($null -eq $nct) { Remove-ItemProperty -LiteralPath $script:DnsParamKey -Name MaxNegativeCacheTtl -ErrorAction SilentlyContinue }
-                    else { Set-ItemProperty -LiteralPath $script:DnsParamKey -Name MaxNegativeCacheTtl -Value ([int]$nct) -Type DWord -ErrorAction Stop }
-                })
-            }
-            if ($snap.ContainsKey('EnableMDNS')) {
-                $md = $snap['EnableMDNS']
-                [void](Invoke-Change 'mDNS setting restored' {
-                    if ($null -eq $md) { Remove-ItemProperty -LiteralPath $script:DnsParamKey -Name EnableMDNS -ErrorAction SilentlyContinue }
-                    else { Set-ItemProperty -LiteralPath $script:DnsParamKey -Name EnableMDNS -Value ([int]$md) -Type DWord -ErrorAction Stop }
-                })
-            }
-            if ($snap.ContainsKey('DisableSmartNameResolution') -or (Test-Path -LiteralPath $script:DnsPolicyKey)) {
-                [void](Invoke-Change 'Smart Name Resolution policy cleared' {
-                    Remove-ItemProperty -LiteralPath $script:DnsPolicyKey -Name DisableSmartNameResolution -ErrorAction SilentlyContinue
-                })
-            }
-            if ($snap.ContainsKey('KeepAliveTime')) {
-                $kat = $snap['KeepAliveTime']
-                [void](Invoke-Change 'TCP KeepAliveTime restored' {
-                    if ($null -eq $kat) { Remove-ItemProperty -LiteralPath $script:TcpParamKey -Name KeepAliveTime -ErrorAction SilentlyContinue }
-                    else { Set-ItemProperty -LiteralPath $script:TcpParamKey -Name KeepAliveTime -Value ([int]$kat) -Type DWord -ErrorAction Stop }
-                })
-            }
-            if ($snap.ContainsKey('KeepAliveInterval')) {
-                $kai = $snap['KeepAliveInterval']
-                [void](Invoke-Change 'TCP KeepAliveInterval restored' {
-                    if ($null -eq $kai) { Remove-ItemProperty -LiteralPath $script:TcpParamKey -Name KeepAliveInterval -ErrorAction SilentlyContinue }
-                    else { Set-ItemProperty -LiteralPath $script:TcpParamKey -Name KeepAliveInterval -Value ([int]$kai) -Type DWord -ErrorAction Stop }
-                })
-            }
-            if ($snap.ContainsKey('TcpAutoTuning')) {
-                $tat = [string]$snap['TcpAutoTuning']
-                if ($tat -eq 'Disabled') {
-                    [void](Invoke-Change 'TCP Window Auto-Tuning restored to Disabled (original user setting)' {
-                        Set-NetTCPSetting -SettingName Internet -AutoTuningLevelLocal Disabled -ErrorAction Stop
-                    })
-                }
-            }
-            continue
-        }
-        $ad = $present | Where-Object { [string]$_.InterfaceGuid -eq [string]$guid } | Select-Object -First 1
-        if (-not $ad) { Write-Log 'INFO' "Adapter $guid is not present; its snapshot is skipped."; continue }
-        foreach ($key in @($snap.Keys)) {
-            $val = $snap[$key]
-            if ($key -eq 'StaticIp4') {
-                if ($val -and $val.IPAddress) {
-                    [void](Invoke-Change "Static IPv4 configuration ($($val.IPAddress)/$($val.PrefixLength)) restored on $($ad.Name)" {
-                        Set-NetIPInterface -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -Dhcp Disabled -ErrorAction Stop
-                        Get-NetIPAddress -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue

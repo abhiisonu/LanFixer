@@ -18,6 +18,14 @@ exit /b %errorlevel%
     Add -DryRun to see exactly what would change without changing anything.
     Every change is snapshotted first, so ResetFactory restores YOUR original values.
 .NOTES
+    6.5.0 (Omniscient Layer 1-7 Healer & Sovereign Ultra Weapon Reset Engine):
+      - Invoke-UltraSystemReset: 7-stage nuclear stack resuscitation engine implementing full-spectrum low-level remediation.
+      - Dual-Stack TCP/IP & Winsock Nuclear Restoration: netsh winsock reset catalog (32/64-bit), netsh int ip/ipv6 reset, netsh int tcp reset.
+      - Routing & Firewall Nuclear Purge: route -f (clears all gateways and non-interface routes), netsh advfirewall reset (factory firewall defaults), netsh branchcache reset.
+      - Cache & NetBIOS Eviction: netsh interface ip delete arpcache, nbtstat -R & nbtstat -RR, Remove-NetNeighbor IPv4/IPv6, Clear-DnsClientCache, ipconfig /flushdns.
+      - Topological Service Stack Resuscitation: cleanly stops dependent services (netprofm, NlaSvc, Dnscache, Dhcp, iphlpsvc, dot3svc, WlanSvc) before reset and restarts them in strict topological dependency order (BFE -> mpssvc -> Dhcp -> Dnscache -> iphlpsvc -> dot3svc -> WlanSvc -> NlaSvc -> netprofm).
+      - Full DHCP Stack Cycle & Dynamic DNS: ipconfig /release & /renew (IPv4/IPv6), ipconfig /registerdns, and 802.1D Spanning Tree Protocol (STP) convergence loop.
+      - Interactive TUI & CLI Integration: Key [U] on dashboard, dual-tier selector on [X], -Mode UltraReset / FullNetReset CLI dispatch.
     6.4.2 (Sovereign Grand Master Final Hardening & PnP Optimization):
       - PnP Rescan Rate-Limit & Narrowing: Rescue-DormantEthernetPnp stamps limiter before query, checks only present faulted physical wired NICs, and ignores disabled/ghost devices.
       - Interactive Session Timestamp Validation: Start-Interactive writes process StartTime in round-trippable ISO-8601 UTC format, eliminating false-positive session purges.
@@ -171,7 +179,7 @@ exit /b %errorlevel%
 
 [CmdletBinding()]
 param(
-    [ValidateSet('Interactive','Heal','AutoHeal','Omnifix','FullNetReset','Diagnose','QuickProbe','FlushCache','InstallWatchdog','UninstallWatchdog','InstallShield','UninstallShield','ResetFactory','LaunchPortal','SetDnsProfile','SetRouteProfile','SelfTest','Report','Daemon')]
+    [ValidateSet('Interactive','Heal','AutoHeal','Omnifix','FullNetReset','UltraReset','Diagnose','QuickProbe','FlushCache','InstallWatchdog','UninstallWatchdog','InstallShield','UninstallShield','ResetFactory','LaunchPortal','SetDnsProfile','SetRouteProfile','SelfTest','Report','Daemon')]
     [string]$Mode = 'Interactive',
     [ValidateSet('Adaptive','DHCP','Hybrid','Cloudflare','ResetDHCP')]
     [string]$DnsProfile = 'Adaptive',
@@ -190,7 +198,7 @@ try { Add-Type -AssemblyName System.Security -ErrorAction SilentlyContinue } cat
 # ==============================================================================
 # CONFIG (edit here, nowhere else)
 # ==============================================================================
-$script:Version = '6.4.2'
+$script:Version = '6.5.0'
 $script:Sys32   = Join-Path $env:SystemRoot 'System32'
 $script:SelfPath = if ($env:LANFIXER_SELF -and (Test-Path -LiteralPath $env:LANFIXER_SELF)) { $env:LANFIXER_SELF } elseif ($PSCommandPath -and (Test-Path -LiteralPath $PSCommandPath)) { $PSCommandPath } elseif ($MyInvocation.MyCommand.Path -and (Test-Path -LiteralPath $MyInvocation.MyCommand.Path)) { $MyInvocation.MyCommand.Path } elseif ($PSScriptRoot -and (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'LanFixer.cmd'))) { (Join-Path $PSScriptRoot 'LanFixer.cmd') } else { (Join-Path (Get-Location).Path 'LanFixer.cmd') }
 $script:IsDry   = [bool]$DryRun
@@ -790,11 +798,3 @@ function Enter-Lock([int]$TimeoutMs = 1000) {
             if ($memMisc['LearnedDhcp'] -and -not $script:State.Misc['LearnedDhcp']) { $script:State.Misc['LearnedDhcp'] = $memMisc['LearnedDhcp'] }
             if ($memMisc['DiscoveryTime'] -and ([string]$memMisc['DiscoveryTime'] -ge [string]$script:State.Misc['DiscoveryTime'])) {
                 foreach ($mk in @('DiscoveredDomain','DiscoveredPortalUrl','DiscoveredPortalIp','DiscoveryTime')) {
-                    if ($memMisc.ContainsKey($mk)) { $script:State.Misc[$mk] = $memMisc[$mk] }
-                }
-            }
-            if ($memMisc['InjectedHostRoutes']) {
-                $curR = @($script:State.Misc['InjectedHostRoutes'] | Where-Object { $_ })
-                $script:State.Misc['InjectedHostRoutes'] = @($curR + @($memMisc['InjectedHostRoutes']) | Where-Object { $_ } | Select-Object -Unique)
-            }
-            foreach ($ek in $memEnv.Keys) {

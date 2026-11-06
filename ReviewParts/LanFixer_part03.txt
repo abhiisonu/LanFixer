@@ -1,3 +1,11 @@
+        $protocols = [System.Security.Authentication.SslProtocols]::Tls12
+        try { $protocols = [System.Security.Authentication.SslProtocols]'Tls12, Tls13' } catch {
+            # keep TLS 1.2: never fall back to the OS default list (it can still include TLS 1.0/1.1)
+        }
+        try { $ssl.AuthenticateAsClient($hostName, $null, $protocols, $false) }
+        catch { $r.Error = 'TlsRejected'; if ($Capture) { $r.Sha256 = [string]$Capture.Sha256; $r.TlsErrors = [string]$Capture.Errors }; return $r }
+        if ($Capture) { $r.Sha256 = [string]$Capture.Sha256; $r.TlsErrors = [string]$Capture.Errors }
+        if ($HandshakeOnly) { return $r }
         $port = [int]$Uri.Port
         $hostHdr = $hostName; if ($port -ne 443) { $hostHdr = ('{0}:{1}' -f $hostName, $port) }
         $ck = ''
@@ -790,11 +798,3 @@ function Get-DashboardModel($t, $adv, [int]$Width = 0) {
     [void]$L.Add(@())
     $pulseIdx = $L.Count
     [void]$L.Add((Get-PulseSegs $t ([Math]::Max(4, [Math]::Min(36, $w - 54)))))
-    [void]$L.Add(@())
-    # facts
-    $cw = [int][Math]::Floor(($w - 4) / 2)
-    $net = '-'; if ($t.Env) { $net = ($t.Env + ' ' + $script:G.mid + ' Score ' + $t.EnvScore); if ($t.Sticky) { $net += ' (Remembered)' } }
-    $dnsv = '-'; if ($t.DnsProfile) { $dnsv = $t.DnsProfile; if ($t.DnsPrimary) { $dnsv += (' ' + $script:G.mid + ' ' + $t.DnsPrimary) } }
-    $rout = if ($t.Routing) {
-        switch ($t.Routing.ToLower()) {
-            'ethernet first'   { if ($t.UplinkActive) { 'Ethernet First (10 vs 40)' } else { 'Ethernet First' } }

@@ -1,3 +1,11 @@
+                    if ($memMisc.ContainsKey($mk)) { $script:State.Misc[$mk] = $memMisc[$mk] }
+                }
+            }
+            if ($memMisc['InjectedHostRoutes']) {
+                $curR = @($script:State.Misc['InjectedHostRoutes'] | Where-Object { $_ })
+                $script:State.Misc['InjectedHostRoutes'] = @($curR + @($memMisc['InjectedHostRoutes']) | Where-Object { $_ } | Select-Object -Unique)
+            }
+            foreach ($ek in $memEnv.Keys) {
                 if (-not $script:State.Env.ContainsKey($ek)) { $script:State.Env[$ek] = $memEnv[$ek] }
                 elseif ($memEnv[$ek] -is [hashtable] -and $script:State.Env[$ek] -is [hashtable] -and $memEnv[$ek].Time -and ([string]$memEnv[$ek].Time -gt [string]$script:State.Env[$ek].Time)) {
                     $script:State.Env[$ek].Env = $memEnv[$ek].Env
@@ -790,11 +798,3 @@ function Invoke-TlsHttp {
         $ns.ReadTimeout = $TimeoutMs; $ns.WriteTimeout = $TimeoutMs
         $cb = New-CertCallback $Pin $Capture
         $ssl = New-Object System.Net.Security.SslStream($ns, $false, $cb)
-        $protocols = [System.Security.Authentication.SslProtocols]::Tls12
-        try { $protocols = [System.Security.Authentication.SslProtocols]'Tls12, Tls13' } catch {
-            # keep TLS 1.2: never fall back to the OS default list (it can still include TLS 1.0/1.1)
-        }
-        try { $ssl.AuthenticateAsClient($hostName, $null, $protocols, $false) }
-        catch { $r.Error = 'TlsRejected'; if ($Capture) { $r.Sha256 = [string]$Capture.Sha256; $r.TlsErrors = [string]$Capture.Errors }; return $r }
-        if ($Capture) { $r.Sha256 = [string]$Capture.Sha256; $r.TlsErrors = [string]$Capture.Errors }
-        if ($HandshakeOnly) { return $r }

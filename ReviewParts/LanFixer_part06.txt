@@ -1,3 +1,49 @@
+            } catch {
+                $r = Invoke-Native (Get-SysExe 'arp.exe') @('-s', $gw, $mac, $ip) 5000
+                if ($r.ExitCode -ne 0) { throw 'both New-NetNeighbor and arp -s failed' }
+            }
+        }
+        if ($ok) {
+            $mem[$gw] = $mac
+            if ($script:State.Misc['ArpCand'].ContainsKey($gw)) { $script:State.Misc['ArpCand'].Remove($gw) }
+        }
+    }
+}
+# Layer 3 Subnet Calculus & Adaptive PMTUD (Universal Zero-Hardcode Standard)
+function Get-SubnetInfoFromLease($Ad) {
+    if (-not $Ad) { return $null }
+    $ipObj = Get-NetIPAddress -InterfaceIndex $Ad.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -notlike '169.254*' } | Select-Object -First 1
+    if (-not $ipObj -or -not $ipObj.IPAddress) { return $null }
+    $ipStr = [string]$ipObj.IPAddress
+    $prefix = [int]$ipObj.PrefixLength
+    if ($prefix -lt 0 -or $prefix -gt 32) { $prefix = 24 }
+
+    $ip = [System.Net.IPAddress]::Parse($ipStr)
+    $ipBytes = $ip.GetAddressBytes()
+    $maskBytes = New-Object byte[] 4
+    $netBytes = New-Object byte[] 4
+    $bcastBytes = New-Object byte[] 4
+
+    for ($i = 0; $i -lt 4; $i++) {
+        $bits = [math]::Max(0, [math]::Min(8, $prefix - ($i * 8)))
+        $maskBytes[$i] = [byte]$(if ($bits -eq 0) { 0 } else { 256 - [math]::Pow(2, 8 - $bits) })
+        $netBytes[$i]  = [byte]($ipBytes[$i] -band $maskBytes[$i])
+        $wildcard      = [byte](255 -bxor $maskBytes[$i])
+        $bcastBytes[$i]= [byte]($netBytes[$i] -bor $wildcard)
+    }
+
+    $minHostBytes = [byte[]]$netBytes.Clone()
+    $maxHostBytes = [byte[]]$bcastBytes.Clone()
+    if ($prefix -le 30) {
+        $minHostBytes[3] = [byte]($minHostBytes[3] + 1)
+        $maxHostBytes[3] = [byte]($maxHostBytes[3] - 1)
+    }
+
+    $totalHosts = if ($prefix -ge 31) { 0L } else { [int64]([math]::Pow(2, 32 - $prefix) - 2) }
+
+    return [PSCustomObject]@{
+        IPAddress      = $ipStr
+        PrefixLength   = $prefix
         SubnetMask     = ($maskBytes -join '.')
         NetworkAddress = ($netBytes -join '.')
         Broadcast      = ($bcastBytes -join '.')
@@ -752,49 +798,3 @@ function Shield-Ipv6Precedence($Ctxs, [string]$ConnState) {
 }
 $script:DnsParamKey = 'HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters'
 function Restore-NegCacheIfManaged([string]$Why) {
-    if ($script:State.Misc['NegCacheManaged'] -ne $true) { return }
-    $snap = Get-SubTable 'Snapshot' 'Global'
-    $orig = $null
-    if ($snap.ContainsKey('MaxNegativeCacheTtl')) { $orig = $snap['MaxNegativeCacheTtl'] }
-    $ok = Invoke-Change $Why {
-        if ($null -eq $orig) { Remove-ItemProperty -LiteralPath $script:DnsParamKey -Name MaxNegativeCacheTtl -ErrorAction SilentlyContinue }
-        else { Set-ItemProperty -LiteralPath $script:DnsParamKey -Name MaxNegativeCacheTtl -Value ([int]$orig) -Type DWord -ErrorAction Stop }
-    }
-    if ($ok -and -not $script:IsDry) { $script:State.Misc['NegCacheManaged'] = $false }
-}
-function Shield-NegCache($Ctxs) {
-    $anyCampus = (@($Ctxs | Where-Object { $_.Env.Env -eq 'Campus' })).Count -gt 0
-    $anyOther  = (@($Ctxs | Where-Object { $_.Env.Env -eq 'Other' })).Count -gt 0
-    $cur = $null
-    try { $cur = (Get-ItemProperty -LiteralPath $script:DnsParamKey -Name MaxNegativeCacheTtl -ErrorAction Stop).MaxNegativeCacheTtl } catch {}
-    if ($anyCampus) {
-        if ($null -ne $cur -and [int]$cur -eq 5) { return }
-        Save-Original 'Global' 'MaxNegativeCacheTtl' $cur
-        $ok = Invoke-Change 'Windows negative DNS cache clamped to 5s (eliminates 15-minute resolution lockouts)' {
-            if (-not (Test-Path -LiteralPath $script:DnsParamKey)) { New-Item -Path $script:DnsParamKey -Force -ErrorAction Stop | Out-Null }
-            New-ItemProperty -LiteralPath $script:DnsParamKey -Name MaxNegativeCacheTtl -Value 5 -PropertyType DWord -Force -ErrorAction Stop | Out-Null
-        }
-        if ($ok -and -not $script:IsDry) { $script:State.Misc['NegCacheManaged'] = $true }
-    } elseif ($anyOther) {
-        Restore-NegCacheIfManaged 'Non-campus network: negative DNS cache TTL restored'
-    }
-}
-
-function Restore-MdnsIfManaged([string]$Why) {
-    if ($script:State.Misc['MdnsManaged'] -ne $true) { return }
-    $snap = Get-SubTable 'Snapshot' 'Global'
-    $orig = $null
-    if ($snap.ContainsKey('EnableMDNS')) { $orig = $snap['EnableMDNS'] }
-    $ok = Invoke-Change $Why {
-        if ($null -eq $orig) { Remove-ItemProperty -LiteralPath $script:DnsParamKey -Name EnableMDNS -ErrorAction SilentlyContinue }
-        else { Set-ItemProperty -LiteralPath $script:DnsParamKey -Name EnableMDNS -Value ([int]$orig) -Type DWord -ErrorAction Stop }
-    }
-    if ($ok -and -not $script:IsDry) { $script:State.Misc['MdnsManaged'] = $false }
-}
-function Shield-Mdns($Ctxs) {
-    $anyCampus = (@($Ctxs | Where-Object { $_.Env.Env -eq 'Campus' })).Count -gt 0
-    $anyOther  = (@($Ctxs | Where-Object { $_.Env.Env -eq 'Other' })).Count -gt 0
-    $cur = $null
-    try { $cur = (Get-ItemProperty -LiteralPath $script:DnsParamKey -Name EnableMDNS -ErrorAction Stop).EnableMDNS } catch {}
-    if ($anyCampus) {
-        if ($null -ne $cur -and [int]$cur -eq 0) { return }

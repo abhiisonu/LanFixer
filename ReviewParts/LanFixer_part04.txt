@@ -1,3 +1,11 @@
+    [void]$L.Add(@())
+    # facts
+    $cw = [int][Math]::Floor(($w - 4) / 2)
+    $net = '-'; if ($t.Env) { $net = ($t.Env + ' ' + $script:G.mid + ' Score ' + $t.EnvScore); if ($t.Sticky) { $net += ' (Remembered)' } }
+    $dnsv = '-'; if ($t.DnsProfile) { $dnsv = $t.DnsProfile; if ($t.DnsPrimary) { $dnsv += (' ' + $script:G.mid + ' ' + $t.DnsPrimary) } }
+    $rout = if ($t.Routing) {
+        switch ($t.Routing.ToLower()) {
+            'ethernet first'   { if ($t.UplinkActive) { 'Ethernet First (10 vs 40)' } else { 'Ethernet First' } }
             'wi-fi first'      { 'Wi-Fi First (15 vs 50)' }
             'wi-fi standby'    { 'Wi-Fi Priority (Wired Active, Wi-Fi Standby)' }
             'wi-fi priority'   { 'Wi-Fi Priority (Wired Active, Wi-Fi Standby)' }
@@ -60,11 +68,12 @@
         [void]$L.Add(@((Seg 'accent!' ('  PREVIEW & REPORTS'.PadRight($col1W + 2))), (Seg 'accent!' 'SYSTEM & RECOVERY')))
         [void]$L.Add(@((Seg 'text' ('  [T] Dry-Run Simulation'.PadRight($col1W + 2))), (Seg 'text' '[8] Disarm Watchdog')))
         [void]$L.Add(@((Seg 'text' ('  [R] Export Support Report'.PadRight($col1W + 2))), (Seg 'text' '[9] Factory Reset')))
-        [void]$L.Add(@((Seg 'text' ('  [S] Run Self-Test Suite'.PadRight($col1W + 2))), (Seg 'text' '[0] Guide')))
-        [void]$L.Add(@((Seg $(if ($adv.Key -eq 'x') { 'ok!' } else { 'accent!' }) ('  [X] Full Net Reset'.PadRight($col1W + 2))), (Seg 'dim' '[Q] Quit')))
+        [void]$L.Add(@((Seg 'text' ('  [S] Run Self-Test Suite'.PadRight($col1W + 2))), (Seg 'text' '[B] Autonomous Daemon')))
+        [void]$L.Add(@((Seg $(if ($adv.Key -eq 'x') { 'ok!' } else { 'accent!' }) ('  [X] Full Net Reset'.PadRight($col1W + 2))), (Seg 'warn!' '[U] Ultra System Reset')))
+        [void]$L.Add(@((Seg 'text' ('  [0] Guide'.PadRight($col1W + 2))), (Seg 'dim' '[Q] Quit')))
         if ($t.ArpPending) { [void]$L.Add(@((Seg 'warn!' ('  [K] Approve Gateway MAC Change'.PadRight($col1W + 2))), (Seg 'warn' 'Router MAC changed; review to lock ARP'))) }
     } else {
-        $legend = @(@('1', 'QuickHeal'), @('X', 'NetReset'), @('2', 'Guard'), @('A', 'Vault'), @('7', 'Portal'), @('G', 'Login'), @('3', 'DNS'), @('M', 'Route'), @('4', 'Probe'), @('5', 'Flush'), @('6', 'Audit'), @('T', 'Test'), @('R', 'Report'), @('S', 'Verify'), @('8', 'Disarm'), @('9', 'Reset'), @('0', 'Guide'), @('Q', 'Quit'))
+        $legend = @(@('1', 'QuickHeal'), @('X', 'NetReset'), @('U', 'UltraReset'), @('2', 'Guard'), @('A', 'Vault'), @('7', 'Portal'), @('G', 'Login'), @('3', 'DNS'), @('M', 'Route'), @('4', 'Probe'), @('5', 'Flush'), @('6', 'Audit'), @('B', 'Daemon'), @('T', 'Test'), @('R', 'Report'), @('S', 'Verify'), @('8', 'Disarm'), @('9', 'Reset'), @('0', 'Guide'), @('Q', 'Quit'))
         # A gateway-MAC review is transient, so [K] is advertised only while a candidate is really waiting. The leading
         # comma appends the pair as ONE legend cell; a bare "+=" would append two loose strings and corrupt the legend.
         if ($t.ArpPending) { $legend += , @('K', 'MAC') }
@@ -145,8 +154,10 @@ function Show-Advisory {
         # 4. Safety & Rollback
         @('Instant background sign-in with saved login', 'G', 'Headless Portal Sign-In'),
         @('Total network down / no internet anywhere',   'X', 'Full Network Reset'),
+        @('Nuclear stack corruption / LSP & driver wipe','U', 'Ultra System Reset'),
         @('Preview repairs safely without changes',      'T', 'Dry-Run Simulation'),
         @('Verify system cmdlets & security integrity',  'S', 'Run Self-Test Suite'),
+        @('Autonomous Sentinel background daemon',       'B', 'Autonomous Daemon'),
         @('Restore default Windows network settings',    '9', 'Factory Reset Rollback')
     )
     foreach ($m in $matrix) {
@@ -299,7 +310,7 @@ function Start-Repair([string]$Title = 'quick heal') {
 }
 
 function Invoke-DashboardKey([string]$Key, $adv) {
-    $aliases = @{ w = '2'; n = '3'; p = '4'; f = '5'; c = '5'; d = '6'; o = '7'; u = '8'; v = 'a'; l = 'g'; h = '0'; '?' = '0' }
+    $aliases = @{ w = '2'; n = '3'; p = '4'; f = '5'; c = '5'; d = '6'; o = '7'; v = 'a'; l = 'g'; h = '0'; '?' = '0' }
     if ($aliases.ContainsKey($Key)) { $Key = $aliases[$Key] }
     switch ($Key) {
         '0' { Show-Advisory }
@@ -314,15 +325,50 @@ function Invoke-DashboardKey([string]$Key, $adv) {
         'x' {
             Show-View 'full net reset (emergency recovery)' {
                 if (-not (Assert-Admin)) { return }
-                Out-Line @((Seg 'warn' '  NOTICE: Full Net Reset performs comprehensive network stack recovery:'))
-                Out-Wrapped 'faint' $script:G.mid 'text' 'Rescan PnP hardware bus, clear orphaned proxies, and clean WFP filters' 4
-                Out-Wrapped 'faint' $script:G.mid 'text' 'Normalize route metrics, reset MTU to standard 1500, and set routing to Adaptive' 4
-                Out-Wrapped 'faint' $script:G.mid 'text' 'Execute 7-layer heal pipeline, flush DNS/ARP caches, and clear NetBIOS' 4
-                Out-Wrapped 'faint' $script:G.mid 'text' 'Synchronize DHCP Client and Network Location Awareness (NlaSvc) services' 4
+                Out-Line @((Seg 'warn' '  NOTICE: Choose your recovery tier:'))
+                Out-Wrapped 'faint' $script:G.mid 'text' '[1] Standard Full Net Reset (5-Stage: Transceiver, metrics, MTU 1500, 7-layer heal, caches)' 4
+                Out-Wrapped 'warn!' $script:G.mid 'warn!' '[2] ULTRA System Reset (NUCLEAR WEAPON: Winsock catalog, TCP/IP stack reset, route -f, firewall, BranchCache, DHCP release/renew, registerdns, STP convergence)' 4
                 Out-Line @()
-                if (Read-Confirm 'Proceed with Full Net Reset?' 'yes') {
+                Out-Line @((Seg 'dim' '  Select tier [1] Standard, [2] or [U] ULTRA Nuclear, or press any other key to cancel '), (Seg 'accent!' $script:G.prompt)) -NoNewline
+                $k = Read-Choice
+                Out-Line @()
+                $choice = ([string]$k.KeyChar).ToLowerInvariant()
+                if ($choice -eq '2' -or $choice -eq 'u') {
+                    if (Read-Confirm 'Execute ULTRA SYSTEM RESET (Nuclear Stack Resuscitation)?' 'no') {
+                        $script:ChangeCount = 0; $script:FailCount = 0
+                        Invoke-UltraSystemReset
+                        $script:WdCache = $null
+                    } else {
+                        Out-Line @((Seg 'dim' '  Operation cancelled. No changes made.'))
+                    }
+                } elseif ($choice -eq '1' -or $choice -eq 'x') {
+                    if (Read-Confirm 'Proceed with Standard Full Net Reset?' 'yes') {
+                        $script:ChangeCount = 0; $script:FailCount = 0
+                        Invoke-SupremeOmnifix
+                        $script:WdCache = $null
+                    } else {
+                        Out-Line @((Seg 'dim' '  Operation cancelled. No changes made.'))
+                    }
+                } else {
+                    Out-Line @((Seg 'dim' '  Operation cancelled. No changes made.'))
+                }
+            }
+        }
+        'u' {
+            Show-View 'ultra system reset (nuclear recovery)' {
+                if (-not (Assert-Admin)) { return }
+                Out-Line @((Seg 'warn!' '  WARNING: ULTRA SYSTEM RESET IS THE ULTIMATE NUCLEAR REMEDIATION WEAPON:'))
+                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 1: Pre-flight snapshot & dependent network service teardown' 4
+                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 2: Nuclear Winsock catalog reset (netsh winsock reset catalog) & dual-stack TCP/IP reset (netsh int ip/ipv6 reset)' 4
+                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 3: Routing table purge (route -f), Windows Firewall factory reset (netsh advfirewall reset) & BranchCache reset' 4
+                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 4: NetBIOS release (nbtstat -R/-RR), ARP/NDP eviction, adapter DHCP re-enable & PnP transceiver power cycle' 4
+                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 5: Topological system service stack resuscitation (BFE -> mpssvc -> Dhcp -> Dnscache -> NlaSvc -> netprofm)' 4
+                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 6: DHCP release/renew cycle, dynamic DNS registration (ipconfig /registerdns) & STP convergence wait' 4
+                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 7: 7-layer heal pipeline & live dual-endpoint HTTPS reachability verification' 4
+                Out-Line @()
+                if (Read-Confirm 'Proceed with ULTRA SYSTEM RESET?' 'no') {
                     $script:ChangeCount = 0; $script:FailCount = 0
-                    Invoke-SupremeOmnifix
+                    Invoke-UltraSystemReset
                     $script:WdCache = $null
                 } else {
                     Out-Line @((Seg 'dim' '  Operation cancelled. No changes made.'))
@@ -752,49 +798,3 @@ function Rescue-DormantEthernetPnp {
         Write-Log 'WARN' "Rescue-DormantEthernetPnp non-critical exception: $_"
     }
 }
-function Get-EthernetAdapters {
-    Rescue-DormantEthernetPnp
-    return @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object {
-        $_.MediaType -eq '802.3' -and $_.InterfaceDescription -notmatch $script:VirtRegex
-    })
-}
-function Get-IfaceReg([string]$Guid) {
-    try { return (Get-ItemProperty -LiteralPath "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$Guid" -ErrorAction Stop) } catch { return $null }
-}
-function Get-DhcpDnsServers([string]$Guid) {
-    $reg = Get-IfaceReg $Guid
-    if ($reg -and $reg.DhcpNameServer) {
-        return @(([string]$reg.DhcpNameServer) -split '[,\s]+' | Where-Object { $_ -match '^\d{1,3}(\.\d{1,3}){3}$' })
-    }
-    return @()
-}
-function Get-DhcpCaptiveUrl([string]$Guid) {
-    $reg = Get-IfaceReg $Guid
-    if (-not $reg) { return $null }
-    foreach ($prop in 'DhcpCaptivePortalUrl', 'CaptivePortalUrl', 'DhcpOption114') {
-        if ($reg.$prop) {
-            $u = [string]$reg.$prop
-            if ($u -match '^https?://[^\s]+$') { return $u }
-        }
-    }
-    if ($reg.DhcpInterfaceOptions -is [byte[]]) {
-        [byte[]]$bytes = $reg.DhcpInterfaceOptions
-        $i = 0
-        while ($i -lt ($bytes.Length - 2)) {
-            $opt = [int]$bytes[$i]
-            $len = [int]$bytes[$i + 1]
-            if ($len -le 0 -or ($i + 2 + $len) -gt $bytes.Length) { break }
-            if ($opt -eq 114 -or $opt -eq 160) {
-                try {
-                    $str = [System.Text.Encoding]::ASCII.GetString($bytes, $i + 2, $len)
-                    if ($str -match '^https?://[^\s]+$') { return $str }
-                } catch {}
-            }
-            $i += (2 + $len)
-        }
-    }
-    return $null
-}
-function Get-GatewaysV4($Ad) {
-    return @(Get-NetRoute -InterfaceIndex $Ad.ifIndex -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue |
-        Where-Object { $_.NextHop -and $_.NextHop -ne '0.0.0.0' } | ForEach-Object { [string]$_.NextHop } | Select-Object -Unique)

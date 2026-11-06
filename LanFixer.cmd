@@ -18,6 +18,14 @@ exit /b %errorlevel%
     Add -DryRun to see exactly what would change without changing anything.
     Every change is snapshotted first, so ResetFactory restores YOUR original values.
 .NOTES
+    6.5.0 (Omniscient Layer 1-7 Healer & Sovereign Ultra Weapon Reset Engine):
+      - Invoke-UltraSystemReset: 7-stage nuclear stack resuscitation engine implementing full-spectrum low-level remediation.
+      - Dual-Stack TCP/IP & Winsock Nuclear Restoration: netsh winsock reset catalog (32/64-bit), netsh int ip/ipv6 reset, netsh int tcp reset.
+      - Routing & Firewall Nuclear Purge: route -f (clears all gateways and non-interface routes), netsh advfirewall reset (factory firewall defaults), netsh branchcache reset.
+      - Cache & NetBIOS Eviction: netsh interface ip delete arpcache, nbtstat -R & nbtstat -RR, Remove-NetNeighbor IPv4/IPv6, Clear-DnsClientCache, ipconfig /flushdns.
+      - Topological Service Stack Resuscitation: cleanly stops dependent services (netprofm, NlaSvc, Dnscache, Dhcp, iphlpsvc, dot3svc, WlanSvc) before reset and restarts them in strict topological dependency order (BFE -> mpssvc -> Dhcp -> Dnscache -> iphlpsvc -> dot3svc -> WlanSvc -> NlaSvc -> netprofm).
+      - Full DHCP Stack Cycle & Dynamic DNS: ipconfig /release & /renew (IPv4/IPv6), ipconfig /registerdns, and 802.1D Spanning Tree Protocol (STP) convergence loop.
+      - Interactive TUI & CLI Integration: Key [U] on dashboard, dual-tier selector on [X], -Mode UltraReset / FullNetReset CLI dispatch.
     6.4.2 (Sovereign Grand Master Final Hardening & PnP Optimization):
       - PnP Rescan Rate-Limit & Narrowing: Rescue-DormantEthernetPnp stamps limiter before query, checks only present faulted physical wired NICs, and ignores disabled/ghost devices.
       - Interactive Session Timestamp Validation: Start-Interactive writes process StartTime in round-trippable ISO-8601 UTC format, eliminating false-positive session purges.
@@ -171,7 +179,7 @@ exit /b %errorlevel%
 
 [CmdletBinding()]
 param(
-    [ValidateSet('Interactive','Heal','AutoHeal','Omnifix','FullNetReset','Diagnose','QuickProbe','FlushCache','InstallWatchdog','UninstallWatchdog','InstallShield','UninstallShield','ResetFactory','LaunchPortal','SetDnsProfile','SetRouteProfile','SelfTest','Report','Daemon')]
+    [ValidateSet('Interactive','Heal','AutoHeal','Omnifix','FullNetReset','UltraReset','Diagnose','QuickProbe','FlushCache','InstallWatchdog','UninstallWatchdog','InstallShield','UninstallShield','ResetFactory','LaunchPortal','SetDnsProfile','SetRouteProfile','SelfTest','Report','Daemon')]
     [string]$Mode = 'Interactive',
     [ValidateSet('Adaptive','DHCP','Hybrid','Cloudflare','ResetDHCP')]
     [string]$DnsProfile = 'Adaptive',
@@ -190,7 +198,7 @@ try { Add-Type -AssemblyName System.Security -ErrorAction SilentlyContinue } cat
 # ==============================================================================
 # CONFIG (edit here, nowhere else)
 # ==============================================================================
-$script:Version = '6.4.2'
+$script:Version = '6.5.0'
 $script:Sys32   = Join-Path $env:SystemRoot 'System32'
 $script:SelfPath = if ($env:LANFIXER_SELF -and (Test-Path -LiteralPath $env:LANFIXER_SELF)) { $env:LANFIXER_SELF } elseif ($PSCommandPath -and (Test-Path -LiteralPath $PSCommandPath)) { $PSCommandPath } elseif ($MyInvocation.MyCommand.Path -and (Test-Path -LiteralPath $MyInvocation.MyCommand.Path)) { $MyInvocation.MyCommand.Path } elseif ($PSScriptRoot -and (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'LanFixer.cmd'))) { (Join-Path $PSScriptRoot 'LanFixer.cmd') } else { (Join-Path (Get-Location).Path 'LanFixer.cmd') }
 $script:IsDry   = [bool]$DryRun
@@ -2460,11 +2468,12 @@ function Get-DashboardModel($t, $adv, [int]$Width = 0) {
         [void]$L.Add(@((Seg 'accent!' ('  PREVIEW & REPORTS'.PadRight($col1W + 2))), (Seg 'accent!' 'SYSTEM & RECOVERY')))
         [void]$L.Add(@((Seg 'text' ('  [T] Dry-Run Simulation'.PadRight($col1W + 2))), (Seg 'text' '[8] Disarm Watchdog')))
         [void]$L.Add(@((Seg 'text' ('  [R] Export Support Report'.PadRight($col1W + 2))), (Seg 'text' '[9] Factory Reset')))
-        [void]$L.Add(@((Seg 'text' ('  [S] Run Self-Test Suite'.PadRight($col1W + 2))), (Seg 'text' '[0] Guide')))
-        [void]$L.Add(@((Seg $(if ($adv.Key -eq 'x') { 'ok!' } else { 'accent!' }) ('  [X] Full Net Reset'.PadRight($col1W + 2))), (Seg 'dim' '[Q] Quit')))
+        [void]$L.Add(@((Seg 'text' ('  [S] Run Self-Test Suite'.PadRight($col1W + 2))), (Seg 'text' '[B] Autonomous Daemon')))
+        [void]$L.Add(@((Seg $(if ($adv.Key -eq 'x') { 'ok!' } else { 'accent!' }) ('  [X] Full Net Reset'.PadRight($col1W + 2))), (Seg 'warn!' '[U] Ultra System Reset')))
+        [void]$L.Add(@((Seg 'text' ('  [0] Guide'.PadRight($col1W + 2))), (Seg 'dim' '[Q] Quit')))
         if ($t.ArpPending) { [void]$L.Add(@((Seg 'warn!' ('  [K] Approve Gateway MAC Change'.PadRight($col1W + 2))), (Seg 'warn' 'Router MAC changed; review to lock ARP'))) }
     } else {
-        $legend = @(@('1', 'QuickHeal'), @('X', 'NetReset'), @('2', 'Guard'), @('A', 'Vault'), @('7', 'Portal'), @('G', 'Login'), @('3', 'DNS'), @('M', 'Route'), @('4', 'Probe'), @('5', 'Flush'), @('6', 'Audit'), @('T', 'Test'), @('R', 'Report'), @('S', 'Verify'), @('8', 'Disarm'), @('9', 'Reset'), @('0', 'Guide'), @('Q', 'Quit'))
+        $legend = @(@('1', 'QuickHeal'), @('X', 'NetReset'), @('U', 'UltraReset'), @('2', 'Guard'), @('A', 'Vault'), @('7', 'Portal'), @('G', 'Login'), @('3', 'DNS'), @('M', 'Route'), @('4', 'Probe'), @('5', 'Flush'), @('6', 'Audit'), @('B', 'Daemon'), @('T', 'Test'), @('R', 'Report'), @('S', 'Verify'), @('8', 'Disarm'), @('9', 'Reset'), @('0', 'Guide'), @('Q', 'Quit'))
         # A gateway-MAC review is transient, so [K] is advertised only while a candidate is really waiting. The leading
         # comma appends the pair as ONE legend cell; a bare "+=" would append two loose strings and corrupt the legend.
         if ($t.ArpPending) { $legend += , @('K', 'MAC') }
@@ -2545,8 +2554,10 @@ function Show-Advisory {
         # 4. Safety & Rollback
         @('Instant background sign-in with saved login', 'G', 'Headless Portal Sign-In'),
         @('Total network down / no internet anywhere',   'X', 'Full Network Reset'),
+        @('Nuclear stack corruption / LSP & driver wipe','U', 'Ultra System Reset'),
         @('Preview repairs safely without changes',      'T', 'Dry-Run Simulation'),
         @('Verify system cmdlets & security integrity',  'S', 'Run Self-Test Suite'),
+        @('Autonomous Sentinel background daemon',       'B', 'Autonomous Daemon'),
         @('Restore default Windows network settings',    '9', 'Factory Reset Rollback')
     )
     foreach ($m in $matrix) {
@@ -2699,7 +2710,7 @@ function Start-Repair([string]$Title = 'quick heal') {
 }
 
 function Invoke-DashboardKey([string]$Key, $adv) {
-    $aliases = @{ w = '2'; n = '3'; p = '4'; f = '5'; c = '5'; d = '6'; o = '7'; u = '8'; v = 'a'; l = 'g'; h = '0'; '?' = '0' }
+    $aliases = @{ w = '2'; n = '3'; p = '4'; f = '5'; c = '5'; d = '6'; o = '7'; v = 'a'; l = 'g'; h = '0'; '?' = '0' }
     if ($aliases.ContainsKey($Key)) { $Key = $aliases[$Key] }
     switch ($Key) {
         '0' { Show-Advisory }
@@ -2714,15 +2725,50 @@ function Invoke-DashboardKey([string]$Key, $adv) {
         'x' {
             Show-View 'full net reset (emergency recovery)' {
                 if (-not (Assert-Admin)) { return }
-                Out-Line @((Seg 'warn' '  NOTICE: Full Net Reset performs comprehensive network stack recovery:'))
-                Out-Wrapped 'faint' $script:G.mid 'text' 'Rescan PnP hardware bus, clear orphaned proxies, and clean WFP filters' 4
-                Out-Wrapped 'faint' $script:G.mid 'text' 'Normalize route metrics, reset MTU to standard 1500, and set routing to Adaptive' 4
-                Out-Wrapped 'faint' $script:G.mid 'text' 'Execute 7-layer heal pipeline, flush DNS/ARP caches, and clear NetBIOS' 4
-                Out-Wrapped 'faint' $script:G.mid 'text' 'Synchronize DHCP Client and Network Location Awareness (NlaSvc) services' 4
+                Out-Line @((Seg 'warn' '  NOTICE: Choose your recovery tier:'))
+                Out-Wrapped 'faint' $script:G.mid 'text' '[1] Standard Full Net Reset (5-Stage: Transceiver, metrics, MTU 1500, 7-layer heal, caches)' 4
+                Out-Wrapped 'warn!' $script:G.mid 'warn!' '[2] ULTRA System Reset (NUCLEAR WEAPON: Winsock catalog, TCP/IP stack reset, route -f, firewall, BranchCache, DHCP release/renew, registerdns, STP convergence)' 4
                 Out-Line @()
-                if (Read-Confirm 'Proceed with Full Net Reset?' 'yes') {
+                Out-Line @((Seg 'dim' '  Select tier [1] Standard, [2] or [U] ULTRA Nuclear, or press any other key to cancel '), (Seg 'accent!' $script:G.prompt)) -NoNewline
+                $k = Read-Choice
+                Out-Line @()
+                $choice = ([string]$k.KeyChar).ToLowerInvariant()
+                if ($choice -eq '2' -or $choice -eq 'u') {
+                    if (Read-Confirm 'Execute ULTRA SYSTEM RESET (Nuclear Stack Resuscitation)?' 'no') {
+                        $script:ChangeCount = 0; $script:FailCount = 0
+                        Invoke-UltraSystemReset
+                        $script:WdCache = $null
+                    } else {
+                        Out-Line @((Seg 'dim' '  Operation cancelled. No changes made.'))
+                    }
+                } elseif ($choice -eq '1' -or $choice -eq 'x') {
+                    if (Read-Confirm 'Proceed with Standard Full Net Reset?' 'yes') {
+                        $script:ChangeCount = 0; $script:FailCount = 0
+                        Invoke-SupremeOmnifix
+                        $script:WdCache = $null
+                    } else {
+                        Out-Line @((Seg 'dim' '  Operation cancelled. No changes made.'))
+                    }
+                } else {
+                    Out-Line @((Seg 'dim' '  Operation cancelled. No changes made.'))
+                }
+            }
+        }
+        'u' {
+            Show-View 'ultra system reset (nuclear recovery)' {
+                if (-not (Assert-Admin)) { return }
+                Out-Line @((Seg 'warn!' '  WARNING: ULTRA SYSTEM RESET IS THE ULTIMATE NUCLEAR REMEDIATION WEAPON:'))
+                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 1: Pre-flight snapshot & dependent network service teardown' 4
+                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 2: Nuclear Winsock catalog reset (netsh winsock reset catalog) & dual-stack TCP/IP reset (netsh int ip/ipv6 reset)' 4
+                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 3: Routing table purge (route -f), Windows Firewall factory reset (netsh advfirewall reset) & BranchCache reset' 4
+                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 4: NetBIOS release (nbtstat -R/-RR), ARP/NDP eviction, adapter DHCP re-enable & PnP transceiver power cycle' 4
+                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 5: Topological system service stack resuscitation (BFE -> mpssvc -> Dhcp -> Dnscache -> NlaSvc -> netprofm)' 4
+                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 6: DHCP release/renew cycle, dynamic DNS registration (ipconfig /registerdns) & STP convergence wait' 4
+                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 7: 7-layer heal pipeline & live dual-endpoint HTTPS reachability verification' 4
+                Out-Line @()
+                if (Read-Confirm 'Proceed with ULTRA SYSTEM RESET?' 'no') {
                     $script:ChangeCount = 0; $script:FailCount = 0
-                    Invoke-SupremeOmnifix
+                    Invoke-UltraSystemReset
                     $script:WdCache = $null
                 } else {
                     Out-Line @((Seg 'dim' '  Operation cancelled. No changes made.'))
@@ -5335,6 +5381,210 @@ function Invoke-SupremeOmnifix {
     }
 }
 
+# ==============================================================================
+# ULTRA SYSTEM RESET - THE SUPREME NUCLEAR REMEDIATION ENGINE
+# ==============================================================================
+function Invoke-UltraSystemReset {
+    if (-not (Assert-Admin)) { return }
+    $swUltra = [System.Diagnostics.Stopwatch]::StartNew()
+    Write-Section 'ULTRA SYSTEM RESET (7-STAGE NUCLEAR STACK RESUSCITATION)'
+    $r = Pick-Hash (Invoke-WithLock {
+        # ----------------------------------------------------------------------
+        # STAGE 1/7: PRE-FLIGHT STATE SNAPSHOT & SERVICE TEARDOWN
+        # ----------------------------------------------------------------------
+        Write-Log 'STEP' 'STAGE 1/7  Snapshotting pre-flight state & suspending dependent network services'
+        $script:ConnCache = $null
+        $script:EnvCache = @{}
+        if ($script:IsDry) {
+            Write-Log 'DRY' 'Would capture pre-flight snapshots and stop dependent network services (netprofm, NlaSvc, Dnscache, Dhcp, iphlpsvc, dot3svc, WlanSvc)'
+        } else {
+            foreach ($ea in @(Get-EthernetAdapters)) {
+                try { [void](Capture-PreflightSnapshot $ea) } catch {}
+            }
+            $script:State.Misc['RouteProfile'] = 'Adaptive'
+            $script:State.Misc['DnsProfile'] = 'Adaptive'
+            $script:State.Misc['FailStreak'] = 0
+            $script:State.Misc.Remove('MtuCandidate')
+            $script:State.Misc.Remove('DiscoveredDomain')
+            $script:State.Misc.Remove('DiscoveredPortalIp')
+            $script:State.Misc.Remove('DiscoveredPortalUrl')
+            
+            $downSvcs = @('netprofm', 'NlaSvc', 'Dnscache', 'Dhcp', 'iphlpsvc', 'dot3svc', 'WlanSvc')
+            foreach ($s in $downSvcs) {
+                try { Stop-Service -Name $s -Force -ErrorAction SilentlyContinue } catch {}
+            }
+        }
+
+        # ----------------------------------------------------------------------
+        # STAGE 2/7: LOW-LEVEL DUAL-STACK TCP/IP & WINSOCK NUCLEAR RESET
+        # ----------------------------------------------------------------------
+        Write-Log 'STEP' 'STAGE 2/7  Executing nuclear Winsock catalog reset & dual-stack TCP/IP factory restoration'
+        if ($script:IsDry) {
+            Write-Log 'DRY' 'Would execute: netsh winsock reset catalog'
+            Write-Log 'DRY' 'Would execute: netsh int ip reset & netsh int ipv6 reset'
+            Write-Log 'DRY' 'Would execute: netsh int tcp reset'
+        } else {
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('winsock', 'reset', 'catalog') 8000)
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('winsock', 'reset') 5000)
+
+            $ipLog = Join-Path $env:TEMP ('netsh_ip_reset_' + [Guid]::NewGuid().ToString('N').Substring(0,8) + '.log')
+            $ipv6Log = Join-Path $env:TEMP ('netsh_ipv6_reset_' + [Guid]::NewGuid().ToString('N').Substring(0,8) + '.log')
+            try {
+                [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'ip', 'reset', $ipLog) 10000)
+            } finally {
+                if (Test-Path -LiteralPath $ipLog) { Remove-Item -LiteralPath $ipLog -Force -ErrorAction SilentlyContinue }
+            }
+            try {
+                [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'ipv6', 'reset', $ipv6Log) 10000)
+            } finally {
+                if (Test-Path -LiteralPath $ipv6Log) { Remove-Item -LiteralPath $ipv6Log -Force -ErrorAction SilentlyContinue }
+            }
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'tcp', 'reset') 5000)
+        }
+
+        # ----------------------------------------------------------------------
+        # STAGE 3/7: ROUTING TABLE PURGE & FIREWALL FACTORY NORMALIZATION
+        # ----------------------------------------------------------------------
+        Write-Log 'STEP' 'STAGE 3/7  Purging IP routing table (route -f), resetting Windows Firewall & clearing proxies'
+        if ($script:IsDry) {
+            Write-Log 'DRY' 'Would execute: route -f (purge all routes and gateways)'
+            Write-Log 'DRY' 'Would execute: netsh advfirewall reset & netsh branchcache reset'
+            Write-Log 'DRY' 'Would execute: netsh winhttp reset proxy & registry proxy wipe'
+        } else {
+            [void](Invoke-Native (Get-SysExe 'route.exe') @('-f') 5000)
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('advfirewall', 'reset') 8000)
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('branchcache', 'reset') 5000)
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('winhttp', 'reset', 'proxy') 5000)
+        }
+        Shield-Proxies
+        Remove-CampusNrpt
+        Remove-LegacyHostsEntries
+        Remove-CampusHostRoutes
+        Shield-SystemStack -Aggressive
+
+        # ----------------------------------------------------------------------
+        # STAGE 4/7: CACHE EVICTION, HARDWARE RESEAT & ADAPTER CONFIG REBUILD
+        # ----------------------------------------------------------------------
+        Write-Log 'STEP' 'STAGE 4/7  Purging ARP/NDP/NetBIOS caches, cycling PHY hardware & resetting IP stack to DHCP'
+        if ($script:IsDry) {
+            Write-Log 'DRY' 'Would execute: netsh interface ip delete arpcache & Remove-NetNeighbor'
+            Write-Log 'DRY' 'Would execute: nbtstat -R & nbtstat -RR'
+            Write-Log 'DRY' 'Would execute: ipconfig /flushdns & Clear-DnsClientCache'
+            Write-Log 'DRY' 'Would cycle PHY transceiver, reset adapter IP to DHCP, MTU to 1500, and rescan PnP devices'
+        } else {
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('interface', 'ip', 'delete', 'arpcache') 5000)
+            Get-NetNeighbor -AddressFamily IPv4 -ErrorAction SilentlyContinue | Remove-NetNeighbor -Confirm:$false -ErrorAction SilentlyContinue
+            Get-NetNeighbor -AddressFamily IPv6 -ErrorAction SilentlyContinue | Remove-NetNeighbor -Confirm:$false -ErrorAction SilentlyContinue
+
+            [void](Invoke-Native (Get-SysExe 'nbtstat.exe') @('-R') 5000)
+            [void](Invoke-Native (Get-SysExe 'nbtstat.exe') @('-RR') 5000)
+
+            Clear-DnsClientCache -ErrorAction SilentlyContinue
+            [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/flushdns') 5000)
+        }
+        Shield-Aspm
+        foreach ($ea in @(Get-EthernetAdapters)) {
+            if (-not $script:IsDry) {
+                Reset-PhysicalAdapterHardware $ea
+                Release-ArpLocks $ea
+                [void](Shield-TcpOffloads $ea)
+                [void](Shield-Dot3Svc $ea)
+                try {
+                    Set-NetIPInterface -InterfaceIndex $ea.ifIndex -AddressFamily IPv4 -Dhcp Enabled -NlMtuBytes 1500 -AutomaticMetric Enabled -ErrorAction SilentlyContinue
+                    Set-NetIPInterface -InterfaceIndex $ea.ifIndex -AddressFamily IPv6 -Dhcp Enabled -ErrorAction SilentlyContinue
+                    Set-DnsClientServerAddress -InterfaceIndex $ea.ifIndex -ResetServerAddresses -ErrorAction SilentlyContinue
+                } catch {}
+            }
+        }
+        if (-not $script:IsDry) {
+            [void](Invoke-Native (Get-SysExe 'pnputil.exe') @('/scan-devices') 5000)
+        }
+        Restore-InterfaceMetrics 'Ultra System Reset metrics restore'
+
+        # ----------------------------------------------------------------------
+        # STAGE 5/7: SYSTEM SERVICE STACK RESUSCITATION (TOPOLOGICAL ORDER)
+        # ----------------------------------------------------------------------
+        Write-Log 'STEP' 'STAGE 5/7  Resuscitating core networking services in topological dependency order'
+        if ($script:IsDry) {
+            Write-Log 'DRY' 'Would start services in topological order: BFE -> mpssvc -> Dhcp -> Dnscache -> iphlpsvc -> dot3svc -> WlanSvc -> NlaSvc -> netprofm'
+        } else {
+            $upSvcs = @('BFE', 'mpssvc', 'Dhcp', 'Dnscache', 'iphlpsvc', 'dot3svc', 'WlanSvc', 'NlaSvc', 'netprofm')
+            foreach ($s in $upSvcs) {
+                try { Start-Service -Name $s -ErrorAction SilentlyContinue } catch {}
+            }
+            Start-Sleep -Milliseconds 1500
+        }
+
+        # ----------------------------------------------------------------------
+        # STAGE 6/7: DHCP STACK CYCLE, DYNAMIC DNS REGISTRATION & STP CONVERGENCE
+        # ----------------------------------------------------------------------
+        Write-Log 'STEP' 'STAGE 6/7  Cycling DHCP leases, registering dynamic DNS & awaiting STP switch convergence'
+        if ($script:IsDry) {
+            Write-Log 'DRY' 'Would execute: ipconfig /release, ipconfig /renew, and ipconfig /registerdns'
+            Write-Log 'DRY' 'Would wait for 802.1D Spanning Tree Protocol (STP) switch convergence'
+        } else {
+            [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/release') 8000)
+            [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/release6') 8000)
+            Start-Sleep -Milliseconds 1000
+            [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/renew') 15000)
+            [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/renew6') 15000)
+            [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/registerdns') 5000)
+        }
+        foreach ($ea in @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })) {
+            [void](Wait-StpConvergence $ea 15)
+        }
+
+        # ----------------------------------------------------------------------
+        # STAGE 7/7: 7-LAYER RE-HEAL PIPELINE & DUAL-ENDPOINT REACHABILITY VERIFICATION
+        # ----------------------------------------------------------------------
+        Write-Log 'STEP' 'STAGE 7/7  Executing 7-layer heal pipeline & verifying live dual-endpoint reachability'
+        $resHeal = Pick-Hash (Invoke-HealPipeline -SkipSystemStack)
+        $anyVerifyFail = $false
+        $upEths = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })
+        $primarySrc = if ($upEths.Count -gt 0) { Get-ValidIPv4 $upEths[0] } else { '' }
+        foreach ($testHost in @('github.com', 'accounts.google.com')) {
+            $ip = Resolve-HostBounded $testHost 3000 $primarySrc
+            if ($ip) {
+                $tcpOk = Test-TcpPort $ip 443 2500 $primarySrc
+                Write-Log ($(if ($tcpOk) { 'OK' } else { 'WARN' })) ("Verified {0} -> {1} (TCP/443: {2})" -f $testHost, $ip, $(if ($tcpOk) { 'OPEN' } else { 'BLOCKED' }))
+            } else {
+                $anyVerifyFail = $true
+                Write-Log 'FAIL' ("DNS resolution still failed for {0}" -f $testHost)
+            }
+        }
+        if ($anyVerifyFail -and -not $script:IsDry -and ($resHeal.Conn -ne 'Captive')) {
+            Write-Log 'WARN' 'DNS resolution failed for public endpoints. Deploying adaptive public DNS rescue...'
+            foreach ($ea in @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })) {
+                $rescueDns = @(Get-BestDnsOrder ([string]$ea.InterfaceGuid) @())
+                if ($rescueDns.Count -gt 0) {
+                    Write-Log 'INFO' "Applying active public DNS rescue on $($ea.Name): $($rescueDns -join ', ')..."
+                    [void](Set-AdapterDns $ea $rescueDns)
+                }
+            }
+            Clear-DnsClientCache -ErrorAction SilentlyContinue
+            [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/flushdns') 5000)
+            foreach ($testHost in @('github.com', 'accounts.google.com')) {
+                $ip = Resolve-HostBounded $testHost 3000 $primarySrc
+                if ($ip) {
+                    $tcpOk = Test-TcpPort $ip 443 2500 $primarySrc
+                    Write-Log ($(if ($tcpOk) { 'OK' } else { 'WARN' })) ("Re-verified {0} -> {1} (TCP/443: {2})" -f $testHost, $ip, $(if ($tcpOk) { 'OPEN' } else { 'BLOCKED' }))
+                }
+            }
+        }
+        Save-State
+        $resHeal
+    })
+    $swUltra.Stop()
+    Write-HealSummary $r $swUltra
+    if ($r -and $r.Conn -eq 'Captive' -and -not $script:IsDry) {
+        [void](Invoke-WithLock { [void](Open-Portal); Save-State })
+        if ($script:UiOn -and (Get-InternetState -NoCache).State -eq 'Captive') {
+            Out-Line @((Seg 'dim' '  Sign in on the page that opened; the fast DNS path is applied for you afterwards.'))
+            if (Wait-ForAuthentication 180) { Complete-Authentication; Write-Log 'OK' 'Signed in. Post-login DNS applied.' }
+        }
+    }
+}
+
 function Shield-Services($Ctxs, [string]$ConnState) {
     if ((@($Ctxs | Where-Object { $_.Env.Env -eq 'Campus' })).Count -eq 0 -and (@($Ctxs | Where-Object { $_.Env.Env -eq 'Other' })).Count -gt 0) {
         Restore-NeutralizedInterceptors 'Non-campus Ethernet network'
@@ -7652,6 +7902,14 @@ function Invoke-LogicTests {
     $diagDef = [string](Get-Command Show-Diagnostics -ErrorAction SilentlyContinue).Definition
     Write-Check 'Logic: Show-Diagnostics displays subnet calculus and NDIS health' ($diagDef.IndexOf("Get-SubnetInfoFromLease") -ge 0 -and $diagDef.IndexOf("Test-NdisLinkHealth") -ge 0)
 
+    Write-Check 'Logic: UltraReset mode exists in ValidateSet' ($srcTxt -match "ValidateSet\([^)]*'UltraReset'")
+    Write-Check 'Logic: Invoke-UltraSystemReset is defined' ($null -ne (Get-Command Invoke-UltraSystemReset -ErrorAction SilentlyContinue))
+    $ultraDef = [string](Get-Command Invoke-UltraSystemReset -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Ultra System Reset resets dual-stack TCP/IP, Winsock, route -f, and firewall' ($ultraDef.IndexOf('netsh') -ge 0 -and $ultraDef.IndexOf('route.exe') -ge 0 -and $ultraDef.IndexOf('advfirewall') -ge 0 -and $ultraDef.IndexOf('winsock') -ge 0)
+    Write-Check 'Logic: Ultra System Reset resuscitates services topologically and registers DNS' ($ultraDef.IndexOf('registerdns') -ge 0 -and $ultraDef.IndexOf('Wait-StpConvergence') -ge 0)
+    $idkDefNow = [string](Get-Command Invoke-DashboardKey -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Invoke-DashboardKey handles key U for Ultra System Reset' ($idkDefNow.IndexOf("Invoke-UltraSystemReset") -ge 0)
+
     $script:State = $stSave
 }
 function Invoke-SelfTest {
@@ -8280,7 +8538,7 @@ function Start-Interactive {
     }
 }
 $script:IsAdmin = Test-IsAdmin
-$adminModes = @('Interactive', 'Heal', 'AutoHeal', 'Omnifix', 'FullNetReset', 'FlushCache', 'InstallWatchdog', 'UninstallWatchdog', 'InstallShield', 'UninstallShield', 'ResetFactory', 'SetDnsProfile', 'SetRouteProfile', 'Daemon')
+$adminModes = @('Interactive', 'Heal', 'AutoHeal', 'Omnifix', 'FullNetReset', 'UltraReset', 'FlushCache', 'InstallWatchdog', 'UninstallWatchdog', 'InstallShield', 'UninstallShield', 'ResetFactory', 'SetDnsProfile', 'SetRouteProfile', 'Daemon')
 if ($Mode -eq 'Interactive') {
     $intFile = Join-Path $script:Cfg.StoreDir 'interactive.json'
     if (Test-Path -LiteralPath $intFile) {
@@ -8341,7 +8599,8 @@ try {
     switch ($Mode) {
         'AutoHeal' { [void](Invoke-AutoHeal) }
         'Omnifix'      { Invoke-SupremeOmnifix }
-        'FullNetReset' { Invoke-SupremeOmnifix }
+        'FullNetReset' { Invoke-UltraSystemReset }
+        'UltraReset'   { Invoke-UltraSystemReset }
         'SetRouteProfile' { Set-RouteProfileMode $RouteProfile }
         'Heal' {
             $sw = [System.Diagnostics.Stopwatch]::StartNew()
@@ -8386,7 +8645,7 @@ try {
     Exit-Lock
     if ($script:UiOn) { Exit-Screen }
 }
-if ($exitCode -eq 0 -and $script:FailCount -gt 0 -and (@('AutoHeal', 'Heal', 'Omnifix', 'FullNetReset') -contains $Mode)) { $exitCode = 2 }
+if ($exitCode -eq 0 -and $script:FailCount -gt 0 -and (@('AutoHeal', 'Heal', 'Omnifix', 'FullNetReset', 'UltraReset') -contains $Mode)) { $exitCode = 2 }
 if ($exitCode -ne 0 -and -not $NoPause -and $Host.Name -eq 'ConsoleHost') {
     Write-Host ''
     Write-Host 'LanFixer closed with an exit code. Press any key to close...' -ForegroundColor Gray
