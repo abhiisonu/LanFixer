@@ -9,7 +9,7 @@ exit /b %errorlevel%
 
 <#
 .SYNOPSIS
-    Lan Fixer 6.1.3 - Sovereign self-healing Ethernet stabilizer for campus/hostel LANs (Windows 10/11, Ethernet only).
+    Lan Fixer 6.2.0 - Sovereign self-healing Ethernet stabilizer for campus/hostel LANs (Windows 10/11, Ethernet only).
     Author: A.S.
 .DESCRIPTION
     Single file, ASCII only. Run it normally for the control center, or use -Mode:
@@ -131,7 +131,7 @@ try { Add-Type -AssemblyName System.Security -ErrorAction SilentlyContinue } cat
 # ==============================================================================
 # CONFIG (edit here, nowhere else)
 # ==============================================================================
-$script:Version = '6.1.3'
+$script:Version = '6.2.0'
 $script:Sys32   = Join-Path $env:SystemRoot 'System32'
 $script:SelfPath = if ($env:LANFIXER_SELF -and (Test-Path -LiteralPath $env:LANFIXER_SELF)) { $env:LANFIXER_SELF } elseif ($PSCommandPath -and (Test-Path -LiteralPath $PSCommandPath)) { $PSCommandPath } elseif ($MyInvocation.MyCommand.Path -and (Test-Path -LiteralPath $MyInvocation.MyCommand.Path)) { $MyInvocation.MyCommand.Path } elseif ($PSScriptRoot -and (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'LanFixer.cmd'))) { (Join-Path $PSScriptRoot 'LanFixer.cmd') } else { (Join-Path (Get-Location).Path 'LanFixer.cmd') }
 $script:IsDry   = [bool]$DryRun
@@ -142,9 +142,9 @@ $script:Cfg = @{
     TaskWatchdog    = 'LanFixer_Watchdog'
     TaskPortal      = 'LanFixer_Portal'
     PortalHost      = 'gateway.nitjsr.ac.in'
-    PortalPort      = 8003
+    PortalPort      = 8888
     PortalIp        = '10.114.0.5'
-    PortalUrl       = 'https://gateway.nitjsr.ac.in:8003/index.php?zone=nitjsr'
+    PortalUrl       = 'https://gateway.nitjsr.ac.in:8888/'
     CampusDns       = '172.16.1.2'
     CampusDomain    = 'nitjsr.ac.in'
     GwRegex         = '^10\.1\.\d{1,3}\.1$'   # only a 1-point hint; DNS/portal evidence decides
@@ -2839,7 +2839,14 @@ function Get-ActivePowerScheme {
 }
 
 function Get-PowerSettingIndex([string]$Scheme, [string]$Mode) {
-    $r = Invoke-Native (Get-SysExe 'powercfg.exe') @(('/get{0}valueindex' -f $Mode), $Scheme, $script:UsbSub, $script:UsbSet) 5000
+    $r = Invoke-Native (Get-SysExe 'powercfg.exe') @('/query', $Scheme, $script:UsbSub, $script:UsbSet) 5000
+    if ($Mode -eq 'ac') {
+        $m = [regex]::Match([string]$r.Output, 'Current AC Power Setting Index:\s*0x([0-9a-fA-F]+)')
+        if ($m.Success) { return [Convert]::ToInt32($m.Groups[1].Value, 16) }
+    } else {
+        $m = [regex]::Match([string]$r.Output, 'Current DC Power Setting Index:\s*0x([0-9a-fA-F]+)')
+        if ($m.Success) { return [Convert]::ToInt32($m.Groups[1].Value, 16) }
+    }
     return (ConvertFrom-PowerIndexText ([string]$r.Output))
 }
 
@@ -3306,6 +3313,17 @@ function Shield-Hardware($Ad) {
             }
             if ($ok) { $touched = $true }
         }
+    }
+    # Hardening USB device parameters for Realtek and USB GbE dongles against idle power drops
+    if ($Ad.InterfaceDescription -match 'USB|Realtek|GbE|Ethernet') {
+        try {
+            $enumKey = "HKLM:\SYSTEM\CurrentControlSet\Enum\$($Ad.PnPDeviceID)\Device Parameters"
+            if (Test-Path -LiteralPath $enumKey) {
+                Set-ItemProperty -LiteralPath $enumKey -Name 'DeviceSelectiveSuspended' -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+                Set-ItemProperty -LiteralPath $enumKey -Name 'IdleInWorkingState' -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+                Set-ItemProperty -LiteralPath $enumKey -Name 'SelectiveSuspendEnabled' -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+            }
+        } catch {}
     }
     # Windows Power Scheme: Disable USB Selective Suspend so the USB host controller never sleeps the dongle
     Set-UsbSuspendOff
@@ -3971,7 +3989,7 @@ function Shield-DnsIntegrity($Ad) {
     try {
         $verdict = Get-AdapterDnsVerdict $Ad
         if ($verdict.Action -ne 'Neutralize') { return }
-        $v6Binding = Get-NetAdapterBinding -InterfaceIndex $Ad.ifIndex -ComponentId 'ms_tcpip6' -ErrorAction SilentlyContinue
+        $v6Binding = Get-NetAdapterBinding -Name $Ad.Name -ComponentId 'ms_tcpip6' -ErrorAction SilentlyContinue
         if ($v6Binding -and $v6Binding.Enabled) {
             Save-Original $guid 'MsTcpip6' 'True'
             $why = if ($verdict.IsSinkhole) { "Neutralize rogue IPv6 DNS sinkhole on $($Ad.Name)" }
@@ -3979,7 +3997,7 @@ function Shield-DnsIntegrity($Ad) {
             $ok = Invoke-Change $why {
                 Set-DnsClientServerAddress -InterfaceIndex $Ad.ifIndex -ResetServerAddresses -ErrorAction SilentlyContinue
                 Set-NetIPInterface -InterfaceIndex $Ad.ifIndex -AddressFamily IPv6 -RouterDiscovery Disabled -ErrorAction SilentlyContinue
-                Disable-NetAdapterBinding -InterfaceIndex $Ad.ifIndex -ComponentId 'ms_tcpip6' -Confirm:$false -ErrorAction Stop
+                Disable-NetAdapterBinding -Name $Ad.Name -ComponentId 'ms_tcpip6' -Confirm:$false -ErrorAction Stop
             }
             if ($ok -and -not $script:IsDry) {
                 (Get-SubTable 'Dns' $guid).Ipv6Neutralized = $true
@@ -5618,7 +5636,7 @@ function Restore-Everything {
             if ($mv -eq 'True') {
                 [void](Invoke-Change "IPv6 re-enabled on adapter $guid" {
                     $mAd = Get-NetAdapter -InterfaceGuid $guid -ErrorAction SilentlyContinue
-                    if ($mAd) { Enable-NetAdapterBinding -InterfaceIndex $mAd.ifIndex -ComponentId 'ms_tcpip6' -Confirm:$false -ErrorAction SilentlyContinue }
+                    if ($mAd) { Enable-NetAdapterBinding -Name $mAd.Name -ComponentId 'ms_tcpip6' -Confirm:$false -ErrorAction SilentlyContinue }
                 })
             }
         }
@@ -5869,7 +5887,7 @@ function Set-RouteProfileMode([string]$Name) {
         if ($Name -eq 'Wifi') {
             foreach ($w in (Get-AllWirelessAdapters)) {
                 if ($w.Status -eq 'Disabled') {
-                    try { Enable-NetAdapter -InterfaceIndex $w.ifIndex -Confirm:$false -ErrorAction SilentlyContinue } catch {}
+                    try { Enable-NetAdapter -Name $w.Name -Confirm:$false -ErrorAction SilentlyContinue } catch {}
                 }
             }
         }
