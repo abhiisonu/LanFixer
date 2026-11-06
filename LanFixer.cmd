@@ -569,7 +569,7 @@ function Test-ConfigFileTrusted([string]$Path) {
         $acl = Get-Acl -LiteralPath $Path
         $owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
         if (@('S-1-5-18', 'S-1-5-32-544') -notcontains $owner) { return $false }
-        $writeMask = 0x116 -bor 0x10000 -bor 0x40000 -bor 0x80000
+        $writeMask = 0x116 -bor 0x10000 -bor 0x40000 -bor 0x80000 -bor 0x40000000 -bor 0x10000000
         foreach ($r in @($acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))) {
             if ([string]$r.AccessControlType -ne 'Allow') { continue }
             if (@('S-1-5-18', 'S-1-5-32-544') -contains [string]$r.IdentityReference.Value) { continue }
@@ -1326,7 +1326,7 @@ function Restore-InterfaceMetrics([string]$Why) {
             $rec = $orig[$k]
             $guid = ($k -split '\|')[0]
             $ad = $present | Where-Object { [string]$_.InterfaceGuid -eq $guid } | Select-Object -First 1
-            if (-not $ad) { if (-not $script:IsDry) { $orig.Remove($k) }; continue }
+            if (-not $ad) { continue }
             $af = [string]$rec.Af
             $ok = $false
             if ([string]$rec.Auto -eq 'Enabled') {
@@ -1479,8 +1479,8 @@ function New-CertCallback([string]$Pin, $Capture) {
             try { $c2 = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($cert); $Capture.Subject = [string]$c2.Subject; $Capture.Issuer = [string]$c2.Issuer; $Capture.NotAfter = $c2.NotAfter.ToString('yyyy-MM-dd') } catch {}
             if ($Capture.AcceptAny) { return $true }
         }
+        if ($pinU) { return ($hex -and ($hex -eq $pinU)) }
         if ([string]$errs -eq 'None') { return $true }
-        if ($pinU -and $hex -and ($hex -eq $pinU)) { return $true }
         return $false
     }.GetNewClosure()
     return [System.Net.Security.RemoteCertificateValidationCallback]$cb
@@ -3260,7 +3260,7 @@ function Rescue-DormantEthernetPnp {
     Set-StateTime 'PnpRescan'
     try {
         $nics = @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object {
-            $_.MediaType -eq '802.3' -and $_.InterfaceDescription -notmatch $script:VirtRegex })
+            $_.MediaType -eq '802.3' -and $_.Status -ne 'Not Present' -and $_.InterfaceDescription -notmatch $script:VirtRegex })
         if ($nics.Count -eq 0) {
             [void](Invoke-Native (Get-SysExe 'pnputil.exe') @('/scan-devices') 5000)
             return
@@ -3289,8 +3289,10 @@ function Get-IfaceReg([string]$Guid) {
 }
 function Get-DhcpDnsServers([string]$Guid) {
     $reg = Get-IfaceReg $Guid
-    if ($reg -and $reg.DhcpNameServer) {
-        return @(([string]$reg.DhcpNameServer) -split '[,\s]+' | Where-Object { $_ -match '^\d{1,3}(\.\d{1,3}){3}$' })
+    if ($reg -and ($reg.DhcpNameServer -or $reg.Dhcpv6DNSServers)) {
+        $res = @(([string]$reg.DhcpNameServer) -split '[,\s]+' | Where-Object { $_ -match '^\d{1,3}(\.\d{1,3}){3}$' -or $_ -match '^[0-9a-fA-F:]+$' })
+        if ($reg.Dhcpv6DNSServers) { $res += @(([string]$reg.Dhcpv6DNSServers) -split '[,\s]+' | Where-Object { $_ -match '^[0-9a-fA-F:]+$' }) }
+        return @($res | Select-Object -Unique)
     }
     return @()
 }
@@ -3605,8 +3607,8 @@ function Test-NdisLinkHealth($Ad) {
         $healthy = $false
         $reasons += 'FlapTo10Mbps'
     }
-    if ($errors -gt 100) { $reasons += ("PacketErrors({0})" -f $errors) }
-    if ($discards -gt 1000) { $reasons += ("HighDiscards({0})" -f $discards) }
+    if ($errors -gt 100) { $healthy = $false; $reasons += ("PacketErrors({0})" -f $errors) }
+    if ($discards -gt 1000) { $healthy = $false; $reasons += ("HighDiscards({0})" -f $discards) }
     $reasonStr = if ($reasons.Count -gt 0) { $reasons -join ', ' } else { 'Healthy' }
     return [PSCustomObject]@{
         Healthy   = $healthy
@@ -3748,10 +3750,14 @@ function Shield-Hardware($Ad) {
                 foreach ($pName in $paramNames) {
                     $cur = (Get-ItemProperty -LiteralPath $enumKey -Name $pName -ErrorAction SilentlyContinue).$pName
                     if ($null -ne $cur -and [int]$cur -eq 0) { continue }
-                    Save-Original $guid ("Enum:$pName") $cur
-                    [void](Invoke-Change "Device Parameters '$pName' set to 0 on $($Ad.Name)" {
+                    try {
                         Set-ItemProperty -LiteralPath $enumKey -Name $pName -Value 0 -Type DWord -Force -ErrorAction Stop
-                    })
+                        Save-Original $guid ("Enum:$pName") $cur
+                        Write-Log 'OK' "Device Parameters '$pName' set to 0 on $($Ad.Name)"
+                        $script:ChangeCount++
+                    } catch {
+                        Write-Log 'INFO' "Device Parameters '$pName' on $($Ad.Name) skipped (SYSTEM ownership required)"
+                    }
                 }
             }
         } catch {}
@@ -3792,7 +3798,7 @@ function Shield-Dot3Svc($Ad) {
             if ($changed -and $Ad) {
                 $netsh = Get-SysExe 'netsh.exe'
                 if (Test-Path -LiteralPath $netsh) {
-                    [void](Invoke-Native $netsh @('lan', 'reconnect', ("interface=`"{0}`"" -f $Ad.Name)) 5000)
+                    [void](Invoke-Native $netsh @('lan', 'reconnect', ("interface={0}" -f $Ad.Name)) 5000)
                 }
             }
             return $changed
@@ -3810,7 +3816,8 @@ function Wait-StpConvergence($Ad, [int]$MaxWaitSec = 45) {
         $curAd = Get-NetAdapter -Name $Ad.Name -ErrorAction SilentlyContinue
         if ($curAd -and $curAd.Status -eq 'Up') {
             $ip = Get-ValidIPv4 $curAd
-            if ($ip) {
+            $hasV6 = @(Get-NetIPAddress -InterfaceIndex $curAd.ifIndex -AddressFamily IPv6 -ErrorAction SilentlyContinue | Where-Object { [string]$_.AddressState -eq 'Preferred' -and [string]$_.IPAddress -notmatch '^(fe80|::1)' }).Count -gt 0
+            if ($ip -or $hasV6) {
                 $gw = @(Get-GatewaysV4 $curAd) | Select-Object -First 1
                 if ($gw) {
                     $chk = Test-GatewayAlive $curAd $gw
@@ -4028,8 +4035,9 @@ function Remove-GatewayLock($Ad, [string]$Gw) {
     Remove-NetNeighbor -InterfaceIndex $Ad.ifIndex -IPAddress $Gw -PolicyStore PersistentStore -Confirm:$false -ErrorAction SilentlyContinue
     Remove-NetNeighbor -InterfaceIndex $Ad.ifIndex -IPAddress $Gw -Confirm:$false -ErrorAction SilentlyContinue
     [void](Invoke-Native (Get-SysExe 'arp.exe') @('-d', $Gw) 5000)
+    # Retain the recorded MAC in $script:State.Arp so Get-ArpDecision can continue
+    # to compare against $Prev and detect rogue spoofed MAC candidates!
     $t = Get-SubTable 'Arp' ([string]$Ad.InterfaceGuid)
-    $t.Remove($Gw)
 }
 function Release-ArpLocks($Ad) {
     $t = Get-SubTable 'Arp' ([string]$Ad.InterfaceGuid)
@@ -4269,7 +4277,10 @@ function Shield-RouteMetrics($Ctx, [string]$ConnState) {
     $plan = Get-RouteMetricPlan ([string]$Ctx.Env.Env) $ConnState $others.Count
     if ($plan.Mode -eq 'Restore') {
         if (-not $script:IsDry) { Remove-CampusHostRoutes $ad.ifIndex }
-        if ((Test-MetricsManaged) -or (Get-RouteProfileName) -eq 'Windows') { Restore-InterfaceMetrics ([string]$plan.Why) }
+        $hasOtherCampus = @(Get-EthernetAdapters | Where-Object { $_.ifIndex -ne $ad.ifIndex -and (Get-AdapterEnvironment $_).Env -eq 'Campus' }).Count -gt 0
+        if (-not $hasOtherCampus -and ((Test-MetricsManaged) -or (Get-RouteProfileName) -eq 'Windows')) {
+            Restore-InterfaceMetrics ([string]$plan.Why)
+        }
         return
     }
     # Branch 3 removes the campus host routes BEFORE promoting; branch 2 injects them AFTER demoting, so the
@@ -4762,15 +4773,15 @@ function Invoke-RoamingCleanup {
     $any = ($rules.Count -gt 0) -or (Test-MetricsManaged) -or $hasNeutSvc -or $hasNeutTsk -or $dnsManaged
     foreach ($fl in $flags) { if ($script:State.Misc[$fl] -eq $true) { $any = $true } }
     if (-not $any) { return }
+    if ($Mode -eq 'AutoHeal') {
+        if (-not $script:State.Misc['LinkDownSince']) { Set-StateTime 'LinkDownSince'; Write-Log 'INFO' 'Link down: debouncing roaming cleanup against momentary cable flap (45s grace period).'; return }
+        if (-not (Test-Elapsed 'LinkDownSince' 45)) { Write-Log 'INFO' 'Link down under 45s: debouncing roaming cleanup against momentary cable flap.'; return }
+    }
     if (Test-MetricsManaged) { Restore-InterfaceMetrics 'No active Ethernet link' }
     Remove-CampusHostRoutes
     $cd = Get-ActiveCampusDns
     $m = Measure-ResolversFast @($cd) 600 53 ''
     if ($null -ne $m[$cd]) { Write-Log 'INFO' 'No Ethernet link, but the campus resolver answers over another link (campus Wi-Fi?): campus-only settings kept.'; return }
-    if ($Mode -eq 'AutoHeal') {
-        if (-not $script:State.Misc['LinkDownSince']) { Set-StateTime 'LinkDownSince'; Write-Log 'INFO' 'Link down: debouncing roaming cleanup against momentary cable flap (45s grace period).'; return }
-        if (-not (Test-Elapsed 'LinkDownSince' 45)) { Write-Log 'INFO' 'Link down under 45s: debouncing roaming cleanup against momentary cable flap.'; return }
-    }
     Write-Log 'INFO' 'No Ethernet link and the campus resolver is unreachable: undoing the hostel-only settings.'
     Remove-CampusNrpt
     Restore-LlmnrIfManaged 'Left campus: LLMNR setting restored'
@@ -5479,8 +5490,12 @@ function Invoke-UltraSystemReset {
             Write-Log 'DRY' 'Would capture pre-flight snapshots and stop dependent network services (BITS, netprofm, NlaSvc, Dnscache, Dhcp, iphlpsvc, dot3svc, WlanSvc, CryptSvc, mpssvc)'
         } else {
             foreach ($ea in @(Get-EthernetAdapters)) {
-                try { [void](Capture-PreflightSnapshot $ea) } catch {}
+                try {
+                    $snap = Capture-PreflightSnapshot $ea
+                    if ($snap -and $snap.Guid) { $script:State.Snapshot[$snap.Guid] = $snap }
+                } catch {}
             }
+            if (-not $script:IsDry) { Save-State }
             $script:State.Misc['RouteProfile'] = 'Adaptive'
             $script:State.Misc['DnsProfile'] = 'Adaptive'
             $script:State.Misc['FailStreak'] = 0
@@ -5605,7 +5620,7 @@ function Invoke-UltraSystemReset {
             try {
                 $fwBackup = Join-Path $script:StoreDir 'firewall_pre_reset.wfw'
                 if (-not (Test-Path -LiteralPath $fwBackup)) {
-                    [void](Invoke-Native (Get-SysExe 'netsh.exe') @('advfirewall', 'export', "`"$fwBackup`"") 5000)
+                    [void](Invoke-Native (Get-SysExe 'netsh.exe') @('advfirewall', 'export', $fwBackup) 5000)
                 }
             } catch {}
 
@@ -5811,12 +5826,13 @@ function Invoke-UltraSystemReset {
             [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/release') 8000)
             [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/release6') 8000)
             Start-Sleep -Milliseconds 1000
+            # Wait for STP listening/learning convergence before DHCP renewal
+            foreach ($ea in @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })) {
+                [void](Wait-StpConvergence $ea 15)
+            }
             [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/renew') 15000)
             [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/renew6') 15000)
             [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/registerdns') 5000)
-        }
-        foreach ($ea in @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })) {
-            [void](Wait-StpConvergence $ea 15)
         }
 
         # 7-Layer Ethernet & Multi-Homed Heal Pipeline
@@ -5886,8 +5902,12 @@ function Invoke-DoomsdayReset {
             Write-Log 'DRY' 'Would stop: BITS, WwanSvc, bthserv, RmSvc, netprofm, NlaSvc, Dnscache, Dhcp, iphlpsvc, dot3svc, WlanSvc, CryptSvc, mpssvc'
         } else {
             foreach ($a in @(Get-NetAdapter -ErrorAction SilentlyContinue)) {
-                try { [void](Capture-PreflightSnapshot $a) } catch {}
+                try {
+                    $snap = Capture-PreflightSnapshot $a
+                    if ($snap -and $snap.Guid) { $script:State.Snapshot[$snap.Guid] = $snap }
+                } catch {}
             }
+            if (-not $script:IsDry) { Save-State }
             $script:State.Misc['RouteProfile'] = 'Adaptive'
             $script:State.Misc['DnsProfile'] = 'Adaptive'
             $script:State.Misc['FailStreak'] = 0
@@ -5964,7 +5984,7 @@ function Invoke-DoomsdayReset {
                 $pnpDevs = @(Get-PnpDevice -Class Net -Status OK -ErrorAction SilentlyContinue | Where-Object { $_.InstanceId -match '^(PCI|USB)\\' })
                 foreach ($pdev in $pnpDevs) {
                     Write-Log 'INFO' "Issuing hardware PnP bus restart to wake silicon: $($pdev.FriendlyName)..."
-                    [void](Invoke-Native (Get-SysExe 'pnputil.exe') @('/restart-device', "`"$($pdev.InstanceId)`"") 8000)
+                    [void](Invoke-Native (Get-SysExe 'pnputil.exe') @('/restart-device', $pdev.InstanceId) 8000)
                 }
             } catch {}
         }
@@ -6082,7 +6102,7 @@ function Invoke-DoomsdayReset {
             try {
                 $fwBackup = Join-Path $script:StoreDir 'firewall_pre_reset.wfw'
                 if (-not (Test-Path -LiteralPath $fwBackup)) {
-                    [void](Invoke-Native (Get-SysExe 'netsh.exe') @('advfirewall', 'export', "`"$fwBackup`"") 5000)
+                    [void](Invoke-Native (Get-SysExe 'netsh.exe') @('advfirewall', 'export', $fwBackup) 5000)
                 }
             } catch {}
 
@@ -6319,13 +6339,13 @@ function Invoke-DoomsdayReset {
             [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/release') 8000)
             [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/release6') 8000)
             Start-Sleep -Milliseconds 1000
+            # Wait for STP listening/learning convergence before DHCP renewal
+            foreach ($ea in @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })) {
+                [void](Wait-StpConvergence $ea 15)
+            }
             [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/renew') 15000)
             [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/renew6') 15000)
             [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/registerdns') 5000)
-        }
-
-        foreach ($ea in @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })) {
-            [void](Wait-StpConvergence $ea 15)
         }
 
         # 7-Layer Ethernet & Multi-Homed Heal Pipeline
@@ -6402,8 +6422,12 @@ function Invoke-ArmageddonReset([switch]$RebootNow) {
     # Pre-flight ACID snapshot
     Write-Log 'STEP' 'STAGE 1/4 Capturing global pre-flight snapshot across all network adapters'
     foreach ($a in @(Get-NetAdapter -ErrorAction SilentlyContinue)) {
-        try { [void](Capture-PreflightSnapshot $a) } catch {}
+        try {
+            $snap = Capture-PreflightSnapshot $a
+            if ($snap -and $snap.Guid) { $script:State.Snapshot[$snap.Guid] = $snap }
+        } catch {}
     }
+    if (-not $script:IsDry) { Save-State }
 
     # Execute netcfg -d
     Write-Log 'STEP' 'STAGE 2/4 Executing netcfg.exe -d (wiping network devices, virtual switches & protocol stacks)...'
@@ -6438,7 +6462,7 @@ function Invoke-ArmageddonReset([switch]$RebootNow) {
         Write-Host '  Windows will reinstall your network adapters and clean drivers upon reboot.' -ForegroundColor Gray
         Write-Host '  ========================================================================' -ForegroundColor Red
         Write-Host ''
-        if (Read-Confirm 'Would you like to restart your computer right now?' 'no') {
+        if (Read-Confirm 'Would you like to restart your computer right now?' 'yes') {
             Write-Host '  Restarting system in 5 seconds...' -ForegroundColor Yellow
             [void](Invoke-Native (Get-SysExe 'shutdown.exe') @('/r', '/t', '5', '/c', 'LanFixer Armageddon Reset: Rebooting to reinstall network drivers.') 5000)
         } else {
@@ -7402,6 +7426,7 @@ function Restore-Everything {
     $present = @(Get-NetAdapter -IncludeHidden -ErrorAction SilentlyContinue)
     foreach ($guid in @($script:State.Snapshot.Keys)) {
         $snap = $script:State.Snapshot[$guid]
+        if ($snap -isnot [hashtable]) { continue }
         if ($guid -eq 'NetProfiles') {
             foreach ($k in @($snap.Keys)) {
                 if ($k -like 'Cat:*') {
@@ -7574,11 +7599,16 @@ function Restore-Everything {
                 if ($ad.PnPDeviceID) {
                     $eKey = "HKLM:\SYSTEM\CurrentControlSet\Enum\$($ad.PnPDeviceID)\Device Parameters"
                     if (Test-Path -LiteralPath $eKey) {
-                        if ($null -eq $val) {
-                            [void](Invoke-Change "Device Parameters '$pName' removed on $($ad.Name)" { Remove-ItemProperty -LiteralPath $eKey -Name $pName -ErrorAction SilentlyContinue })
-                        } else {
-                            $ev = [int]$val
-                            [void](Invoke-Change "Device Parameters '$pName' restored to $ev on $($ad.Name)" { Set-ItemProperty -LiteralPath $eKey -Name $pName -Value $ev -Type DWord -Force -ErrorAction Stop })
+                        try {
+                            if ($null -eq $val) {
+                                Remove-ItemProperty -LiteralPath $eKey -Name $pName -ErrorAction Stop
+                            } else {
+                                $ev = [int]$val
+                                Set-ItemProperty -LiteralPath $eKey -Name $pName -Value $ev -Type DWord -Force -ErrorAction Stop
+                            }
+                            Write-Log 'OK' "Device Parameters '$pName' reverted on $($ad.Name)"
+                        } catch {
+                            Write-Log 'INFO' "Device Parameters '$pName' reversion on $($ad.Name) skipped (SYSTEM ownership required)"
                         }
                     }
                 }
@@ -7633,7 +7663,8 @@ function Restore-Everything {
     }
     if ($script:State.Misc['NeutralizedServices'] -is [hashtable]) {
         foreach ($sn in @($script:State.Misc['NeutralizedServices'].Keys)) {
-            $origStart = [string]$script:State.Misc['NeutralizedServices'][$sn]
+            $rec = $script:State.Misc['NeutralizedServices'][$sn]
+            $origStart = if ($rec -is [hashtable]) { [string]$rec.StartType } else { [string]$rec }
             if ($origStart -and $origStart -ne 'Disabled') {
                 [void](Invoke-Change "Restored 3rd-party service $sn to $origStart" {
                     Set-Service -Name $sn -StartupType $origStart -ErrorAction SilentlyContinue
@@ -7645,11 +7676,13 @@ function Restore-Everything {
     # Re-enable any 3rd-party NDIS filter drivers deactivated during Doomsday Reset
     if ($script:State.Snapshot.ContainsKey('DeactivatedFilters')) {
         $df = $script:State.Snapshot['DeactivatedFilters']
-        foreach ($adName in $df.Keys) {
-            foreach ($compId in @($df[$adName])) {
-                [void](Invoke-Change "NDIS filter '$compId' re-enabled on $adName" {
-                    Enable-NetAdapterBinding -Name $adName -ComponentID $compId -Confirm:$false -ErrorAction SilentlyContinue
-                })
+        if ($df -is [hashtable]) {
+            foreach ($adName in $df.Keys) {
+                foreach ($compId in @($df[$adName])) {
+                    [void](Invoke-Change "NDIS filter '$compId' re-enabled on $adName" {
+                        Enable-NetAdapterBinding -Name $adName -ComponentID $compId -Confirm:$false -ErrorAction SilentlyContinue
+                    })
+                }
             }
         }
     }
@@ -7658,7 +7691,7 @@ function Restore-Everything {
     $fwBackup = Join-Path $script:StoreDir 'firewall_pre_reset.wfw'
     if (Test-Path -LiteralPath $fwBackup) {
         [void](Invoke-Change 'Windows Firewall rules restored from pre-reset backup' {
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('advfirewall', 'import', "`"$fwBackup`"") 8000)
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('advfirewall', 'import', $fwBackup) 8000)
         })
     }
     if (-not $script:IsDry) {
@@ -8833,6 +8866,19 @@ function Invoke-LogicTests {
     Write-Check 'Logic: NetReset and Ultra mode aliases exist in ValidateSet' ($srcTxt -match "ValidateSet\([^)]*'NetReset'" -and $srcTxt -match "ValidateSet\([^)]*'Ultra'")
     Write-Check 'Logic: Guide and Vault mode aliases exist in ValidateSet' ($srcTxt -match "ValidateSet\([^)]*'Guide'" -and $srcTxt -match "ValidateSet\([^)]*'Vault'")
 
+    # ---- Bug Hunting Tournament Remediation Assertions ----
+    Write-Check 'Tournament: Armageddon Reset reboot prompt confirms on yes' ($armDef.IndexOf("'yes'") -ge 0)
+    Write-Check 'Tournament: Test-ConfigFileTrusted checks GenericWrite and GenericAll' ($srcTxt.IndexOf('0x40000000 -bor 0x10000000') -ge 0)
+    Write-Check 'Tournament: Test-NdisLinkHealth sets Healthy=false on errors/discards' ($srcTxt.IndexOf('$healthy = $false; $reasons += ("PacketErrors') -ge 0)
+    Write-Check 'Tournament: Rescue-DormantEthernetPnp filters Not Present ghost adapters' ($srcTxt.IndexOf("`$_.Status -ne 'Not Present'") -ge 0)
+    Write-Check 'Tournament: Wait-StpConvergence supports IPv6 preferred addresses' ($srcTxt.IndexOf("`$hasV6 = @(Get-NetIPAddress") -ge 0)
+    Write-Check 'Tournament: Get-DhcpDnsServers extracts IPv6 DHCP resolvers' ($srcTxt.IndexOf('Dhcpv6DNSServers') -ge 0)
+    Write-Check 'Tournament: Roaming cleanup debounces before restoring metrics' ($srcTxt.IndexOf("if (`$Mode -eq 'AutoHeal') {`r`n        if (-not `$script:State.Misc['LinkDownSince'])") -ge 0 -or $srcTxt.IndexOf("if (`$Mode -eq 'AutoHeal') {`n        if (-not `$script:State.Misc['LinkDownSince'])") -ge 0)
+    Write-Check 'Tournament: Restore-Everything handles neutralized services hashtable records' ($restDef.IndexOf('rec.StartType') -ge 0)
+    Write-Check 'Tournament: Sentinel Daemon loop variables persist in script scope' ($srcTxt.IndexOf('$script:DaemonConsecutiveFails = 0') -ge 0 -and $srcTxt.IndexOf('$script:DaemonLastHwCheck = [DateTime]::MinValue') -ge 0)
+    Write-Check 'Tournament: STP convergence runs before DHCP renew in Doomsday' ($doomDef.IndexOf('Wait-StpConvergence') -lt $doomDef.IndexOf("@('/renew')"))
+    Write-Check 'Tournament: STP convergence runs before DHCP renew in Ultra' ($ultraDef.IndexOf('Wait-StpConvergence') -lt $ultraDef.IndexOf("@('/renew')"))
+
     $script:State = $stSave
 }
 function Invoke-SelfTest {
@@ -9266,17 +9312,17 @@ function Start-AutonomousDaemon([int]$IntervalSec = 10) {
     Write-Log 'OK' ("Autonomous LAN Remediation Daemon activated (Interval: {0}s, Breaker: {1})." -f $IntervalSec, $script:Cfg.BreakerFails)
     Write-Log 'INFO' "Press Ctrl+C to terminate sentinel daemon safely."
 
-    $consecutiveFails = 0
-    $lastHwCheck = [DateTime]::MinValue
+    $script:DaemonConsecutiveFails = 0
+    $script:DaemonLastHwCheck = [DateTime]::MinValue
 
     try {
         while ($true) {
             $locked = Invoke-WithLock -WaitMs 3000 -Block {
                 $ads = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })
                 if ($ads.Count -eq 0) {
-                    if ((Get-Date) - $lastHwCheck -gt [TimeSpan]::FromSeconds(60)) {
+                    if ((Get-Date) - $script:DaemonLastHwCheck -gt [TimeSpan]::FromSeconds(60)) {
                         Rescue-DormantEthernetPnp
-                        $lastHwCheck = Get-Date
+                        $script:DaemonLastHwCheck = Get-Date
                     }
                     return 'NoLink'
                 }
@@ -9285,21 +9331,21 @@ function Start-AutonomousDaemon([int]$IntervalSec = 10) {
                 $linkHealth = Test-NdisLinkHealth $ad
                 $state = Get-InternetState -NoCache
                 if ($state.State -eq 'Online' -and $linkHealth.Healthy) {
-                    if ($consecutiveFails -gt 0) {
+                    if ($script:DaemonConsecutiveFails -gt 0) {
                         Write-Log 'OK' "Daemon: Link confirmed healthy and Online. Resetting circuit breaker."
-                        $consecutiveFails = 0
+                        $script:DaemonConsecutiveFails = 0
                     }
                     return 'Online'
                 }
 
-                if ($consecutiveFails -ge $script:Cfg.BreakerFails) {
-                    Write-Log 'WARN' ("Circuit breaker tripped ({0} consecutive failures). Throttling daemon to prevent port-flap/DHCP ban." -f $consecutiveFails)
+                if ($script:DaemonConsecutiveFails -ge $script:Cfg.BreakerFails) {
+                    Write-Log 'WARN' ("Circuit breaker tripped ({0} consecutive failures). Throttling daemon to prevent port-flap/DHCP ban." -f $script:DaemonConsecutiveFails)
                     Start-Sleep -Seconds 60
                     return 'Throttled'
                 }
 
                 Write-Log 'WARN' ("Daemon detected degradation: State={0}, LinkReason={1}. Escalating remediation ladder..." -f $state.State, $linkHealth.Reason)
-                $consecutiveFails++
+                $script:DaemonConsecutiveFails++
 
                 if ($state.State -eq 'NoDns') {
                     Flush-NetworkCache

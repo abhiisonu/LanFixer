@@ -1,3 +1,10 @@
+            $Ctx.Repaired = (Repair-Dhcp $ad -ForceRelease)
+            $script:EnvCache.Remove($guid)
+            $Ctx.Env = Get-AdapterEnvironment $ad
+        }
+    }
+    $validIp = Get-ValidIPv4 $ad
+    if ($validIp -and $Ctx.Env.Env -eq 'Campus' -and -not $script:IsDry) {
         $gw = @(Get-GatewaysV4 $ad) | Select-Object -First 1
         if ($gw) { $script:State.Misc['LastCampusLease'] = @{ Ip = [string]$validIp; Gateway = [string]$gw; Time = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss') } }
     }
@@ -28,8 +35,9 @@ function Remove-GatewayLock($Ad, [string]$Gw) {
     Remove-NetNeighbor -InterfaceIndex $Ad.ifIndex -IPAddress $Gw -PolicyStore PersistentStore -Confirm:$false -ErrorAction SilentlyContinue
     Remove-NetNeighbor -InterfaceIndex $Ad.ifIndex -IPAddress $Gw -Confirm:$false -ErrorAction SilentlyContinue
     [void](Invoke-Native (Get-SysExe 'arp.exe') @('-d', $Gw) 5000)
+    # Retain the recorded MAC in $script:State.Arp so Get-ArpDecision can continue
+    # to compare against $Prev and detect rogue spoofed MAC candidates!
     $t = Get-SubTable 'Arp' ([string]$Ad.InterfaceGuid)
-    $t.Remove($Gw)
 }
 function Release-ArpLocks($Ad) {
     $t = Get-SubTable 'Arp' ([string]$Ad.InterfaceGuid)
@@ -269,7 +277,10 @@ function Shield-RouteMetrics($Ctx, [string]$ConnState) {
     $plan = Get-RouteMetricPlan ([string]$Ctx.Env.Env) $ConnState $others.Count
     if ($plan.Mode -eq 'Restore') {
         if (-not $script:IsDry) { Remove-CampusHostRoutes $ad.ifIndex }
-        if ((Test-MetricsManaged) -or (Get-RouteProfileName) -eq 'Windows') { Restore-InterfaceMetrics ([string]$plan.Why) }
+        $hasOtherCampus = @(Get-EthernetAdapters | Where-Object { $_.ifIndex -ne $ad.ifIndex -and (Get-AdapterEnvironment $_).Env -eq 'Campus' }).Count -gt 0
+        if (-not $hasOtherCampus -and ((Test-MetricsManaged) -or (Get-RouteProfileName) -eq 'Windows')) {
+            Restore-InterfaceMetrics ([string]$plan.Why)
+        }
         return
     }
     # Branch 3 removes the campus host routes BEFORE promoting; branch 2 injects them AFTER demoting, so the
@@ -762,15 +773,15 @@ function Invoke-RoamingCleanup {
     $any = ($rules.Count -gt 0) -or (Test-MetricsManaged) -or $hasNeutSvc -or $hasNeutTsk -or $dnsManaged
     foreach ($fl in $flags) { if ($script:State.Misc[$fl] -eq $true) { $any = $true } }
     if (-not $any) { return }
+    if ($Mode -eq 'AutoHeal') {
+        if (-not $script:State.Misc['LinkDownSince']) { Set-StateTime 'LinkDownSince'; Write-Log 'INFO' 'Link down: debouncing roaming cleanup against momentary cable flap (45s grace period).'; return }
+        if (-not (Test-Elapsed 'LinkDownSince' 45)) { Write-Log 'INFO' 'Link down under 45s: debouncing roaming cleanup against momentary cable flap.'; return }
+    }
     if (Test-MetricsManaged) { Restore-InterfaceMetrics 'No active Ethernet link' }
     Remove-CampusHostRoutes
     $cd = Get-ActiveCampusDns
     $m = Measure-ResolversFast @($cd) 600 53 ''
     if ($null -ne $m[$cd]) { Write-Log 'INFO' 'No Ethernet link, but the campus resolver answers over another link (campus Wi-Fi?): campus-only settings kept.'; return }
-    if ($Mode -eq 'AutoHeal') {
-        if (-not $script:State.Misc['LinkDownSince']) { Set-StateTime 'LinkDownSince'; Write-Log 'INFO' 'Link down: debouncing roaming cleanup against momentary cable flap (45s grace period).'; return }
-        if (-not (Test-Elapsed 'LinkDownSince' 45)) { Write-Log 'INFO' 'Link down under 45s: debouncing roaming cleanup against momentary cable flap.'; return }
-    }
     Write-Log 'INFO' 'No Ethernet link and the campus resolver is unreachable: undoing the hostel-only settings.'
     Remove-CampusNrpt
     Restore-LlmnrIfManaged 'Left campus: LLMNR setting restored'
@@ -787,14 +798,3 @@ function Invoke-RoamingCleanup {
         $script:State.Misc.Remove('DiscoveredPortalUrl')
         $script:State.Misc.Remove('DiscoveredPortalIp')
         $script:State.Misc.Remove('DiscoveredDomain')
-    }
-}
-function Restore-NeutralizedInterceptors([string]$Why = 'Non-campus network') {
-    if ($script:State.Misc['NeutralizedTasks'] -is [hashtable]) {
-        foreach ($tn in @($script:State.Misc['NeutralizedTasks'].Keys)) {
-            $tp = [string]$script:State.Misc['NeutralizedTasks'][$tn]
-            [void](Invoke-Change "$($Why): re-enabled task $tn" {
-                Enable-ScheduledTask -TaskName $tn -TaskPath $tp -ErrorAction SilentlyContinue | Out-Null
-            })
-        }
-        if (-not $script:IsDry) { $script:State.Misc.Remove('NeutralizedTasks') }

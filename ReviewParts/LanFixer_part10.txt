@@ -1,3 +1,27 @@
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT20M</ExecutionTimeLimit>
+    <Priority>5</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>%SystemRoot%\System32\cmd.exe</Command>
+      <Arguments>$([System.Security.SecurityElement]::Escape($CmdArgs))</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+"@
+}
+function New-NotifyTaskXml([string]$Title = 'Lan Fixer', [string]$Message = '') {
+    $titleXml = [System.Security.SecurityElement]::Escape($Title)
     $msgXml   = [System.Security.SecurityElement]::Escape($Message)
     $script = @"
 [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
@@ -202,6 +226,7 @@ function Restore-Everything {
     $present = @(Get-NetAdapter -IncludeHidden -ErrorAction SilentlyContinue)
     foreach ($guid in @($script:State.Snapshot.Keys)) {
         $snap = $script:State.Snapshot[$guid]
+        if ($snap -isnot [hashtable]) { continue }
         if ($guid -eq 'NetProfiles') {
             foreach ($k in @($snap.Keys)) {
                 if ($k -like 'Cat:*') {
@@ -374,11 +399,16 @@ function Restore-Everything {
                 if ($ad.PnPDeviceID) {
                     $eKey = "HKLM:\SYSTEM\CurrentControlSet\Enum\$($ad.PnPDeviceID)\Device Parameters"
                     if (Test-Path -LiteralPath $eKey) {
-                        if ($null -eq $val) {
-                            [void](Invoke-Change "Device Parameters '$pName' removed on $($ad.Name)" { Remove-ItemProperty -LiteralPath $eKey -Name $pName -ErrorAction SilentlyContinue })
-                        } else {
-                            $ev = [int]$val
-                            [void](Invoke-Change "Device Parameters '$pName' restored to $ev on $($ad.Name)" { Set-ItemProperty -LiteralPath $eKey -Name $pName -Value $ev -Type DWord -Force -ErrorAction Stop })
+                        try {
+                            if ($null -eq $val) {
+                                Remove-ItemProperty -LiteralPath $eKey -Name $pName -ErrorAction Stop
+                            } else {
+                                $ev = [int]$val
+                                Set-ItemProperty -LiteralPath $eKey -Name $pName -Value $ev -Type DWord -Force -ErrorAction Stop
+                            }
+                            Write-Log 'OK' "Device Parameters '$pName' reverted on $($ad.Name)"
+                        } catch {
+                            Write-Log 'INFO' "Device Parameters '$pName' reversion on $($ad.Name) skipped (SYSTEM ownership required)"
                         }
                     }
                 }
@@ -433,7 +463,8 @@ function Restore-Everything {
     }
     if ($script:State.Misc['NeutralizedServices'] -is [hashtable]) {
         foreach ($sn in @($script:State.Misc['NeutralizedServices'].Keys)) {
-            $origStart = [string]$script:State.Misc['NeutralizedServices'][$sn]
+            $rec = $script:State.Misc['NeutralizedServices'][$sn]
+            $origStart = if ($rec -is [hashtable]) { [string]$rec.StartType } else { [string]$rec }
             if ($origStart -and $origStart -ne 'Disabled') {
                 [void](Invoke-Change "Restored 3rd-party service $sn to $origStart" {
                     Set-Service -Name $sn -StartupType $origStart -ErrorAction SilentlyContinue
@@ -445,11 +476,13 @@ function Restore-Everything {
     # Re-enable any 3rd-party NDIS filter drivers deactivated during Doomsday Reset
     if ($script:State.Snapshot.ContainsKey('DeactivatedFilters')) {
         $df = $script:State.Snapshot['DeactivatedFilters']
-        foreach ($adName in $df.Keys) {
-            foreach ($compId in @($df[$adName])) {
-                [void](Invoke-Change "NDIS filter '$compId' re-enabled on $adName" {
-                    Enable-NetAdapterBinding -Name $adName -ComponentID $compId -Confirm:$false -ErrorAction SilentlyContinue
-                })
+        if ($df -is [hashtable]) {
+            foreach ($adName in $df.Keys) {
+                foreach ($compId in @($df[$adName])) {
+                    [void](Invoke-Change "NDIS filter '$compId' re-enabled on $adName" {
+                        Enable-NetAdapterBinding -Name $adName -ComponentID $compId -Confirm:$false -ErrorAction SilentlyContinue
+                    })
+                }
             }
         }
     }
@@ -458,7 +491,7 @@ function Restore-Everything {
     $fwBackup = Join-Path $script:StoreDir 'firewall_pre_reset.wfw'
     if (Test-Path -LiteralPath $fwBackup) {
         [void](Invoke-Change 'Windows Firewall rules restored from pre-reset backup' {
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('advfirewall', 'import', "`"$fwBackup`"") 8000)
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('advfirewall', 'import', $fwBackup) 8000)
         })
     }
     if (-not $script:IsDry) {
@@ -765,36 +798,3 @@ function Show-Diagnostics {
     Write-KV 'Version' $script:Version
     Write-KV 'Routing Profile' (Get-RouteProfileName)
     Write-KV 'Duplicate-probe policy' ([string]$script:Cfg.DadPolicy)
-    $lsrv = [string]$script:State.Misc['LearnedDhcp']
-    Write-KV 'Learned campus DHCP' $(if ($lsrv) { $lsrv } else { 'not yet' })
-    Write-KV 'Watchdog task' $(if (Test-WatchdogInstalled) { 'installed' } else { 'not installed' })
-    Write-KV 'Protected store' $(if ($script:StoreReady) { $(if ($script:StoreSecure) { 'ready, locked down' } else { 'ready, ACL NOT verified' }) } else { 'not initialised (run elevated once)' })
-    $lf = Get-StateTime 'LastFull'
-    Write-KV 'Last full repair' $(if ($lf -gt [datetime]::MinValue) { $lf.ToString('yyyy-MM-dd HH:mm:ss') } else { 'never' })
-    $rules = @(Get-OurNrptRules)
-    Write-KV 'Campus-domain DNS rule' $(if ($rules.Count -gt 0) { 'present' } else { 'none' })
-    try {
-        $hp = Join-Path $script:Sys32 'drivers\etc\hosts'
-        if ((Get-Content -LiteralPath $hp -ErrorAction SilentlyContinue) -match [regex]::Escape($script:Cfg.PortalHost)) {
-            Write-KV 'Old v1 hosts pin' 'FOUND (a Heal removes it)' 'Yellow'
-            [void]$issues.Add('Old Lan Fixer v1 hosts-file pin present (can go stale); a Heal removes it')
-        }
-    } catch {}
-
-    Write-Section 'RECENT ACTIVITY LOG (LAST 12 ENTRIES)'
-    if (Test-Path -LiteralPath $script:LogFile) {
-        foreach ($ll in @(Get-Content -LiteralPath $script:LogFile -Tail 12 -ErrorAction SilentlyContinue)) {
-            $lRole = if ($ll -match '\[(FAIL|ALERT)\]') { 'bad' } elseif ($ll -match '\[WARN\]') { 'warn' } elseif ($ll -match '\[OK\]') { 'ok' } else { 'dim' }
-            Out-Line @((Seg $lRole ('  ' + (Fit ([string]$ll) ([Math]::Max(50, (Get-UiWidth) - 2))))))
-        }
-    } else {
-        Out-Line @((Seg 'dim' '  (no log entries recorded yet)'))
-    }
-
-    Write-Section 'DIAGNOSTIC SUMMARY & VERDICT'
-    if ($issues.Count -eq 0) { Out-Line @((Seg 'ok' ('  ' + $script:G.ok + ' ')), (Seg 'text' 'No problems found.')) }
-    else { foreach ($i in $issues) { Out-Wrapped 'warn' $script:G.warn 'warn' ([string]$i) 2 } }
-    Write-Host ''
-}
-
-# ==============================================================================

@@ -1,4 +1,15 @@
     }
+}
+function Restore-NeutralizedInterceptors([string]$Why = 'Non-campus network') {
+    if ($script:State.Misc['NeutralizedTasks'] -is [hashtable]) {
+        foreach ($tn in @($script:State.Misc['NeutralizedTasks'].Keys)) {
+            $tp = [string]$script:State.Misc['NeutralizedTasks'][$tn]
+            [void](Invoke-Change "$($Why): re-enabled task $tn" {
+                Enable-ScheduledTask -TaskName $tn -TaskPath $tp -ErrorAction SilentlyContinue | Out-Null
+            })
+        }
+        if (-not $script:IsDry) { $script:State.Misc.Remove('NeutralizedTasks') }
+    }
     if ($script:State.Misc['NeutralizedServices'] -is [hashtable]) {
         foreach ($sn in @($script:State.Misc['NeutralizedServices'].Keys)) {
             $rec = $script:State.Misc['NeutralizedServices'][$sn]
@@ -679,8 +690,12 @@ function Invoke-UltraSystemReset {
             Write-Log 'DRY' 'Would capture pre-flight snapshots and stop dependent network services (BITS, netprofm, NlaSvc, Dnscache, Dhcp, iphlpsvc, dot3svc, WlanSvc, CryptSvc, mpssvc)'
         } else {
             foreach ($ea in @(Get-EthernetAdapters)) {
-                try { [void](Capture-PreflightSnapshot $ea) } catch {}
+                try {
+                    $snap = Capture-PreflightSnapshot $ea
+                    if ($snap -and $snap.Guid) { $script:State.Snapshot[$snap.Guid] = $snap }
+                } catch {}
             }
+            if (-not $script:IsDry) { Save-State }
             $script:State.Misc['RouteProfile'] = 'Adaptive'
             $script:State.Misc['DnsProfile'] = 'Adaptive'
             $script:State.Misc['FailStreak'] = 0
@@ -783,18 +798,3 @@ function Invoke-UltraSystemReset {
 
             # Delete IPv4 and IPv6 kernel destination caches
             [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'ip', 'delete', 'destinationcache') 5000)
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'ipv6', 'delete', 'destinationcache') 5000)
-
-            # Reset Windows port forwarding (PortProxy) and IP-HTTPS tunnels to defeat hijacked developer/emulator port redirects
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('interface', 'portproxy', 'reset') 5000)
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('interface', 'httpstunnel', 'reset') 5000)
-
-            # Destroy accidental/rogue network bridges that create packet loops or isolate the physical NIC
-            try {
-                $brOut = Invoke-Native (Get-SysExe 'netsh.exe') @('bridge', 'list') 5000
-                if ($brOut.Output -match '([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})') {
-                    foreach ($brMatch in [regex]::Matches($brOut.Output, '([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})')) {
-                        $brGuid = $brMatch.Groups[1].Value
-                        Write-Log 'WARN' "Destroying orphaned network bridge $brGuid..."
-                        [void](Invoke-Native (Get-SysExe 'netsh.exe') @('bridge', 'destroy', $brGuid) 5000)
-                    }

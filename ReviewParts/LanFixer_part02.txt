@@ -526,7 +526,7 @@ function Restore-InterfaceMetrics([string]$Why) {
             $rec = $orig[$k]
             $guid = ($k -split '\|')[0]
             $ad = $present | Where-Object { [string]$_.InterfaceGuid -eq $guid } | Select-Object -First 1
-            if (-not $ad) { if (-not $script:IsDry) { $orig.Remove($k) }; continue }
+            if (-not $ad) { continue }
             $af = [string]$rec.Af
             $ok = $false
             if ([string]$rec.Auto -eq 'Enabled') {
@@ -679,8 +679,8 @@ function New-CertCallback([string]$Pin, $Capture) {
             try { $c2 = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($cert); $Capture.Subject = [string]$c2.Subject; $Capture.Issuer = [string]$c2.Issuer; $Capture.NotAfter = $c2.NotAfter.ToString('yyyy-MM-dd') } catch {}
             if ($Capture.AcceptAny) { return $true }
         }
+        if ($pinU) { return ($hex -and ($hex -eq $pinU)) }
         if ([string]$errs -eq 'None') { return $true }
-        if ($pinU -and $hex -and ($hex -eq $pinU)) { return $true }
         return $false
     }.GetNewClosure()
     return [System.Net.Security.RemoteCertificateValidationCallback]$cb

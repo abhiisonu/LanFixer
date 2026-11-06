@@ -1,3 +1,49 @@
+                if ((Get-InternetState -NoCache).State -eq 'Captive') {
+                    if (Wait-ForAuthentication 120) { [void](Invoke-WithLock { Complete-Authentication }) }
+                }
+            }
+        }
+        'Diagnose'          { Show-Diagnostics }
+        'Audit'             { Show-Diagnostics }
+        'Report'            { New-SupportReport }
+        'QuickProbe'        { Run-QuickProbe }
+        'Probe'             { Run-QuickProbe }
+        'FlushCache'        { [void](Invoke-WithLock { Flush-NetworkCache }) }
+        'Flush'             { [void](Invoke-WithLock { Flush-NetworkCache }) }
+        'InstallWatchdog'   { [void](Invoke-WithLock { Install-Watchdog }) }
+        'InstallShield'     { [void](Invoke-WithLock { Install-Watchdog }) }
+        'UninstallWatchdog' { [void](Invoke-WithLock { Uninstall-Watchdog }) }
+        'UninstallShield'   { [void](Invoke-WithLock { Uninstall-Watchdog }) }
+        'ResetFactory'      { [void](Invoke-WithLock { Restore-Everything }) }
+        'Reset'             { [void](Invoke-WithLock { Restore-Everything }) }
+        'LaunchPortal'      { [void](Invoke-WithLock { Open-Portal -Force }) }
+        'Login'             { [void](Invoke-WithLock { Open-Portal -Force }) }
+        'SetDnsProfile'     { Set-DnsProfileMode $DnsProfile }
+        'Dns'               { Show-DnsMenu }
+        'DnsMenu'           { Show-DnsMenu }
+        'SelfTest'          { Invoke-SelfTest; if ($script:TestFail -gt 0) { $exitCode = 1 } }
+        'Verify'            { Invoke-SelfTest; if ($script:TestFail -gt 0) { $exitCode = 1 } }
+        'Daemon'            { Start-AutonomousDaemon }
+        'Vault'             { Show-VaultMenu }
+        'Guide'             { Show-Advisory }
+        'Help'              { Show-Advisory }
+        'Interactive'       { Start-Interactive }
+    }
+} catch {
+    Write-Log 'FAIL' ("Unhandled error: " + $_.Exception.Message)
+    Write-Log 'FAIL' ([string]$_.ScriptStackTrace)
+    $exitCode = 1
+} finally {
+    try {
+        $intFile = Join-Path $script:StoreDir 'interactive.json'
+        if (Test-Path -LiteralPath $intFile) {
+            $meta = ConvertFrom-Json (Get-Content -LiteralPath $intFile -Raw -ErrorAction SilentlyContinue)
+            if ($meta -and $meta.Pid -eq $PID) { Remove-Item -LiteralPath $intFile -Force -ErrorAction SilentlyContinue }
+        }
+    } catch {}
+    Save-State
+    Exit-Lock
+    if ($script:UiOn) { Exit-Screen }
 }
 if ($exitCode -eq 0 -and $script:FailCount -gt 0 -and (@('AutoHeal', 'Heal', 'QuickHeal', 'Omnifix', 'NetReset', 'FullNetReset', 'UltraReset', 'Ultra', 'DoomsdayReset', 'Doomsday', 'ArmageddonReset', 'Armageddon') -contains $Mode)) { $exitCode = 2 }
 if ($exitCode -ne 0 -and -not $NoPause -and $Host.Name -eq 'ConsoleHost') {

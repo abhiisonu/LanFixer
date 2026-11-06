@@ -1,3 +1,18 @@
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'ipv6', 'delete', 'destinationcache') 5000)
+
+            # Reset Windows port forwarding (PortProxy) and IP-HTTPS tunnels to defeat hijacked developer/emulator port redirects
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('interface', 'portproxy', 'reset') 5000)
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('interface', 'httpstunnel', 'reset') 5000)
+
+            # Destroy accidental/rogue network bridges that create packet loops or isolate the physical NIC
+            try {
+                $brOut = Invoke-Native (Get-SysExe 'netsh.exe') @('bridge', 'list') 5000
+                if ($brOut.Output -match '([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})') {
+                    foreach ($brMatch in [regex]::Matches($brOut.Output, '([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})')) {
+                        $brGuid = $brMatch.Groups[1].Value
+                        Write-Log 'WARN' "Destroying orphaned network bridge $brGuid..."
+                        [void](Invoke-Native (Get-SysExe 'netsh.exe') @('bridge', 'destroy', $brGuid) 5000)
+                    }
                 }
             } catch {}
 
@@ -5,7 +20,7 @@
             try {
                 $fwBackup = Join-Path $script:StoreDir 'firewall_pre_reset.wfw'
                 if (-not (Test-Path -LiteralPath $fwBackup)) {
-                    [void](Invoke-Native (Get-SysExe 'netsh.exe') @('advfirewall', 'export', "`"$fwBackup`"") 5000)
+                    [void](Invoke-Native (Get-SysExe 'netsh.exe') @('advfirewall', 'export', $fwBackup) 5000)
                 }
             } catch {}
 
@@ -211,12 +226,13 @@
             [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/release') 8000)
             [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/release6') 8000)
             Start-Sleep -Milliseconds 1000
+            # Wait for STP listening/learning convergence before DHCP renewal
+            foreach ($ea in @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })) {
+                [void](Wait-StpConvergence $ea 15)
+            }
             [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/renew') 15000)
             [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/renew6') 15000)
             [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/registerdns') 5000)
-        }
-        foreach ($ea in @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })) {
-            [void](Wait-StpConvergence $ea 15)
         }
 
         # 7-Layer Ethernet & Multi-Homed Heal Pipeline
@@ -286,8 +302,12 @@ function Invoke-DoomsdayReset {
             Write-Log 'DRY' 'Would stop: BITS, WwanSvc, bthserv, RmSvc, netprofm, NlaSvc, Dnscache, Dhcp, iphlpsvc, dot3svc, WlanSvc, CryptSvc, mpssvc'
         } else {
             foreach ($a in @(Get-NetAdapter -ErrorAction SilentlyContinue)) {
-                try { [void](Capture-PreflightSnapshot $a) } catch {}
+                try {
+                    $snap = Capture-PreflightSnapshot $a
+                    if ($snap -and $snap.Guid) { $script:State.Snapshot[$snap.Guid] = $snap }
+                } catch {}
             }
+            if (-not $script:IsDry) { Save-State }
             $script:State.Misc['RouteProfile'] = 'Adaptive'
             $script:State.Misc['DnsProfile'] = 'Adaptive'
             $script:State.Misc['FailStreak'] = 0
@@ -364,7 +384,7 @@ function Invoke-DoomsdayReset {
                 $pnpDevs = @(Get-PnpDevice -Class Net -Status OK -ErrorAction SilentlyContinue | Where-Object { $_.InstanceId -match '^(PCI|USB)\\' })
                 foreach ($pdev in $pnpDevs) {
                     Write-Log 'INFO' "Issuing hardware PnP bus restart to wake silicon: $($pdev.FriendlyName)..."
-                    [void](Invoke-Native (Get-SysExe 'pnputil.exe') @('/restart-device', "`"$($pdev.InstanceId)`"") 8000)
+                    [void](Invoke-Native (Get-SysExe 'pnputil.exe') @('/restart-device', $pdev.InstanceId) 8000)
                 }
             } catch {}
         }
@@ -482,7 +502,7 @@ function Invoke-DoomsdayReset {
             try {
                 $fwBackup = Join-Path $script:StoreDir 'firewall_pre_reset.wfw'
                 if (-not (Test-Path -LiteralPath $fwBackup)) {
-                    [void](Invoke-Native (Get-SysExe 'netsh.exe') @('advfirewall', 'export', "`"$fwBackup`"") 5000)
+                    [void](Invoke-Native (Get-SysExe 'netsh.exe') @('advfirewall', 'export', $fwBackup) 5000)
                 }
             } catch {}
 
@@ -719,13 +739,13 @@ function Invoke-DoomsdayReset {
             [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/release') 8000)
             [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/release6') 8000)
             Start-Sleep -Milliseconds 1000
+            # Wait for STP listening/learning convergence before DHCP renewal
+            foreach ($ea in @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })) {
+                [void](Wait-StpConvergence $ea 15)
+            }
             [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/renew') 15000)
             [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/renew6') 15000)
             [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/registerdns') 5000)
-        }
-
-        foreach ($ea in @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })) {
-            [void](Wait-StpConvergence $ea 15)
         }
 
         # 7-Layer Ethernet & Multi-Homed Heal Pipeline
@@ -778,23 +798,3 @@ function Invoke-DoomsdayReset {
             Out-Line @((Seg 'dim' '  Sign in on the page that opened; the fast DNS path is applied for you afterwards.'))
             if (Wait-ForAuthentication 180) { Complete-Authentication; Write-Log 'OK' 'Signed in. Post-login DNS applied.' }
         }
-    }
-}
-
-# ==============================================================================
-# ARMAGEDDON SYSTEM RESET - KERNEL PROTOCOL & NETWORK ADAPTER REINSTALL WEAPON
-# ==============================================================================
-function Invoke-ArmageddonReset([switch]$RebootNow) {
-    if (-not (Assert-Admin)) { return }
-    $swArm = [System.Diagnostics.Stopwatch]::StartNew()
-    Write-Section 'ARMAGEDDON SYSTEM RESET (KERNEL PROTOCOL & NETWORK ADAPTER REINSTALL)'
-    Write-Log 'WARN' 'ARMAGEDDON RESET is Microsoft Windows native nuclear reset (netcfg.exe -d).'
-    Write-Log 'WARN' 'This uninstalls ALL network adapters, removes virtual switches/filters, purges the TCP/IP stack registry, and requires a reboot to reinstall clean drivers.'
-
-    if ($script:IsDry) {
-        Write-Log 'DRY' 'Would capture global pre-flight snapshot across all adapters'
-        Write-Log 'DRY' 'Would execute: netcfg.exe -d (deep kernel device cleanup & protocol reinstallation)'
-        Write-Log 'DRY' 'Would execute post-cleanup: netsh winsock reset, netsh advfirewall reset, and reset RadioManagement'
-        Write-Log 'DRY' 'Would prompt or execute scheduled reboot'
-        return
-    }

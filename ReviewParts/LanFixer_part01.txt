@@ -569,7 +569,7 @@ function Test-ConfigFileTrusted([string]$Path) {
         $acl = Get-Acl -LiteralPath $Path
         $owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
         if (@('S-1-5-18', 'S-1-5-32-544') -notcontains $owner) { return $false }
-        $writeMask = 0x116 -bor 0x10000 -bor 0x40000 -bor 0x80000
+        $writeMask = 0x116 -bor 0x10000 -bor 0x40000 -bor 0x80000 -bor 0x40000000 -bor 0x10000000
         foreach ($r in @($acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))) {
             if ([string]$r.AccessControlType -ne 'Allow') { continue }
             if (@('S-1-5-18', 'S-1-5-32-544') -contains [string]$r.IdentityReference.Value) { continue }
