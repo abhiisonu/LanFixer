@@ -1,3 +1,75 @@
+    if (-not $Snapshot -or -not $Snapshot.ifIndex) { return $false }
+    $ifIdx = [int]$Snapshot.ifIndex
+    $adName = [string]$Snapshot.Name
+    Write-Log 'WARN' ("Rolling back configuration on {0} to pre-flight snapshot..." -f $adName)
+    $restored = $true
+    try {
+        if ($null -ne $Snapshot.Metric) {
+            Set-NetIPInterface -InterfaceIndex $ifIdx -AddressFamily IPv4 -InterfaceMetric ([int]$Snapshot.Metric) -ErrorAction SilentlyContinue
+        }
+        if ($null -ne $Snapshot.Mtu) {
+            Set-NetIPInterface -InterfaceIndex $ifIdx -AddressFamily IPv4 -NlMtuBytes ([int]$Snapshot.Mtu) -ErrorAction SilentlyContinue
+        }
+        if ($Snapshot.Dns.Count -gt 0) {
+            Set-DnsClientServerAddress -InterfaceIndex $ifIdx -ServerAddresses $Snapshot.Dns -ErrorAction SilentlyContinue
+        } else {
+            Set-DnsClientServerAddress -InterfaceIndex $ifIdx -ResetServerAddresses -ErrorAction SilentlyContinue
+        }
+    } catch {
+        $restored = $false
+        Write-Log 'FAIL' ("Error during pre-flight rollback on {0}: {1}" -f $adName, $_.Exception.Message)
+    }
+    return $restored
+}
+
+function Invoke-AcidMutation([string]$Description, [scriptblock]$Mutation, [scriptblock]$Validation, [int]$TimeoutMs = 3500) {
+    if ($script:IsDry) {
+        Write-Log 'DRY' ("Would execute ACID mutation: {0}" -f $Description)
+        return $true
+    }
+    $ads = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })
+    $ad = if ($ads.Count -gt 0) { $ads[0] } else { $null }
+    $snapshot = if ($ad) { Capture-PreflightSnapshot $ad } else { $null }
+
+    Write-Log 'INFO' ("ACID Executing: {0}" -f $Description)
+    $execOk = $false
+    try {
+        & $Mutation
+        $execOk = $true
+    } catch {
+        Write-Log 'FAIL' ("Mutation threw exception: {0}" -f $_.Exception.Message)
+    }
+
+    if ($execOk -and $Validation) {
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        $valid = $false
+        while ($sw.ElapsedMilliseconds -lt $TimeoutMs) {
+            try {
+                if (& $Validation) { $valid = $true; break }
+            } catch {}
+            Start-Sleep -Milliseconds 250
+        }
+        $sw.Stop()
+        if (-not $valid) {
+            Write-Log 'WARN' ("ACID Validation failed after {0} ms: rolling back {1}" -f $sw.ElapsedMilliseconds, $Description)
+            if ($snapshot) { [void](Restore-PreflightSnapshot $snapshot) }
+            return $false
+        }
+    } elseif (-not $execOk) {
+        if ($snapshot) { [void](Restore-PreflightSnapshot $snapshot) }
+        return $false
+    }
+
+    Write-Log 'OK' ("ACID Committed: {0}" -f $Description)
+    return $true
+}
+
+function Write-SentinelLog([string]$Level, [string]$Message) {
+    $ts = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+    $line = "[{0}] [{1,-5}] {2}" -f $ts, $Level.ToUpperInvariant(), $Message
+    if ($null -eq $script:SentinelEvents) { $script:SentinelEvents = New-Object System.Collections.ArrayList }
+    [void]$script:SentinelEvents.Add($line)
+    while ($script:SentinelEvents.Count -gt 25) { $script:SentinelEvents.RemoveAt(0) }
     if ($script:StoreReady) {
         $logPath = Join-Path $script:StoreDir 'sentinel.log'
         $bakPath = Join-Path $script:StoreDir 'sentinel.log.bak'
@@ -726,75 +798,3 @@ function Start-Interactive {
         } catch {}
         try { if ($script:Pulse.Ping) { $script:Pulse.Ping.Dispose(); $script:Pulse.Ping = $null; $script:Pulse.Task = $null } } catch {}
         try { [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = [System.Diagnostics.ProcessPriorityClass]::Normal } catch {}
-        Exit-Screen
-    }
-}
-$script:IsAdmin = Test-IsAdmin
-$adminModes = @('Interactive', 'Heal', 'QuickHeal', 'AutoHeal', 'Omnifix', 'NetReset', 'FullNetReset', 'UltraReset', 'Ultra', 'DoomsdayReset', 'Doomsday', 'ArmageddonReset', 'Armageddon', 'ResetOptions', 'ResetMenu', 'FlushCache', 'Flush', 'InstallWatchdog', 'UninstallWatchdog', 'InstallShield', 'UninstallShield', 'InstallSentinel', 'UninstallSentinel', 'ResetFactory', 'Reset', 'SetDnsProfile', 'Dns', 'DnsMenu', 'SetRouteProfile', 'Route', 'RouteMenu', 'Daemon', 'Sentinel', 'Vault')
-if ($Mode -eq 'Interactive') {
-    $intFile = Join-Path $script:Cfg.StoreDir 'interactive.json'
-    if (Test-Path -LiteralPath $intFile) {
-        try {
-            $existing = ConvertFrom-Json (Get-Content -LiteralPath $intFile -Raw -ErrorAction SilentlyContinue)
-            if ($existing -and $existing.Pid -and ($existing.Pid -ne $PID)) {
-                $p = Get-Process -Id ([int]$existing.Pid) -ErrorAction SilentlyContinue
-                if ($p -and ($p.ProcessName -match 'powershell|cmd|LanFixer')) {
-                    if ($Force) {
-                        try { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } catch {}
-                        Remove-Item -LiteralPath $intFile -Force -ErrorAction SilentlyContinue
-                    } else {
-                        try {
-                            $ws = New-Object -ComObject WScript.Shell
-                            [void]$ws.AppActivate($p.Id)
-                        } catch {}
-                        Write-Host ''
-                        Write-Host '  ========================================================================' -ForegroundColor Cyan
-                        Write-Host ("  Lan Fixer is already running in another window (PID {0})." -f $p.Id) -ForegroundColor Yellow
-                        Write-Host '  Switched focus to the active window.' -ForegroundColor Gray
-                        Write-Host '  (Use -Force or close the existing window to replace it)' -ForegroundColor DarkGray
-                        Write-Host '  ========================================================================' -ForegroundColor Cyan
-                        Write-Host ''
-                        Start-Sleep -Seconds 2
-                        exit 0
-                    }
-                } else {
-                    Remove-Item -LiteralPath $intFile -Force -ErrorAction SilentlyContinue
-                }
-            }
-        } catch {}
-    }
-}
-if (-not $script:IsAdmin -and -not $script:IsDry -and ($adminModes -contains $Mode)) {
-    $elevated = $false
-    if (-not $LfElevated -and $script:SelfPath) {
-        try {
-            $parts = @('-LfElevated')
-            foreach ($kv in $PSBoundParameters.GetEnumerator()) {
-                if ($kv.Key -eq 'LfElevated') { continue }
-                if ($kv.Value -is [System.Management.Automation.SwitchParameter]) { if ($kv.Value.IsPresent) { $parts += ('-' + $kv.Key) } }
-                else { $parts += ('-' + $kv.Key); $parts += [string]$kv.Value }
-            }
-            Start-Process -FilePath $script:SelfPath -ArgumentList ($parts -join ' ') -Verb RunAs -ErrorAction Stop
-            $elevated = $true
-        } catch { Write-Host 'Administrator approval was not granted.' -ForegroundColor Yellow }
-    }
-    if ($elevated) { exit 0 }
-    if ($Mode -ne 'Interactive') { Write-Host '[x] This mode needs Administrator rights.' -ForegroundColor Red; exit 1 }
-}
-if ($script:UiOn) { Initialize-Ui }
-if ($script:IsAdmin) { Initialize-Store }
-Import-UserConfig
-$script:State = Get-State
-$exitCode = 0
-try {
-    if ($script:UiOn -and $Mode -ne 'Interactive') { Write-Banner ("{0}{1}" -f $Mode, $(if ($script:IsDry) { ' (dry run)' } else { '' })) }
-    switch ($Mode) {
-        'AutoHeal'          { [void](Invoke-AutoHeal) }
-        'Omnifix'           { Invoke-SupremeOmnifix }
-        'NetReset'          { Invoke-UltraSystemReset }
-        'FullNetReset'      { Invoke-UltraSystemReset }
-        'UltraReset'        { Invoke-UltraSystemReset }
-        'Ultra'             { Invoke-UltraSystemReset }
-        'DoomsdayReset'     { Invoke-DoomsdayReset }
-        'Doomsday'          { Invoke-DoomsdayReset }
-        'ArmageddonReset'   { Invoke-ArmageddonReset }

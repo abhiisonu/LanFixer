@@ -1,3 +1,4 @@
+        if ($state -eq 'Offline' -or $state -eq 'NoDns') {
             try {
                 $wr = [System.Net.HttpWebRequest]::Create('http://connectivitycheck.gstatic.com/generate_204')
                 $wr.Timeout = 2500
@@ -329,19 +330,10 @@ function Get-AdapterHealth($Ad) {
 function Wait-LinkSettling([int]$MaxMs = 12000) {
     if ($script:IsDry) { return }
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    $minWait = if ($MaxMs -gt 12000) { 8000 } else { 2000 }
+    $minWait = if ($MaxMs -gt 12000) { 3000 } else { 1000 }
     while ($sw.ElapsedMilliseconds -lt $MaxMs) {
         $ups = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })
-        if ($ups.Count -eq 0) {
-            if ($sw.ElapsedMilliseconds -ge $minWait) { break }
-        } else {
-            $pending = 0
-            foreach ($a in $ups) {
-                if (-not (Get-ValidIPv4 $a)) { $pending++ }
-                elseif (@(Get-GatewaysV4 $a).Count -eq 0 -and $sw.ElapsedMilliseconds -lt 4000) { $pending++ }
-            }
-            if ($pending -eq 0) { break }
-        }
+        if ($ups.Count -gt 0 -and $sw.ElapsedMilliseconds -ge $minWait) { break }
         Start-Sleep -Milliseconds 250
     }
     Write-Log 'INFO' ("Link settling finished after {0} ms" -f $sw.ElapsedMilliseconds)
@@ -460,7 +452,7 @@ function Resolve-DuplexFlap($Ad) {
     }
     $guid = [string]$Ad.InterfaceGuid
     $speed = [string]$Ad.LinkSpeed
-    if ($speed -match '^\s*10\s*M' -or $Ad.InterfaceDescription -match 'Gigabit|GbE|RTL81|I21|I22|1000') {
+    if ($speed -match '^\s*10\s*M' -and $Ad.InterfaceDescription -match 'Gigabit|GbE|RTL81|I21|I22|1000') {
         $prop = Get-NetAdapterAdvancedProperty -Name $Ad.Name -RegistryKeyword '*SpeedDuplex' -ErrorAction SilentlyContinue
         if ($prop) {
             $curVal = [string](@($prop.RegistryValue) | Select-Object -First 1)
@@ -629,6 +621,7 @@ function Shield-Dot3Svc($Ad) {
                 if ($started) { $changed = $true }
             }
             if ($changed -and $Ad) {
+                Start-Sleep -Milliseconds 600
                 $netsh = Get-SysExe 'netsh.exe'
                 if (Test-Path -LiteralPath $netsh) {
                     [void](Invoke-Native $netsh @('lan', 'reconnect', ("interface={0}" -f $Ad.Name)) 5000)
@@ -723,22 +716,25 @@ function Repair-Dhcp($Ad, [switch]$ForceRelease) {
     }
     # Step 3: DHCP stack unfreeze and release/renew
     [void](Invoke-Change "DHCP stack unfreeze and release/renew on $($Ad.Name)" {
-        Stop-Service -Name Dhcp -Force -ErrorAction SilentlyContinue
-        if ($guid) {
-            try {
-                $ifKey = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$guid"
-                if (Test-Path -LiteralPath $ifKey) {
-                    Set-ItemProperty -LiteralPath $ifKey -Name 'DhcpIPAddress' -Value '0.0.0.0' -ErrorAction SilentlyContinue
-                    Set-ItemProperty -LiteralPath $ifKey -Name 'DhcpDefaultGateway' -Value @() -ErrorAction SilentlyContinue
-                }
-            } catch {}
+        try {
+            Stop-Service -Name Dhcp -Force -ErrorAction SilentlyContinue
+            if ($guid) {
+                try {
+                    $ifKey = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$guid"
+                    if (Test-Path -LiteralPath $ifKey) {
+                        Set-ItemProperty -LiteralPath $ifKey -Name 'DhcpIPAddress' -Value '0.0.0.0' -ErrorAction SilentlyContinue
+                        Set-ItemProperty -LiteralPath $ifKey -Name 'DhcpDefaultGateway' -Value @() -ErrorAction SilentlyContinue
+                    }
+                } catch {}
+            }
+        } finally {
+            Start-Service -Name Dhcp -ErrorAction SilentlyContinue
+            Start-Service -Name WlanSvc -ErrorAction SilentlyContinue
+            Start-Service -Name Wcmsvc -ErrorAction SilentlyContinue
+            Start-Service -Name iphlpsvc -ErrorAction SilentlyContinue
+            Start-Service -Name NlaSvc -ErrorAction SilentlyContinue
+            Start-Service -Name netprofm -ErrorAction SilentlyContinue
         }
-        Start-Service -Name Dhcp -ErrorAction SilentlyContinue
-        Start-Service -Name WlanSvc -ErrorAction SilentlyContinue
-        Start-Service -Name Wcmsvc -ErrorAction SilentlyContinue
-        Start-Service -Name iphlpsvc -ErrorAction SilentlyContinue
-        Start-Service -Name NlaSvc -ErrorAction SilentlyContinue
-        Start-Service -Name netprofm -ErrorAction SilentlyContinue
         [void](Invoke-Native $ipconfig @('/release', $Ad.Name) 10000)
         $r = Invoke-Native $ipconfig @('/renew', $Ad.Name) 25000
         if ($r.TimedOut) { throw 'ipconfig /renew timed out' }
@@ -798,3 +794,7 @@ function Shield-DataLink($Ctx) {
                 $snap = Get-SubTable 'Snapshot' $guid
                 $orig = if ($snap.ContainsKey('Dad4')) { [int]$snap['Dad4'] } else { [int]$script:Cfg.DefaultDad }
                 if (-not $dupNow -and $cur -eq [int]$script:Cfg.CampusDad -and $orig -ne $cur) {
+                    [void](Invoke-Change "Non-campus network: duplicate-address probes restored to $orig on $($ad.Name)" {
+                        Set-NetIPInterface -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -DadTransmits $orig -ErrorAction Stop
+                    })
+                }

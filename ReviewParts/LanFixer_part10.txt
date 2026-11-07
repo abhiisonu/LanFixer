@@ -1,3 +1,72 @@
+            }
+            return
+        }
+    }
+    Write-Log 'INFO' 'Auth watch: timed out without a login.'
+}
+
+# ==============================================================================
+# AUTONOMOUS RUN (called by the SYSTEM watchdog)
+# ==============================================================================
+function Test-HardFailure([string]$Problem) { return (@('NoIp', 'GwUnreachable', 'Offline', 'NoDns', 'NoLink', 'NoAdapter', 'DriverFault', 'HardwareFault', 'UnknownFault') -contains $Problem) }
+# A working connection ends the breaker no matter who repaired it (manual option 1, watchdog, or the cable just got better).
+function Clear-FailStreakIfRecovered([string]$Problem) {
+    if ($script:IsDry -or (Test-HardFailure $Problem) -or (@('Healthy', 'Captive') -notcontains $Problem)) { return $false }
+    if ([int]$script:State.Misc['FailStreak'] -eq 0) { return $false }
+    $script:State.Misc['FailStreak'] = 0
+    Write-Log 'INFO' 'Repair breaker reset: the connection works again.'
+    return $true
+}
+function Invoke-AutoHeal {
+    if (Test-InteractiveSessionActive) {
+        Write-Log 'INFO' 'AutoHeal pass skipped: interactive control center session is active.'
+        return 0
+    }
+    if (-not (Enter-Lock 3000)) { return 0 }
+    $curUpCount = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' }).Count
+    $prevUpCount = if ($null -ne $script:State.Misc['LastAutoHealUpCount']) { [int]$script:State.Misc['LastAutoHealUpCount'] } else { -1 }
+    if (($curUpCount -eq $prevUpCount) -and (-not (Test-Elapsed 'LastAutoHealRun' 20))) {
+        Write-Log 'INFO' 'AutoHeal pass debounced: a heal pass completed less than 20 seconds ago with identical link state.'
+        Exit-Lock
+        return 0
+    }
+    $script:State.Misc['LastAutoHealUpCount'] = $curUpCount
+    Set-StateTime 'LastAutoHealRun'; Save-State
+    $watch = $false
+    try {
+        $ups = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })
+        if ($ups.Count -eq 0) { Wait-LinkSettling 6000; $ups = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' }) }
+        if ($ups.Count -eq 0) {
+            foreach ($a in @(Get-EthernetAdapters)) { (Get-SubTable 'Env' ([string]$a.InterfaceGuid)).Up = $false }
+            Invoke-RoamingCleanup
+            Shield-SystemStack
+            Set-StateTime 'LastAutoHealRun'; Save-State
+            return 0
+        }
+        Shield-SystemStack
+        $primary = $ups[0]
+        $health = Get-AdapterHealth $primary
+        $needFull = ($script:State.Misc['Version'] -ne $script:Version) -or (Test-Elapsed 'LastFull' 7200)
+        $newConn = $false
+        $mismatch = $false
+        foreach ($adUp in $ups) {
+            $guidUp = [string]$adUp.InterfaceGuid
+            $healthUp = if ($adUp.ifIndex -eq $primary.ifIndex) { $health } else { Get-AdapterHealth $adUp }
+            $enviUp = Get-AdapterEnvironment $adUp
+            $hUp = Get-SubTable 'Env' $guidUp
+            $dUp = Get-SubTable 'Dns' $guidUp
+            $nc = (($hUp.Up -ne $true) -or ([string]$hUp.Ip -ne [string]$healthUp.Ip))
+            $wantUp = $(if ($healthUp.Conn -eq 'Online') { 'Online' } else { 'NotOnline' })
+            $mm = ($enviUp.Env -eq 'Campus' -and (Get-DnsProfileName) -eq 'Adaptive' -and ([string]$dUp.ConnApplied -ne $wantUp))
+            if ($nc) { $newConn = $true }
+            if ($mm) { $mismatch = $true }
+            if (($healthUp.Problem -ne 'Healthy') -or $nc -or $mm) {
+                $needFull = $true
+            }
+        }
+        if (-not $needFull) {
+            foreach ($adUp in $ups) {
+                $enviUp = Get-AdapterEnvironment $adUp
                 $hUp = Get-SubTable 'Env' ([string]$adUp.InterfaceGuid)
                 $healthUp = if ($adUp.ifIndex -eq $primary.ifIndex) { $health } else { Get-AdapterHealth $adUp }
                 $hUp.Up = $true; $hUp.Ip = [string]$healthUp.Ip
@@ -729,72 +798,3 @@ function Set-RouteProfileMode([string]$Name) {
     if (-not (Assert-Admin)) { return }
     $valid = @('Adaptive', 'Ethernet', 'Wifi', 'Windows')
     if ($valid -notcontains $Name) { Write-Log 'WARN' "Unknown routing profile '$Name'. Valid: $($valid -join ', ')"; return }
-    [void](Invoke-WithLock {
-        $script:State.Misc['RouteProfile'] = $Name
-        Write-Log 'OK' "Routing priority profile is now: $Name"
-        if ($Name -eq 'Wifi') {
-            foreach ($w in (Get-AllWirelessAdapters)) {
-                if ($w.Status -eq 'Disabled') {
-                    if (-not $script:IsDry) {
-                        [void](Invoke-Change "Enabling disabled Wi-Fi adapter $($w.Name) for Wifi profile" {
-                            Enable-NetAdapter -Name $w.Name -Confirm:$false -ErrorAction Stop
-                        })
-                    } else {
-                        Write-Log 'DRY' "Would: Enable disabled Wi-Fi adapter $($w.Name)"
-                    }
-                }
-            }
-        }
-        $allEth = @(Get-EthernetAdapters)
-        $ethUps = @($allEth | Where-Object { $_.Status -eq 'Up' })
-        $primaryEth = if ($ethUps.Count -gt 0) { $ethUps[0] } elseif ($allEth.Count -gt 0) { $allEth[0] } else { $null }
-        if ($Name -eq 'Windows') {
-            Restore-InterfaceMetrics "Routing profile set to Windows Default"
-        } elseif ($primaryEth) {
-            $srcIp = Get-ValidIPv4 $primaryEth
-            $st = if ($srcIp) { (Get-InternetState -NoCache -SourceIp $srcIp).State } else { 'Offline' }
-            $ctx = @{ Ad = $primaryEth; Env = (Get-AdapterEnvironment $primaryEth) }
-            Shield-RouteMetrics $ctx $st
-        }
-        if (-not $script:IsDry) { Save-State }
-    })
-}
-
-# ==============================================================================
-# UI HELPERS
-# ==============================================================================
-# ---- restyled helpers used by every mode (same names and contracts as before)
-function Write-FitText([string]$Text, [int]$Width) { return (Fit $Text $Width) }
-function Write-Banner([string]$Title) {
-    $w = Get-UiWidth
-    Out-Line @()
-    Out-Line @((Seg 'accent!' '  LAN FIXER'), (Seg 'faint' (' ' + $script:G.mid + ' ' + $Title.ToUpper())))
-    Out-Rule $w
-    Out-Line @()
-}
-function Write-Section([string]$Title) {
-    $w = Get-UiWidth
-    Out-Line @()
-    Out-Line @((Seg 'accent!' ('  ' + $Title.ToLower() + ' ')), (Seg 'faint' ($script:G.rule * [Math]::Max(3, $w - $Title.Length - 2))))
-    Out-Line @()
-}
-function Write-KV([string]$Key, [string]$Value, [string]$Color = 'White') {
-    Out-Line @((Seg 'dim' ('  ' + ($Key.PadRight(26)) + ' ')), (Seg (ConvertTo-Role $Color) $Value))
-}
-# ==============================================================================
-# PATH MTU (confirmed twice, floor 1280, only while online, never re-clamped)
-# ==============================================================================
-function Get-PathMtu([string]$Target) {
-    $p = New-Object System.Net.NetworkInformation.Ping
-    $opt = New-Object System.Net.NetworkInformation.PingOptions(64, $true)
-    # one lost probe must never read as "smaller path": a size passes if ANY of 3 tries gets through
-    $probe = {
-        param($Size)
-        $buf = New-Object byte[] $Size
-        for ($k = 0; $k -lt 3; $k++) {
-            try { $r = $p.Send($Target, 900, $buf, $opt); if ($r.Status -eq [System.Net.NetworkInformation.IPStatus]::Success) { return $true } } catch {}
-        }
-        return $false
-    }
-    try {
-        if (& $probe 1472) { return 1500 }

@@ -1,3 +1,49 @@
+
+                # Eradicate manual static IP addresses and default routes that cause blackholes
+                try {
+                    Get-NetIPAddress -InterfaceIndex $ad.ifIndex -ErrorAction SilentlyContinue | Where-Object { $_.PrefixOrigin -eq 'Manual' } | Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue
+                    Get-NetRoute -InterfaceIndex $ad.ifIndex -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Where-Object { $_.NextHop -ne '0.0.0.0' } | Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue
+                } catch {}
+
+                # Zero out cached DHCP lease keys in registry
+                $guid = [string]$ad.InterfaceGuid
+                if ($guid) {
+                    $ifKey = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$guid"
+                    if (Test-Path -LiteralPath $ifKey) {
+                        try {
+                            Set-ItemProperty -LiteralPath $ifKey -Name 'DhcpIPAddress' -Value '0.0.0.0' -ErrorAction SilentlyContinue
+                            Set-ItemProperty -LiteralPath $ifKey -Name 'DhcpDefaultGateway' -Value @() -ErrorAction SilentlyContinue
+                            Set-ItemProperty -LiteralPath $ifKey -Name 'DhcpServer' -Value '255.255.255.255' -ErrorAction SilentlyContinue
+                            Set-ItemProperty -LiteralPath $ifKey -Name 'DhcpSubnetMask' -Value '0.0.0.0' -ErrorAction SilentlyContinue
+                            Set-ItemProperty -LiteralPath $ifKey -Name 'DhcpNameServer' -Value '' -ErrorAction SilentlyContinue
+                            Set-ItemProperty -LiteralPath $ifKey -Name 'DhcpConnForceBroadcastFlag' -Value 1 -Type DWord -ErrorAction SilentlyContinue
+                        } catch {}
+                    }
+                }
+
+                # Enforce DHCP, MTU 1500, and automatic metric
+                try {
+                    Set-NetIPInterface -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -Dhcp Enabled -NlMtuBytes 1500 -AutomaticMetric Enabled -ErrorAction SilentlyContinue
+                    Set-NetIPInterface -InterfaceIndex $ad.ifIndex -AddressFamily IPv6 -Dhcp Enabled -ErrorAction SilentlyContinue
+                    Set-DnsClientServerAddress -InterfaceIndex $ad.ifIndex -ResetServerAddresses -ErrorAction SilentlyContinue
+                } catch {}
+
+                # Defeat energy-saving traps on the PHY
+                try {
+                    Set-NetAdapterAdvancedProperty -Name $ad.Name -RegistryKeyword '*EEE' -RegistryValue 0 -ErrorAction SilentlyContinue
+                    Set-NetAdapterAdvancedProperty -Name $ad.Name -RegistryKeyword '*EnergyEfficientEthernet' -RegistryValue 0 -ErrorAction SilentlyContinue
+                    Set-NetAdapterAdvancedProperty -Name $ad.Name -RegistryKeyword '*GreenEthernet' -RegistryValue 0 -ErrorAction SilentlyContinue
+                } catch {}
+            }
+        }
+        if (-not $script:IsDry) {
+            [void](Invoke-Native (Get-SysExe 'pnputil.exe') @('/scan-devices') 5000)
+        }
+        Restore-InterfaceMetrics 'Doomsday System Reset metrics restore'
+
+        # ----------------------------------------------------------------------
+        # STAGE 12/12: TOPOLOGICAL 13-SERVICE RESUSCITATION, 802.1X RECONNECT & VERIFY
+        # ----------------------------------------------------------------------
         Write-Log 'STEP' 'STAGE 12/12 Resuscitating 13 core networking services, 802.1X, running DHCP & verifying'
         if ($script:IsDry) {
             Write-Log 'DRY' 'Would start services in topological order: BFE -> mpssvc -> CryptSvc -> RmSvc -> WlanSvc -> dot3svc -> bthserv -> WwanSvc -> Dhcp -> Dnscache -> iphlpsvc -> NlaSvc -> netprofm -> BITS'
@@ -195,11 +241,17 @@ function Shield-Services($Ctxs, [string]$ConnState) {
         foreach ($ctx in $Ctxs) {
             $np = Get-NetConnectionProfile -InterfaceIndex $ctx.Ad.ifIndex -ErrorAction SilentlyContinue | Select-Object -First 1
             if ($np -and [string]$np.IPv4Connectivity -ne 'Internet') {
-                Start-Sleep -Seconds 5
-                $np = Get-NetConnectionProfile -InterfaceIndex $ctx.Ad.ifIndex -ErrorAction SilentlyContinue | Select-Object -First 1
+                for ($pCount = 0; $pCount -lt 6; $pCount++) {
+                    Start-Sleep -Milliseconds 500
+                    $np = Get-NetConnectionProfile -InterfaceIndex $ctx.Ad.ifIndex -ErrorAction SilentlyContinue | Select-Object -First 1
+                    if ($np -and [string]$np.IPv4Connectivity -eq 'Internet') { break }
+                }
                 if ($np -and [string]$np.IPv4Connectivity -ne 'Internet') {
                     Set-StateTime 'NlaNudge'
-                    [void](Invoke-Change 'Network List service refreshed (Windows showed "no internet" while it works)' { Restart-Service -Name NlaSvc -Force -ErrorAction Stop })
+                    [void](Invoke-Change 'Network List service refreshed (Windows showed "no internet" while it works)' {
+                        Restart-Service -Name NlaSvc -Force -ErrorAction Stop
+                        Start-Service -Name netprofm -ErrorAction SilentlyContinue
+                    })
                     break
                 }
             }
@@ -256,6 +308,15 @@ function Invoke-LegacyMigration {
 # ==============================================================================
 # THE PIPELINE
 # ==============================================================================
+function Refresh-ContextAdapter($Ctx) {
+    if ($Ctx -and $Ctx.Ad) {
+        $fresh = Get-NetAdapter -InterfaceGuid $Ctx.Ad.InterfaceGuid -ErrorAction SilentlyContinue
+        if (-not $fresh) { $fresh = Get-NetAdapter -InterfaceIndex $Ctx.Ad.ifIndex -ErrorAction SilentlyContinue }
+        if ($fresh) { $Ctx.Ad = $fresh }
+    }
+    return $Ctx.Ad
+}
+
 function Invoke-HealPipeline([switch]$SkipSystemStack) {
     $res = @{ Conn = 'Offline'; Campus = $false; AnyUp = $false; Problem = 'NoAdapter' }
     Invoke-LegacyMigration
@@ -266,19 +327,20 @@ function Invoke-HealPipeline([switch]$SkipSystemStack) {
     $ads = @(Get-EthernetAdapters)
     if ($ads.Count -gt 0) {
         $anyUp = @($ads | Where-Object { $_.Status -eq 'Up' }).Count -gt 0
+        $didEnable = $false
         foreach ($a in $ads) {
             if ($a.Status -eq 'Disabled' -and $Mode -ne 'AutoHeal' -and -not $anyUp) {   # a manual repair may re-enable it; the watchdog never overrides a choice you made
-                [void](Invoke-Change "Enabling disabled physical Ethernet adapter $($a.Name)" {
+                if (Invoke-Change "Enabling disabled physical Ethernet adapter $($a.Name)" {
                     Enable-NetAdapter -Name $a.Name -Confirm:$false -ErrorAction Stop
-                })
+                }) { $didEnable = $true }
             }
         }
+        if ($didEnable) { Start-Sleep -Milliseconds 500; $ads = @(Get-EthernetAdapters) }
     }
     if ($ads.Count -eq 0) { Write-Log 'WARN' 'No physical Ethernet adapter found (Wi-Fi/system stack still shielded).'; Invoke-RoamingCleanup; Save-State; return $res }
 
     Write-Log 'STEP' 'LAYER 1/7  Hardware interface & power state verification'
-    foreach ($a in $ads) { Shield-Hardware $a; [void](Resolve-DuplexFlap $a); [void](Optimize-PhySiliconBuffers $a) }
-    Invoke-LogIntelligence $ads
+    foreach ($a in $ads) { Shield-Hardware $a; [void](Resolve-DuplexFlap $a); [void](Optimize-PhySiliconBuffers $a); [void](Shield-TcpOffloads $a) }
     $didHwRestart = $false
     if (-not $script:IsDry) {
         foreach ($g in @($script:PendingRestart.Keys)) {
@@ -289,14 +351,9 @@ function Invoke-HealPipeline([switch]$SkipSystemStack) {
                 $script:PendingRestart.Remove($g)
             }
         }
+        if ($didHwRestart) { Start-Sleep -Milliseconds 600; $ads = @(Get-EthernetAdapters) }
     }
-    $needLongSettling = $didHwRestart
-    if (-not $needLongSettling) {
-        foreach ($a in $ads) {
-            if ($a.Status -eq 'Up' -and -not (Get-ValidIPv4 $a)) { $needLongSettling = $true; break }
-        }
-    }
-    Wait-LinkSettling $(if ($needLongSettling) { ([int]$script:Cfg.StpMaxSec * 1000) } else { 12000 })
+    Wait-LinkSettling $(if ($didHwRestart) { ([int]$script:Cfg.StpMaxSec * 1000) } else { 12000 })
     $ups = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })
     if ($ups.Count -eq 0) {
         Write-Log 'WARN' 'Ethernet link is down: plug in the cable / wall port, then run again.'
@@ -315,29 +372,33 @@ function Invoke-HealPipeline([switch]$SkipSystemStack) {
     }
 
     Write-Log 'STEP' 'LAYER 2/7  Data link & DHCP lease renewal'
-    foreach ($c in $ctxs) { [void](Shield-Dot3Svc $c.Ad); Shield-DataLink $c }
+    foreach ($c in $ctxs) { [void](Refresh-ContextAdapter $c); [void](Shield-Dot3Svc $c.Ad); Shield-DataLink $c }
+    Invoke-LogIntelligence $ups
     $primaryIp = Get-PrimarySourceIp
     $conn = if ($primaryIp) { (Get-InternetState -NoCache -SourceIp $primaryIp).State } else { 'Offline' }
 
     Write-Log 'STEP' 'LAYER 3/7  Gateway ARP integrity & route metrics'
-    foreach ($c in $ctxs) { Shield-GatewayArp $c $conn; Shield-RouteMetrics $c $conn; Shield-PathMtu $c $conn; Shield-DefaultRoutes $c }
+    foreach ($c in $ctxs) { [void](Refresh-ContextAdapter $c); Shield-GatewayArp $c $conn; Shield-RouteMetrics $c $conn; Shield-PathMtu $c $conn; Shield-DefaultRoutes $c }
 
     Write-Log 'STEP' 'LAYER 4/7  Adaptive DNS configuration & resolver health'
-    foreach ($c in $ctxs) { [void](Shield-TcpOffloads $c.Ad); Shield-Dns $c $conn }
+    foreach ($c in $ctxs) { [void](Refresh-ContextAdapter $c); Shield-Dns $c $conn }
 
+    $primaryIp = Get-PrimarySourceIp
     $connAfterDns = if ($primaryIp) { (Get-InternetState -NoCache -SourceIp $primaryIp).State } else { 'Offline' }
     if ($connAfterDns -eq 'Online' -and $conn -ne 'Online') {
         $conn = 'Online'
-        foreach ($c in $ctxs) { Shield-RouteMetrics $c $conn; Shield-PathMtu $c $conn }
+        foreach ($c in $ctxs) { [void](Refresh-ContextAdapter $c); Shield-RouteMetrics $c $conn; Shield-PathMtu $c $conn }
     }
 
     Write-Log 'STEP' 'LAYER 5/7  Captive portal routing & reachability'
+    foreach ($c in $ctxs) { [void](Refresh-ContextAdapter $c) }
     Shield-Portal $ctxs
 
     Write-Log 'STEP' 'LAYER 6/7  Network profile & firewall security'
-    foreach ($c in $ctxs) { Shield-Profile $c }
+    foreach ($c in $ctxs) { [void](Refresh-ContextAdapter $c); Shield-Profile $c }
 
     Write-Log 'STEP' 'LAYER 7/7  Network stack & service synchronization'
+    foreach ($c in $ctxs) { [void](Refresh-ContextAdapter $c) }
     Shield-Services $ctxs $conn
 
     foreach ($c in $ctxs) {
@@ -347,9 +408,17 @@ function Invoke-HealPipeline([switch]$SkipSystemStack) {
         if ($c.Env.Env -eq 'Campus') { $res.Campus = $true }
     }
     if (-not $script:IsDry) { Set-StateTime 'LastFull'; $script:State.Misc['Version'] = $script:Version; Save-State }
+    $primaryIp = Get-PrimarySourceIp
     $res.Conn = if ($primaryIp) { (Get-InternetState -NoCache -SourceIp $primaryIp).State } else { 'Offline' }
-    $res.Ip = if ($ups.Count -gt 0) { [string](Get-ValidIPv4 $ups[0]) } else { '' }
-    $res.Problem = (Get-AdapterHealth $ups[0]).Problem
+    $primaryAd = $null
+    if ($primaryIp) { $primaryAd = $ups | Where-Object { (Get-ValidIPv4 $_) -eq $primaryIp } | Select-Object -First 1 }
+    if (-not $primaryAd) {
+        $defRoute = @(Get-NetRoute -DestinationPrefix '0.0.0.0/0' -AddressFamily IPv4 -ErrorAction SilentlyContinue | Sort-Object { [int]$_.RouteMetric } | Select-Object -First 1)
+        if ($defRoute) { $primaryAd = $ups | Where-Object { $_.ifIndex -eq $defRoute.InterfaceIndex } | Select-Object -First 1 }
+    }
+    if (-not $primaryAd -and $ups.Count -gt 0) { $primaryAd = $ups[0] }
+    $res.Ip = if ($primaryAd) { [string](Get-ValidIPv4 $primaryAd) } else { '' }
+    $res.Problem = if ($primaryAd) { (Get-AdapterHealth $primaryAd).Problem } else { 'NoAdapter' }
     if (Clear-FailStreakIfRecovered ([string]$res.Problem)) { Save-State }
     return $res
 }
@@ -729,72 +798,3 @@ function Invoke-AuthWatch {
         if ($st -eq 'Online') {
             if (Enter-Lock 15000) {
                 try { Complete-Authentication; Write-Log 'OK' 'Auth watch: login detected, DNS switched to post-login profile.' } finally { Exit-Lock }
-            }
-            return
-        }
-    }
-    Write-Log 'INFO' 'Auth watch: timed out without a login.'
-}
-
-# ==============================================================================
-# AUTONOMOUS RUN (called by the SYSTEM watchdog)
-# ==============================================================================
-function Test-HardFailure([string]$Problem) { return (@('NoIp', 'GwUnreachable', 'Offline', 'NoDns') -contains $Problem) }
-# A working connection ends the breaker no matter who repaired it (manual option 1, watchdog, or the cable just got better).
-function Clear-FailStreakIfRecovered([string]$Problem) {
-    if ($script:IsDry -or (Test-HardFailure $Problem)) { return $false }
-    if ([int]$script:State.Misc['FailStreak'] -eq 0) { return $false }
-    $script:State.Misc['FailStreak'] = 0
-    Write-Log 'INFO' 'Repair breaker reset: the connection works again.'
-    return $true
-}
-function Invoke-AutoHeal {
-    if (Test-InteractiveSessionActive) {
-        Write-Log 'INFO' 'AutoHeal pass skipped: interactive control center session is active.'
-        return 0
-    }
-    if (-not (Enter-Lock 3000)) { return 0 }
-    $curUpCount = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' }).Count
-    $prevUpCount = if ($null -ne $script:State.Misc['LastAutoHealUpCount']) { [int]$script:State.Misc['LastAutoHealUpCount'] } else { -1 }
-    if (($curUpCount -eq $prevUpCount) -and (-not (Test-Elapsed 'LastAutoHealRun' 20))) {
-        Write-Log 'INFO' 'AutoHeal pass debounced: a heal pass completed less than 20 seconds ago with identical link state.'
-        Exit-Lock
-        return 0
-    }
-    $script:State.Misc['LastAutoHealUpCount'] = $curUpCount
-    Set-StateTime 'LastAutoHealRun'; Save-State
-    $watch = $false
-    try {
-        $ups = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })
-        if ($ups.Count -eq 0) { Wait-LinkSettling 6000; $ups = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' }) }
-        if ($ups.Count -eq 0) {
-            foreach ($a in @(Get-EthernetAdapters)) { (Get-SubTable 'Env' ([string]$a.InterfaceGuid)).Up = $false }
-            Invoke-RoamingCleanup
-            Shield-SystemStack
-            Set-StateTime 'LastAutoHealRun'; Save-State
-            return 0
-        }
-        Shield-SystemStack
-        $primary = $ups[0]
-        $health = Get-AdapterHealth $primary
-        $needFull = ($script:State.Misc['Version'] -ne $script:Version) -or (Test-Elapsed 'LastFull' 7200)
-        $newConn = $false
-        $mismatch = $false
-        foreach ($adUp in $ups) {
-            $guidUp = [string]$adUp.InterfaceGuid
-            $healthUp = if ($adUp.ifIndex -eq $primary.ifIndex) { $health } else { Get-AdapterHealth $adUp }
-            $enviUp = Get-AdapterEnvironment $adUp
-            $hUp = Get-SubTable 'Env' $guidUp
-            $dUp = Get-SubTable 'Dns' $guidUp
-            $nc = (($hUp.Up -ne $true) -or ([string]$hUp.Ip -ne [string]$healthUp.Ip))
-            $wantUp = $(if ($healthUp.Conn -eq 'Online') { 'Online' } else { 'NotOnline' })
-            $mm = ($enviUp.Env -eq 'Campus' -and (Get-DnsProfileName) -eq 'Adaptive' -and ([string]$dUp.ConnApplied -ne $wantUp))
-            if ($nc) { $newConn = $true }
-            if ($mm) { $mismatch = $true }
-            if (($healthUp.Problem -ne 'Healthy') -or $nc -or $mm) {
-                $needFull = $true
-            }
-        }
-        if (-not $needFull) {
-            foreach ($adUp in $ups) {
-                $enviUp = Get-AdapterEnvironment $adUp

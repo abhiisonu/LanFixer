@@ -1,3 +1,49 @@
+# ==============================================================================
+# ULTRA SYSTEM RESET - THE SUPREME HYPER-NUCLEAR REMEDIATION ENGINE
+# ==============================================================================
+function Invoke-UltraSystemReset {
+    if (-not (Assert-Admin)) { return }
+    $swUltra = [System.Diagnostics.Stopwatch]::StartNew()
+    Write-Section 'ULTRA SYSTEM RESET (10-STAGE HYPER-NUCLEAR STACK RESUSCITATION)'
+    $r = Pick-Hash (Invoke-WithLock {
+        # ----------------------------------------------------------------------
+        # STAGE 1/10: PRE-FLIGHT ACID SNAPSHOT & 10-SERVICE REVERSE TEARDOWN
+        # ----------------------------------------------------------------------
+        Write-Log 'STEP' 'STAGE 1/10  Snapshotting pre-flight state & suspending 10 dependent network services'
+        $script:ConnCache = $null
+        $script:EnvCache = @{}
+        if ($script:IsDry) {
+            Write-Log 'DRY' 'Would capture pre-flight snapshots and stop dependent network services (BITS, netprofm, NlaSvc, Dnscache, Dhcp, iphlpsvc, dot3svc, WlanSvc, CryptSvc, mpssvc)'
+        } else {
+            foreach ($ea in @(Get-EthernetAdapters)) {
+                try {
+                    $snap = Capture-PreflightSnapshot $ea
+                    if ($snap -and $snap.Guid) { $script:State.Snapshot[$snap.Guid] = $snap }
+                } catch {}
+            }
+            if (-not $script:IsDry) { Save-State }
+            $script:State.Misc['RouteProfile'] = 'Adaptive'
+            $script:State.Misc['DnsProfile'] = 'Adaptive'
+            $script:State.Misc['FailStreak'] = 0
+            $script:State.Misc.Remove('MtuCandidate')
+            $script:State.Misc.Remove('DiscoveredDomain')
+            $script:State.Misc.Remove('DiscoveredPortalIp')
+            $script:State.Misc.Remove('DiscoveredPortalUrl')
+            
+            # Teardown dependent services in strict reverse topological order to release kernel sockets, handles, and crypto locks
+            $downSvcs = @('BITS', 'netprofm', 'NlaSvc', 'Dnscache', 'Dhcp', 'iphlpsvc', 'dot3svc', 'WlanSvc', 'CryptSvc', 'mpssvc')
+            foreach ($s in $downSvcs) {
+                try { Stop-Service -Name $s -Force -ErrorAction SilentlyContinue } catch {}
+            }
+        }
+
+        # ----------------------------------------------------------------------
+        # STAGE 2/10: DUAL-ARCHITECTURE WINSOCK CATALOG OBLITERATION (64-BIT & 32-BIT)
+        # ----------------------------------------------------------------------
+        Write-Log 'STEP' 'STAGE 2/10  Dual-architecture Winsock LSP/NSP catalog wipe (64-bit System32 & 32-bit SysWOW64)'
+        if ($script:IsDry) {
+            Write-Log 'DRY' 'Would execute 64-bit and 32-bit: netsh winsock reset catalog & netsh winsock reset'
+            Write-Log 'DRY' 'Would reset Winsock AutodialFlags to 0 in registry'
         } else {
             # 64-bit System32 Winsock Catalog Reset
             [void](Invoke-Native (Get-SysExe 'netsh.exe') @('winsock', 'reset', 'catalog') 8000)
@@ -752,49 +798,3 @@ function Invoke-DoomsdayReset {
                         }
                     }
                 } catch {}
-
-                # Eradicate manual static IP addresses and default routes that cause blackholes
-                try {
-                    Get-NetIPAddress -InterfaceIndex $ad.ifIndex -ErrorAction SilentlyContinue | Where-Object { $_.PrefixOrigin -eq 'Manual' } | Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue
-                    Get-NetRoute -InterfaceIndex $ad.ifIndex -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Where-Object { $_.NextHop -ne '0.0.0.0' } | Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue
-                } catch {}
-
-                # Zero out cached DHCP lease keys in registry
-                $guid = [string]$ad.InterfaceGuid
-                if ($guid) {
-                    $ifKey = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$guid"
-                    if (Test-Path -LiteralPath $ifKey) {
-                        try {
-                            Set-ItemProperty -LiteralPath $ifKey -Name 'DhcpIPAddress' -Value '0.0.0.0' -ErrorAction SilentlyContinue
-                            Set-ItemProperty -LiteralPath $ifKey -Name 'DhcpDefaultGateway' -Value @() -ErrorAction SilentlyContinue
-                            Set-ItemProperty -LiteralPath $ifKey -Name 'DhcpServer' -Value '255.255.255.255' -ErrorAction SilentlyContinue
-                            Set-ItemProperty -LiteralPath $ifKey -Name 'DhcpSubnetMask' -Value '0.0.0.0' -ErrorAction SilentlyContinue
-                            Set-ItemProperty -LiteralPath $ifKey -Name 'DhcpNameServer' -Value '' -ErrorAction SilentlyContinue
-                            Set-ItemProperty -LiteralPath $ifKey -Name 'DhcpConnForceBroadcastFlag' -Value 1 -Type DWord -ErrorAction SilentlyContinue
-                        } catch {}
-                    }
-                }
-
-                # Enforce DHCP, MTU 1500, and automatic metric
-                try {
-                    Set-NetIPInterface -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -Dhcp Enabled -NlMtuBytes 1500 -AutomaticMetric Enabled -ErrorAction SilentlyContinue
-                    Set-NetIPInterface -InterfaceIndex $ad.ifIndex -AddressFamily IPv6 -Dhcp Enabled -ErrorAction SilentlyContinue
-                    Set-DnsClientServerAddress -InterfaceIndex $ad.ifIndex -ResetServerAddresses -ErrorAction SilentlyContinue
-                } catch {}
-
-                # Defeat energy-saving traps on the PHY
-                try {
-                    Set-NetAdapterAdvancedProperty -Name $ad.Name -RegistryKeyword '*EEE' -RegistryValue 0 -ErrorAction SilentlyContinue
-                    Set-NetAdapterAdvancedProperty -Name $ad.Name -RegistryKeyword '*EnergyEfficientEthernet' -RegistryValue 0 -ErrorAction SilentlyContinue
-                    Set-NetAdapterAdvancedProperty -Name $ad.Name -RegistryKeyword '*GreenEthernet' -RegistryValue 0 -ErrorAction SilentlyContinue
-                } catch {}
-            }
-        }
-        if (-not $script:IsDry) {
-            [void](Invoke-Native (Get-SysExe 'pnputil.exe') @('/scan-devices') 5000)
-        }
-        Restore-InterfaceMetrics 'Doomsday System Reset metrics restore'
-
-        # ----------------------------------------------------------------------
-        # STAGE 12/12: TOPOLOGICAL 13-SERVICE RESUSCITATION, 802.1X RECONNECT & VERIFY
-        # ----------------------------------------------------------------------

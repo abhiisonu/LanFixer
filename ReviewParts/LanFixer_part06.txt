@@ -1,7 +1,3 @@
-                    [void](Invoke-Change "Non-campus network: duplicate-address probes restored to $orig on $($ad.Name)" {
-                        Set-NetIPInterface -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -DadTransmits $orig -ErrorAction Stop
-                    })
-                }
             }
         } else { Write-Log 'INFO' 'Environment unknown: leaving duplicate-address settings untouched.' }
     }
@@ -38,17 +34,20 @@
                 Write-Log 'WARN' "DHCP failed to acquire lease on $($ad.Name); rolling back to static IP $($origIpInfo.IPAddress)..."
                 [void](Invoke-Change "Rollback to static IP on $($ad.Name)" {
                     Set-NetIPInterface -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -Dhcp Disabled -ErrorAction Stop
+                    Remove-NetIPAddress -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -Confirm:$false -ErrorAction SilentlyContinue
                     $params = @{ InterfaceIndex = $ad.ifIndex; IPAddress = $origIpInfo.IPAddress; PrefixLength = $origIpInfo.PrefixLength; ErrorAction = 'Stop' }
                     if ($origIpInfo.DefaultGateway) { $params.DefaultGateway = $origIpInfo.DefaultGateway }
                     New-NetIPAddress @params -ErrorAction SilentlyContinue | Out-Null
                 })
             }
+            $fresh = Get-NetAdapter -Name $ad.Name -ErrorAction SilentlyContinue; if ($fresh) { $ad = $fresh; $Ctx.Ad = $fresh }
             $script:EnvCache.Remove($guid)
             $Ctx.Env = Get-AdapterEnvironment $ad
         }
     }
     if (-not (Get-ValidIPv4 $ad)) {
         $Ctx.Repaired = (Repair-Dhcp $ad)
+        $fresh = Get-NetAdapter -Name $ad.Name -ErrorAction SilentlyContinue; if ($fresh) { $ad = $fresh; $Ctx.Ad = $fresh }
         $script:EnvCache.Remove($guid)
         $Ctx.Env = Get-AdapterEnvironment $ad
     } elseif ($ipif -and [string]$ipif.Dhcp -eq 'Enabled') {
@@ -57,6 +56,7 @@
         if (-not $gwOk) {
             Write-Log 'WARN' "IPv4 lease is present on $($ad.Name), but default gateway is $(if ($curGw) { "$curGw (unreachable)" } else { 'missing' }). Refreshing DHCP lease..."
             $Ctx.Repaired = (Repair-Dhcp $ad -ForceRelease)
+            $fresh = Get-NetAdapter -Name $ad.Name -ErrorAction SilentlyContinue; if ($fresh) { $ad = $fresh; $Ctx.Ad = $fresh }
             $script:EnvCache.Remove($guid)
             $Ctx.Env = Get-AdapterEnvironment $ad
         }
@@ -74,16 +74,26 @@
 function Get-GatewayMacs($Ad, [string]$Gw, [int]$Samples = 3) {
     $macs = @()
     for ($i = 0; $i -lt $Samples; $i++) {
-        if (-not $script:IsDry) {
-            Remove-NetNeighbor -InterfaceIndex $Ad.ifIndex -IPAddress $Gw -Confirm:$false -ErrorAction SilentlyContinue
-        } else {
-            Write-Log 'DRY' "Would refresh neighbour entry for $Gw on $($Ad.Name)"
-        }
-        [void](Test-Ping $Gw 700)
-        Start-Sleep -Milliseconds 200
         $n = Get-NetNeighbor -InterfaceIndex $Ad.ifIndex -IPAddress $Gw -AddressFamily IPv4 -ErrorAction SilentlyContinue |
              Where-Object { $_.LinkLayerAddress -and $_.LinkLayerAddress -notmatch '^(00-)+00$' -and @('Unreachable','Incomplete') -notcontains [string]$_.State } | Select-Object -First 1
-        if ($n) { $macs += ([string]$n.LinkLayerAddress).ToUpper() }
+        if (-not $n -or $n.State -eq 'Stale') {
+            if (-not $script:IsDry) { [void](Test-Ping $Gw 500) }
+            $n = Get-NetNeighbor -InterfaceIndex $Ad.ifIndex -IPAddress $Gw -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+                 Where-Object { $_.LinkLayerAddress -and $_.LinkLayerAddress -notmatch '^(00-)+00$' -and @('Unreachable','Incomplete') -notcontains [string]$_.State } | Select-Object -First 1
+        }
+        if ($n) {
+            $macs += ([string]$n.LinkLayerAddress).ToUpper()
+        } else {
+            if (-not $script:IsDry) {
+                Remove-NetNeighbor -InterfaceIndex $Ad.ifIndex -IPAddress $Gw -Confirm:$false -ErrorAction SilentlyContinue
+                [void](Test-Ping $Gw 700)
+            }
+            Start-Sleep -Milliseconds 150
+            $n = Get-NetNeighbor -InterfaceIndex $Ad.ifIndex -IPAddress $Gw -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+                 Where-Object { $_.LinkLayerAddress -and $_.LinkLayerAddress -notmatch '^(00-)+00$' -and @('Unreachable','Incomplete') -notcontains [string]$_.State } | Select-Object -First 1
+            if ($n) { $macs += ([string]$n.LinkLayerAddress).ToUpper() }
+        }
+        if ($i -lt ($Samples - 1)) { Start-Sleep -Milliseconds 100 }
     }
     return $macs
 }
@@ -250,6 +260,7 @@ function Shield-PathMtu($Ctx, [string]$ConnState) {
             if ($ipif -and [int]$ipif.NlMtu -ne $orig -and ($ConnState -ne 'Online' -or (Get-PathMtuForAdapter $ad) -ge $orig)) {
                 [void](Invoke-Change "Non-campus network supports full frame size: restoring MTU to $orig on $($ad.Name)" {
                     Set-NetIPInterface -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -NlMtuBytes $orig -ErrorAction Stop
+                    Set-NetIPInterface -InterfaceIndex $ad.ifIndex -AddressFamily IPv6 -NlMtuBytes ([Math]::Max(1280, $orig)) -ErrorAction SilentlyContinue
                 })
                 return
             }
@@ -258,7 +269,7 @@ function Shield-PathMtu($Ctx, [string]$ConnState) {
     if ($ConnState -ne 'Online') { return }
     if ($script:IsDry) { Write-Log 'DRY' 'Would measure the path MTU and lower the adapter MTU only if a blackhole is confirmed twice.'; return }
     $ipif = Get-IPv4Interface $ad
-    if (-not $ipif -or [int]$ipif.NlMtu -lt 1500) { return }
+    if (-not $ipif -or [int]$ipif.NlMtu -le 1280) { return }
     $pmtu = Get-PathMtuForAdapter $ad
     $candKey = 'MtuCandidate:' + [string]$ad.InterfaceGuid
     $d = Get-MtuDecision $pmtu ([int]$ipif.NlMtu) $script:State.Misc[$candKey]
@@ -266,7 +277,10 @@ function Shield-PathMtu($Ctx, [string]$ConnState) {
     elseif ($d.Action -eq 'clamp') {
         Save-Original ([string]$ad.InterfaceGuid) 'Mtu' ([int]$ipif.NlMtu)
         $v = [int]$d.Value
-        $ok = Invoke-Change "Adapter MTU lowered to $v on $($ad.Name) (path MTU confirmed twice)" { Set-NetIPInterface -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -NlMtuBytes $v -ErrorAction Stop }
+        $ok = Invoke-Change "Adapter MTU lowered to $v on $($ad.Name) (path MTU confirmed twice)" {
+            Set-NetIPInterface -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -NlMtuBytes $v -ErrorAction Stop
+            Set-NetIPInterface -InterfaceIndex $ad.ifIndex -AddressFamily IPv6 -NlMtuBytes ([Math]::Max(1280, $v)) -ErrorAction SilentlyContinue
+        }
         if ($ok) { $script:State.Misc.Remove($candKey) }
     } else { if ($null -ne $script:State.Misc[$candKey]) { $script:State.Misc.Remove($candKey) } }
 }
@@ -288,12 +302,12 @@ function Shield-DefaultRoutes($Ctx) {
     if ($aliveGws.Count -ge 1 -and $deadGws.Count -ge 1) {
         foreach ($dgw in $deadGws) {
             $routes = @(Get-NetRoute -InterfaceIndex $ad.ifIndex -DestinationPrefix '0.0.0.0/0' -NextHop $dgw -AddressFamily IPv4 -ErrorAction SilentlyContinue)
-            if ($routes.Count -gt 0) {
-                Save-Original ([string]$ad.InterfaceGuid) ("PrunedRoute_$dgw") @{ DestinationPrefix = '0.0.0.0/0'; NextHop = $dgw; RouteMetric = [int]$routes[0].RouteMetric }
+            if ($routes.Count -gt 0 -and [int]$routes[0].RouteMetric -lt 256) {
+                Save-Original ([string]$ad.InterfaceGuid) ("DemotedRoute_$dgw") @{ DestinationPrefix = '0.0.0.0/0'; NextHop = $dgw; RouteMetric = [int]$routes[0].RouteMetric }
+                [void](Invoke-Change "Demoted metric on unresponsive default gateway $dgw to 256 on $($ad.Name) (prevents blackhole while preserving VRRP/HSRP standby)" {
+                    Set-NetRoute -InterfaceIndex $ad.ifIndex -DestinationPrefix '0.0.0.0/0' -NextHop $dgw -RouteMetric 256 -ErrorAction Stop
+                })
             }
-            [void](Invoke-Change "Pruned dead default gateway route $dgw on $($ad.Name) (prevents blackhole routing)" {
-                Remove-NetRoute -InterfaceIndex $ad.ifIndex -DestinationPrefix '0.0.0.0/0' -NextHop $dgw -Confirm:$false -ErrorAction Stop
-            })
         }
     }
 }
@@ -447,10 +461,12 @@ function Measure-ResolversFast([string[]]$Servers, [int]$TimeoutMs = 600, [int]$
                         $ep = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Any, 0)
                         try {
                             $resp = $p.U.Receive([ref]$ep)
-                            # must be OUR transaction id, a response (QR=1) and NOERROR, NXDOMAIN or REFUSED (pre-auth captive liveness)
-                            $rcode = ($resp[3] -band 15)
-                            if ($resp.Length -ge 12 -and $resp[0] -eq $hi -and $resp[1] -eq $lo -and (($resp[2] -band 128) -ne 0) -and ($rcode -eq 0 -or $rcode -eq 3 -or $rcode -eq 5)) {
-                                $times[$s] += [int][math]::Round($ms)
+                            if ($resp -and $resp.Length -ge 12) {
+                                # must be OUR transaction id, a response (QR=1) and NOERROR, NXDOMAIN or REFUSED (pre-auth captive liveness)
+                                $rcode = ($resp[3] -band 15)
+                                if ($resp[0] -eq $hi -and $resp[1] -eq $lo -and (($resp[2] -band 128) -ne 0) -and ($rcode -eq 0 -or $rcode -eq 3 -or $rcode -eq 5)) {
+                                    $times[$s] += [int][math]::Round($ms)
+                                }
                             }
                         } catch {}   # refused / reset: counts as no answer, immediately
                         try { $p.U.Close() } catch {}
@@ -527,7 +543,17 @@ function Set-AdapterDns($Ad, [string[]]$Servers) {
     if ($same) { return $false }
     Save-Original $guid 'DnsStatic' $curNs
     $ok = Invoke-Change "DNS on $($Ad.Name) -> $($Servers -join ', ')" {
-        Set-DnsClientServerAddress -InterfaceIndex $Ad.ifIndex -ServerAddresses $Servers -ErrorAction Stop
+        try {
+            Set-DnsClientServerAddress -InterfaceIndex $Ad.ifIndex -ServerAddresses $Servers -ErrorAction Stop
+        } catch {
+            $netsh = Get-SysExe 'netsh.exe'
+            if ($Servers.Count -gt 0) {
+                [void](Invoke-Native $netsh @('interface', 'ipv4', 'set', 'dnsservers', ("name={0}" -f $Ad.Name), 'static', $Servers[0], 'primary') 5000)
+                for ($si = 1; $si -lt $Servers.Count; $si++) {
+                    [void](Invoke-Native $netsh @('interface', 'ipv4', 'add', 'dnsservers', ("name={0}" -f $Ad.Name), $Servers[$si], ("index={0}" -f ($si + 1))) 5000)
+                }
+            }
+        }
     }
     if ($ok -and -not $script:IsDry) { (Get-SubTable 'Dns' $guid).Managed = $true; Clear-DnsClientCache -ErrorAction SilentlyContinue }
     return $ok
@@ -537,7 +563,14 @@ function Set-AdapterDnsAutomatic($Ad) {
     $curNs = Get-StaticDnsString $guid
     if ($curNs -eq '') { return $false }
     Save-Original $guid 'DnsStatic' $curNs
-    $ok = Invoke-Change "DNS on $($Ad.Name) -> automatic (DHCP)" { Set-DnsClientServerAddress -InterfaceIndex $Ad.ifIndex -ResetServerAddresses -ErrorAction Stop }
+    $ok = Invoke-Change "DNS on $($Ad.Name) -> automatic (DHCP)" {
+        try {
+            Set-DnsClientServerAddress -InterfaceIndex $Ad.ifIndex -ResetServerAddresses -ErrorAction Stop
+        } catch {
+            $netsh = Get-SysExe 'netsh.exe'
+            [void](Invoke-Native $netsh @('interface', 'ipv4', 'set', 'dnsservers', ("name={0}" -f $Ad.Name), 'dhcp') 5000)
+        }
+    }
     if ($ok -and -not $script:IsDry) { (Get-SubTable 'Dns' $guid).Managed = $true; Clear-DnsClientCache -ErrorAction SilentlyContinue }
     return $ok
 }
@@ -765,36 +798,3 @@ function Shield-Dns($Ctx, [string]$ConnState) {
         }
     }
     $order = @($order | Select-Object -Unique)
-    if ($phase -eq 'Auto') {
-        if (-not (Set-AdapterDnsAutomatic $ad)) { Write-Log 'INFO' "DNS already automatic on $($ad.Name) (profile $prof)." }
-        Remove-CampusNrpt
-    } else {
-        if (-not (Set-AdapterDns $ad $order)) {
-            if (-not $script:IsDry -and $ConnState -ne 'Online') { Clear-DnsClientCache -ErrorAction SilentlyContinue }
-            Write-Log 'INFO' "DNS already correct on $($ad.Name) (profile $prof, phase $phase)."
-        }
-        $nrptExtra = if ($homeNet) { @($script:Cfg.PortalIp) } else { @() }
-        $nrptServers = @($campus + $nrptExtra | Where-Object { $_ } | Select-Object -Unique)
-        Set-CampusNrpt $nrptServers $homeNet
-    }
-    Shield-DnsIntegrity $ad
-    if (-not $script:IsDry) {
-        $d.Phase = $phase
-        $d.ConnApplied = $(if ($ConnState -eq 'Online') { 'Online' } else { 'NotOnline' })
-    }
-}
-
-# ==============================================================================
-# LAYER 5 - CAPTIVE PORTAL REACHABILITY (the v1 hosts-file pin is gone: it went stale and is flagged by AV)
-# ==============================================================================
-function Shield-Portal($Ctxs) {
-    $camp = @($Ctxs | Where-Object { $_.Env.Env -eq 'Campus' })
-    $discovered = -not [string]::IsNullOrWhiteSpace([string]$script:State.Misc['DiscoveredPortalUrl'])
-    if ($camp.Count -eq 0 -and -not $discovered) { Write-Log 'INFO' 'Not on campus: portal checks skipped.'; return }
-    $homeAny = $false
-    foreach ($cx in $camp) { if (($null -eq $cx.Env.Home) -or [bool]$cx.Env.Home) { $homeAny = $true } }
-    if (-not $homeAny -and -not $discovered) { Write-Log 'INFO' 'This campus is not the one the built-in portal values describe: configured-portal checks skipped.'; return }
-    $ep = Get-ActivePortalEndpoint
-    $tcp = Test-TcpPort $ep.Ip $ep.Port 900
-    if ($tcp) { Write-Log 'OK' ("Portal {0}:{1} reachable" -f $ep.Ip, $ep.Port) }
-    else { Write-Log 'WARN' ("Portal {0}:{1} not reachable (normal if the session is already authenticated and the firewall hides it)" -f $ep.Ip, $ep.Port) }

@@ -511,8 +511,8 @@ function Remove-CampusHostRoutes([int]$InterfaceIndex = 0) {
     if ($script:IsDry) { return }
     foreach ($hip in @($script:Cfg.PortalIp, $script:Cfg.CampusDns) | Where-Object { $_ }) {
         foreach ($rt in @(Get-NetRoute -DestinationPrefix "$hip/32" -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Where-Object { [int]$_.RouteMetric -eq 5 -and ($InterfaceIndex -le 0 -or [int]$_.InterfaceIndex -eq $InterfaceIndex) })) {
-            Remove-NetRoute -InterfaceIndex ([int]$rt.InterfaceIndex) -DestinationPrefix "$hip/32" -NextHop ([string]$rt.NextHop) -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue
-            Remove-NetRoute -InterfaceIndex ([int]$rt.InterfaceIndex) -DestinationPrefix "$hip/32" -NextHop ([string]$rt.NextHop) -PolicyStore PersistentStore -Confirm:$false -ErrorAction SilentlyContinue
+            Remove-NetRoute -InterfaceIndex ([int]$rt.InterfaceIndex) -DestinationPrefix "$hip/32" -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue
+            Remove-NetRoute -InterfaceIndex ([int]$rt.InterfaceIndex) -DestinationPrefix "$hip/32" -PolicyStore PersistentStore -Confirm:$false -ErrorAction SilentlyContinue
         }
     }
     # Ensure-CampusPortalPath also routes the discovered portal, the redirect target and each adapter's DHCP resolvers.
@@ -527,7 +527,7 @@ function Remove-CampusHostRoutes([int]$InterfaceIndex = 0) {
     } catch {}
     foreach ($hip in @($extra | Where-Object { $_ } | Select-Object -Unique)) {
         foreach ($rt in @(Get-NetRoute -DestinationPrefix "$hip/32" -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Where-Object { [int]$_.RouteMetric -eq 5 -and ($InterfaceIndex -le 0 -or [int]$_.InterfaceIndex -eq $InterfaceIndex) })) {
-            Remove-NetRoute -InterfaceIndex ([int]$rt.InterfaceIndex) -DestinationPrefix "$hip/32" -NextHop ([string]$rt.NextHop) -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue
+            Remove-NetRoute -InterfaceIndex ([int]$rt.InterfaceIndex) -DestinationPrefix "$hip/32" -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue
         }
     }
     try { if ($InterfaceIndex -le 0 -and $script:State -is [hashtable] -and $script:State.Misc -is [hashtable] -and $script:State.Misc.ContainsKey('InjectedHostRoutes')) { $script:State.Misc.Remove('InjectedHostRoutes') } } catch {}
@@ -619,7 +619,7 @@ function Get-PreferIpv4Value($Current) {
 function Get-MtuDecision($Pmtu, [int]$CurrentMtu, $Candidate) {
     if ($null -eq $Pmtu) { return @{ Action = 'skip'; Value = 0 } }
     $p = [int]$Pmtu
-    if ($CurrentMtu -lt 1500) { return @{ Action = 'skip'; Value = 0 } }     # already lowered (by us or by you)
+    if ($CurrentMtu -le $p -or ($CurrentMtu -eq 1400 -and $p -eq 1400)) { return @{ Action = 'skip'; Value = 0 } }
     if ($p -ge 1500 -or $p -lt 1280) { return @{ Action = 'skip'; Value = 0 } }
     if ($null -ne $Candidate -and [Math]::Abs([int]$Candidate - $p) -le 8) { return @{ Action = 'clamp'; Value = [Math]::Min([int]$Candidate, $p) } }
     return @{ Action = 'candidate'; Value = $p }

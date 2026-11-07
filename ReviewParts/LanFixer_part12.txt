@@ -1,3 +1,75 @@
+    Write-Check 'UI: Split-Words slices unbreakable 150-char URLs so no line exceeds Width' ((@($wrappedUrl | Where-Object { $_.Length -gt 30 }).Count -eq 0) -and (($wrappedUrl -join '') -ceq $longUrl))
+    # v4.6.0: S7 LF-only chunked transfer decoding & HTML5 formless password input fallback
+    $lfChunk = [System.Text.Encoding]::ASCII.GetBytes("5`nhello`n6`n world`n0`n`n")
+    Write-Check 'Logic: chunked decoder handles LF-only (\n) framing' (([System.Text.Encoding]::ASCII.GetString((ConvertFrom-ChunkedBytes $lfChunk))) -ceq 'hello world')
+    $html5Form = '<html><form id="f1" action="/auth"></form><div><input name="u" type="text"><input name="p" type="password"></div></html>'
+    $fm5 = ConvertFrom-LoginForm $html5Form ([uri]'https://gateway.nitjsr.ac.in:8003/index.php')
+    Write-Check 'Logic: login form parser handles HTML5 inputs outside <form> tags' ($null -ne $fm5 -and $fm5.UserField -ceq 'u' -and $fm5.PassField -ceq 'p' -and $fm5.Action.AbsoluteUri -ceq 'https://gateway.nitjsr.ac.in:8003/auth')
+    # v4.6.0: DNS CNAME with hybrid label+pointer name compression followed by A record
+    [byte[]]$dnsQ2 = New-DnsQueryPacket 'a.bc' 4660
+    [byte[]]$dnsCnameChain = [byte[]]@(0x12,0x34,0x81,0x80,0,1,0,2,0,0,0,0) + [byte[]]$dnsQ2[12..21] + [byte[]]@(0xC0,0x0C,0,5,0,1,0,0,0,60,0,2,0xC0,0x0C) + [byte[]]@(1,0x78,0xC0,0x0C,0,1,0,1,0,0,0,60,0,4,9,8,7,6)
+    Write-Check 'Logic: DNS A-record parser resolves A record after CNAME with hybrid label+pointer name' (@(Get-DnsAAnswers $dnsCnameChain $dnsQ2) -contains '9.8.7.6')
+    $ssBody = [string](Get-Command Shield-SystemStack -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Shield-SystemStack never references undefined $interceptorRegex' ($ssBody.Length -gt 0 -and $ssBody.IndexOf('$interceptorRegex') -lt 0)
+    $uwBody = [string](Get-Command Uninstall-Watchdog -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Uninstall-Watchdog voids Restore-ManagedAdapterDns return value' ($uwBody.IndexOf("[void](Restore-ManagedAdapterDns") -ge 0)
+    $dlBody = [string](Get-Command Shield-DataLink -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Shield-DataLink snapshots static IP even when no default gateway is set' ($dlBody.IndexOf('$stAlive') -ge 0 -and $dlBody.IndexOf('Save-Original') -ge 0 -and $dlBody.IndexOf('StaticIp4') -ge 0)
+    # v4.6.2: Routing Priority Profile engine unit checks
+    Write-Check 'Logic: default routing profile is Adaptive' ((Get-RouteProfileName) -eq 'Adaptive')
+    Write-Check 'Logic: Forced Ethernet routing plan always promotes Ethernet' (((Get-RouteMetricPlan 'Campus' 'Offline' 1 'Ethernet').Mode) -eq 'Promote')
+    Write-Check 'Logic: Forced Wi-Fi routing plan protects Wi-Fi and injects campus routes' (((Get-RouteMetricPlan 'Campus' 'Online' 1 'Wifi').Mode) -eq 'Protect' -and ((Get-RouteMetricPlan 'Campus' 'Online' 1 'Wifi').CampusRoutes -eq $true))
+    Write-Check 'Logic: Windows Default routing plan restores automatic metrics' (((Get-RouteMetricPlan 'Campus' 'Online' 1 'Windows').Mode) -eq 'Restore')
+    Write-Check 'Logic: Forced Wi-Fi routing plan restores when no Wi-Fi uplink is active' (((Get-RouteMetricPlan 'Campus' 'Online' 0 'Wifi').Mode) -eq 'Restore')
+    $srDef = [string](Get-Command Set-RouteProfileMode -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Set-RouteProfileMode saves state after applying Shield-RouteMetrics' ($srDef.LastIndexOf('Save-State') -gt $srDef.IndexOf('Shield-RouteMetrics'))
+    $omniDef = [string](Get-Command Invoke-SupremeOmnifix -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Full Net Reset restores Adaptive RouteProfile and DnsProfile' ($omniDef.IndexOf("RouteProfile'] = 'Adaptive'") -ge 0 -and $omniDef.IndexOf("DnsProfile'] = 'Adaptive'") -ge 0)
+    $ahDef = [string](Get-Command Invoke-AutoHeal -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: AutoHeal fast-path syncs Shield-RouteMetrics when secondary uplinks change' ($ahDef.IndexOf('if (-not $needFull)') -ge 0 -and $ahDef.Substring($ahDef.IndexOf('if (-not $needFull)'), [Math]::Min(600, $ahDef.Length - $ahDef.IndexOf('if (-not $needFull)'))).IndexOf('Shield-RouteMetrics') -ge 0)
+    $dlDef2 = [string](Get-Command Shield-DataLink -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Shield-DataLink protects gateway-less lab static IP during AutoHeal and checks ARP peers' ($dlDef2.IndexOf('$peerArp') -ge 0 -and $dlDef2.IndexOf("Mode -eq 'AutoHeal'") -ge 0)
+    $ouDef = [string](Get-Command Get-OtherUplinkAdapters -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Get-OtherUplinkAdapters allows standard RFC 4861 fe80:: IPv6 default gateway next-hops' ($ouDef.IndexOf("NextHop -notlike 'fe80*'") -lt 0 -and $ouDef.IndexOf('$hasIp6') -ge 0)
+    $sdDef = [string](Get-Command Get-ScopedDnsAnswers -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Get-ScopedDnsAnswers keeps metric-45 filter for non-Wifi profiles and restricts unbound fallback' ($sdDef.IndexOf("InterfaceMetric -ge 45 -and (Get-RouteProfileName) -ne 'Wifi'") -ge 0 -and $sdDef.IndexOf('else { continue }') -ge 0)
+    $dlDef3 = [string](Get-Command Shield-DataLink -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Shield-DataLink triggers Repair-Dhcp -ForceRelease when DHCP lease has dead or missing gateway' ($dlDef3.IndexOf('Repair-Dhcp $ad -ForceRelease') -ge 0)
+    $srDef2 = [string](Get-Command Start-Repair -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Start-Repair checks if state is still Captive after Open-Portal before waiting 180s' ($srDef2.IndexOf("if ((Get-InternetState -NoCache).State -eq 'Captive')") -ge 0)
+    $omDef2 = [string](Get-Command Invoke-SupremeOmnifix -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Invoke-SupremeOmnifix releases stale ARP locks and does not force DadTransmits 3 on campus' ($omDef2.IndexOf('Release-ArpLocks') -ge 0 -and $omDef2.IndexOf('-DadTransmits 3') -lt 0)
+    $gtDef2 = [string](Get-Command Get-Telemetry -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Get-Telemetry only reports Wi-Fi Protected when unplugged if another uplink is active' ($gtDef2.IndexOf('if (-not $t.LinkUp -and (Test-MetricsManaged) -and (Test-OtherUplinkActive))') -ge 0)
+    $gsDef = [string](Get-Command Get-State -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Get-State self-heals from .bak/.tmp when primary state file is damaged' ($gsDef.IndexOf('.bak') -ge 0 -and $gsDef.IndexOf('.tmp') -ge 0)
+    $fcDef = [string](Get-Command Flush-NetworkCache -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Flush-NetworkCache clears internal ConnCache, EnvCache, OrderTime and IPv6 neighbors' ($fcDef.IndexOf('$script:ConnCache = $null') -ge 0 -and $fcDef.IndexOf('AddressFamily IPv6') -ge 0 -and $fcDef.IndexOf('OrderTime') -ge 0)
+    $liDef = [string](Get-Command Invoke-LogIntelligence -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Invoke-LogIntelligence inspects DNS Event 1014 and NIC hardware reset events' ($liDef.IndexOf('1014') -ge 0 -and $liDef.IndexOf('10400') -ge 0)
+    $sdUniv = [string](Get-Command Shield-Dns -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Shield-Dns honors Cloudflare/Hybrid and rescues NoDns on non-campus networks' ($sdUniv.IndexOf('$orderOther') -ge 0)
+    $gaeDef = [string](Get-Command Get-AdapterEnvironment -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Get-AdapterEnvironment uses bounded Resolve-HostBounded (never raw GetHostAddresses)' ($gaeDef.IndexOf('GetHostAddresses') -lt 0 -and $gaeDef.IndexOf('Resolve-HostBounded') -ge 0)
+    $elDef = [string](Get-Command Enter-Lock -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Enter-Lock preserves in-memory DiscoveredDomain, DiscoveredPortalIp, and InjectedHostRoutes' ($elDef.IndexOf('DiscoveredDomain') -ge 0 -and $elDef.IndexOf('InjectedHostRoutes') -ge 0)
+    $rscDef = [string](Get-Command Repair-StoreChildren -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Repair-StoreChildren normalizes config.json owner to Administrators' ($rscDef.IndexOf('config.json') -ge 0)
+    Write-Check 'Logic: dynamic endpoint helpers (Get-ActivePortalUrl, Get-ActivePortalEndpoint, Get-ActiveCampusDns) exist' ($null -ne (Get-Command Get-ActivePortalUrl -ErrorAction SilentlyContinue) -and $null -ne (Get-Command Get-ActivePortalEndpoint -ErrorAction SilentlyContinue) -and $null -ne (Get-Command Get-ActiveCampusDns -ErrorAction SilentlyContinue))
+    $wxXml = [string](New-WatchdogXml '/c test' '2026-01-01T00:00:00')
+    Write-Check 'Logic: Watchdog XML subscribes to both connect (10000) and disconnect (10001) events' ($wxXml.IndexOf('EventID=10000 or EventID=10001') -ge 0)
+    $ahDebounce = [string](Get-Command Invoke-AutoHeal -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: AutoHeal debounce is state-aware and never drops cable plug/unplug transitions' ($ahDebounce.IndexOf('LastAutoHealUpCount') -ge 0)
+    $arpDef = [string](Get-Command Shield-GatewayArp -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Shield-GatewayArp actively verifies Test-GatewayAlive on Permanent lock when not Online' ($arpDef.IndexOf('$lockAlive') -ge 0)
+    $script:State.Misc['DiscoveredDomain'] = 'univ.edu'
+    Write-Check 'Logic: Test-TrustedPortalHost trusts dynamically discovered domain and private gateway IPs' ((Test-TrustedPortalHost 'portal.univ.edu') -and (Test-TrustedPortalHost '10.20.30.1') -and (-not (Test-TrustedPortalHost 'eviluniv.edu')))
+    # ---- 5.2.0 additions (pure functions are executed; the rest are source-level) ----
+    $gaDef = [string](Get-Command Test-GatewayAlive -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Test-GatewayAlive never deletes a neighbour entry during -DryRun' ($gaDef -match 'IsAdmin -and -not \$script:IsDry -and \$ex')
+    Write-Check 'Logic: gateway liveness proxy probes the configured campus only on the home campus' (($gaDef.IndexOf('$homeAd') -ge 0) -and ($gaDef.IndexOf('Test-TcpPort $Gw 53') -ge 0))
+    $ssDef = [string](Get-Command Save-State -ErrorAction SilentlyContinue).Definition
+    Write-Check 'Logic: Save-State verifies the temp file before replacing state and guards the .bak copy' (($ssDef.IndexOf('Test-StateFile $tmp') -ge 0) -and ($ssDef.IndexOf('Test-StateFile $script:StateFile') -ge 0))
     $tsGood = Join-Path ([System.IO.Path]::GetTempPath()) ('lf_state_ok_' + [guid]::NewGuid().ToString('N') + '.clixml')
     $tsBad = Join-Path ([System.IO.Path]::GetTempPath()) ('lf_state_bad_' + [guid]::NewGuid().ToString('N') + '.clixml')
     $tsOk = $false; $tsRej = $false; $tsMiss = $false
@@ -726,75 +798,3 @@ function Capture-PreflightSnapshot($Ad) {
 }
 
 function Restore-PreflightSnapshot($Snapshot) {
-    if (-not $Snapshot -or -not $Snapshot.ifIndex) { return $false }
-    $ifIdx = [int]$Snapshot.ifIndex
-    $adName = [string]$Snapshot.Name
-    Write-Log 'WARN' ("Rolling back configuration on {0} to pre-flight snapshot..." -f $adName)
-    $restored = $true
-    try {
-        if ($null -ne $Snapshot.Metric) {
-            Set-NetIPInterface -InterfaceIndex $ifIdx -AddressFamily IPv4 -InterfaceMetric ([int]$Snapshot.Metric) -ErrorAction SilentlyContinue
-        }
-        if ($null -ne $Snapshot.Mtu) {
-            Set-NetIPInterface -InterfaceIndex $ifIdx -AddressFamily IPv4 -NlMtuBytes ([int]$Snapshot.Mtu) -ErrorAction SilentlyContinue
-        }
-        if ($Snapshot.Dns.Count -gt 0) {
-            Set-DnsClientServerAddress -InterfaceIndex $ifIdx -ServerAddresses $Snapshot.Dns -ErrorAction SilentlyContinue
-        } else {
-            Set-DnsClientServerAddress -InterfaceIndex $ifIdx -ResetServerAddresses -ErrorAction SilentlyContinue
-        }
-    } catch {
-        $restored = $false
-        Write-Log 'FAIL' ("Error during pre-flight rollback on {0}: {1}" -f $adName, $_.Exception.Message)
-    }
-    return $restored
-}
-
-function Invoke-AcidMutation([string]$Description, [scriptblock]$Mutation, [scriptblock]$Validation, [int]$TimeoutMs = 3500) {
-    if ($script:IsDry) {
-        Write-Log 'DRY' ("Would execute ACID mutation: {0}" -f $Description)
-        return $true
-    }
-    $ads = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })
-    $ad = if ($ads.Count -gt 0) { $ads[0] } else { $null }
-    $snapshot = if ($ad) { Capture-PreflightSnapshot $ad } else { $null }
-
-    Write-Log 'INFO' ("ACID Executing: {0}" -f $Description)
-    $execOk = $false
-    try {
-        & $Mutation
-        $execOk = $true
-    } catch {
-        Write-Log 'FAIL' ("Mutation threw exception: {0}" -f $_.Exception.Message)
-    }
-
-    if ($execOk -and $Validation) {
-        $sw = [System.Diagnostics.Stopwatch]::StartNew()
-        $valid = $false
-        while ($sw.ElapsedMilliseconds -lt $TimeoutMs) {
-            try {
-                if (& $Validation) { $valid = $true; break }
-            } catch {}
-            Start-Sleep -Milliseconds 250
-        }
-        $sw.Stop()
-        if (-not $valid) {
-            Write-Log 'WARN' ("ACID Validation failed after {0} ms: rolling back {1}" -f $sw.ElapsedMilliseconds, $Description)
-            if ($snapshot) { [void](Restore-PreflightSnapshot $snapshot) }
-            return $false
-        }
-    } elseif (-not $execOk) {
-        if ($snapshot) { [void](Restore-PreflightSnapshot $snapshot) }
-        return $false
-    }
-
-    Write-Log 'OK' ("ACID Committed: {0}" -f $Description)
-    return $true
-}
-
-function Write-SentinelLog([string]$Level, [string]$Message) {
-    $ts = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
-    $line = "[{0}] [{1,-5}] {2}" -f $ts, $Level.ToUpperInvariant(), $Message
-    if ($null -eq $script:SentinelEvents) { $script:SentinelEvents = New-Object System.Collections.ArrayList }
-    [void]$script:SentinelEvents.Add($line)
-    while ($script:SentinelEvents.Count -gt 25) { $script:SentinelEvents.RemoveAt(0) }

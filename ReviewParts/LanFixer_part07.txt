@@ -1,3 +1,37 @@
+    if ($phase -eq 'Auto') {
+        if (-not (Set-AdapterDnsAutomatic $ad)) { Write-Log 'INFO' "DNS already automatic on $($ad.Name) (profile $prof)." }
+        Remove-CampusNrpt
+    } else {
+        if (-not (Set-AdapterDns $ad $order)) {
+            if (-not $script:IsDry -and $ConnState -ne 'Online') { Clear-DnsClientCache -ErrorAction SilentlyContinue }
+            Write-Log 'INFO' "DNS already correct on $($ad.Name) (profile $prof, phase $phase)."
+        }
+        $nrptExtra = if ($homeNet) { @($script:Cfg.PortalIp) } else { @() }
+        $nrptServers = @($campus + $nrptExtra | Where-Object { $_ } | Select-Object -Unique)
+        Set-CampusNrpt $nrptServers $homeNet
+    }
+    Shield-DnsIntegrity $ad
+    if (-not $script:IsDry) {
+        $d.Phase = $phase
+        $d.ConnApplied = $(if ($ConnState -eq 'Online') { 'Online' } else { 'NotOnline' })
+    }
+}
+
+# ==============================================================================
+# LAYER 5 - CAPTIVE PORTAL REACHABILITY (the v1 hosts-file pin is gone: it went stale and is flagged by AV)
+# ==============================================================================
+function Shield-Portal($Ctxs) {
+    $camp = @($Ctxs | Where-Object { $_.Env.Env -eq 'Campus' })
+    $discovered = -not [string]::IsNullOrWhiteSpace([string]$script:State.Misc['DiscoveredPortalUrl'])
+    if ($camp.Count -eq 0 -and -not $discovered) { Write-Log 'INFO' 'Not on campus: portal checks skipped.'; return }
+    $homeAny = $false
+    foreach ($cx in $camp) { if (($null -eq $cx.Env.Home) -or [bool]$cx.Env.Home) { $homeAny = $true } }
+    if (-not $homeAny -and -not $discovered) { Write-Log 'INFO' 'This campus is not the one the built-in portal values describe: configured-portal checks skipped.'; return }
+    $ep = Get-ActivePortalEndpoint
+    $portalSrc = if ($camp.Count -gt 0) { [string](Get-ValidIPv4 $camp[0].Ad) } else { Get-PrimarySourceIp }
+    $tcp = Test-TcpPort $ep.Ip $ep.Port 900 $portalSrc
+    if ($tcp) { Write-Log 'OK' ("Portal {0}:{1} reachable" -f $ep.Ip, $ep.Port) }
+    else { Write-Log 'WARN' ("Portal {0}:{1} not reachable (normal if the session is already authenticated and the firewall hides it)" -f $ep.Ip, $ep.Port) }
     foreach ($cx in $camp) {
         $src = [string](Get-ValidIPv4 $cx.Ad)
         $ip = Resolve-HostBounded $ep.Host 1800 $src -NoPin
@@ -10,15 +44,27 @@
 # LAYER 6 - EXPOSURE: treat the hostel LAN as untrusted (Public firewall profile)
 # ==============================================================================
 function Shield-Profile($Ctx) {
-    if (-not $script:Cfg.ForcePublic -or $Ctx.Env.Env -ne 'Campus') { return }
-    $np = Get-NetConnectionProfile -InterfaceIndex $Ctx.Ad.ifIndex -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $script:Cfg.ForcePublic) { return }
+    $ad = $Ctx.Ad
+    $np = Get-NetConnectionProfile -InterfaceIndex $ad.ifIndex -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $np) { return }
-    if ([string]$np.NetworkCategory -eq 'Private') {
-        Save-Original 'NetProfiles' ("Cat:" + $np.Name) 'Private'
-        [void](Invoke-Change "Network '$($np.Name)' set to Public (blocks discovery/sharing from other hostel devices)" {
-            Set-NetConnectionProfile -InterfaceIndex $Ctx.Ad.ifIndex -NetworkCategory Public -ErrorAction Stop
-        })
-    } else { Write-Log 'INFO' "Network profile is $($np.NetworkCategory) (already safe or domain-managed)." }
+    if ($Ctx.Env.Env -eq 'Campus') {
+        if ([string]$np.NetworkCategory -eq 'Private') {
+            Save-Original 'NetProfiles' ("Cat:" + $np.Name) 'Private'
+            [void](Invoke-Change "Network '$($np.Name)' set to Public (blocks discovery/sharing from other hostel devices)" {
+                Set-NetConnectionProfile -InterfaceIndex $ad.ifIndex -NetworkCategory Public -ErrorAction Stop
+            })
+        } else { Write-Log 'INFO' "Network profile is $($np.NetworkCategory) (already safe or domain-managed)." }
+    } elseif ($Ctx.Env.Env -eq 'Other') {
+        $snap = Get-SubTable 'Original' 'NetProfiles'
+        if ($snap.ContainsKey("Cat:" + $np.Name) -and [string]$snap["Cat:" + $np.Name] -eq 'Private') {
+            if ([string]$np.NetworkCategory -ne 'Private') {
+                [void](Invoke-Change "Trusted network '$($np.Name)': restored profile to Private for local discovery and sharing" {
+                    Set-NetConnectionProfile -InterfaceIndex $ad.ifIndex -NetworkCategory Private -ErrorAction Stop
+                })
+            }
+        }
+    }
 }
 
 # ==============================================================================
@@ -483,8 +529,8 @@ function Shield-SystemStack([switch]$Aggressive) {
         $loopbackCleared = $false
         foreach ($na in @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' })) {
             $naGuid = [string]$na.InterfaceGuid
-            $dnsAddrs = @(Get-DnsClientServerAddress -InterfaceIndex $na.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses
-            if (@($dnsAddrs | Where-Object { $_ -match '^(127\.|::1)' }).Count -gt 0) {
+            $dnsAddrs = @(Get-DnsClientServerAddress -InterfaceIndex $na.ifIndex -ErrorAction SilentlyContinue).ServerAddresses
+            if (@($dnsAddrs | Where-Object { $_ -match '^(127\.|::1|0\.0\.0\.0|localhost)' }).Count -gt 0) {
                 Save-Original $naGuid 'DnsStatic' (Get-StaticDnsString $naGuid)
                 $okLoop = Invoke-Change "Bypassed local loopback DNS on adapter $($na.Name) -> DHCP automatic" {
                     Set-DnsClientServerAddress -InterfaceIndex $na.ifIndex -ResetServerAddresses -ErrorAction SilentlyContinue
@@ -752,49 +798,3 @@ function Invoke-SupremeOmnifix {
     }
 }
 
-# ==============================================================================
-# ULTRA SYSTEM RESET - THE SUPREME HYPER-NUCLEAR REMEDIATION ENGINE
-# ==============================================================================
-function Invoke-UltraSystemReset {
-    if (-not (Assert-Admin)) { return }
-    $swUltra = [System.Diagnostics.Stopwatch]::StartNew()
-    Write-Section 'ULTRA SYSTEM RESET (10-STAGE HYPER-NUCLEAR STACK RESUSCITATION)'
-    $r = Pick-Hash (Invoke-WithLock {
-        # ----------------------------------------------------------------------
-        # STAGE 1/10: PRE-FLIGHT ACID SNAPSHOT & 10-SERVICE REVERSE TEARDOWN
-        # ----------------------------------------------------------------------
-        Write-Log 'STEP' 'STAGE 1/10  Snapshotting pre-flight state & suspending 10 dependent network services'
-        $script:ConnCache = $null
-        $script:EnvCache = @{}
-        if ($script:IsDry) {
-            Write-Log 'DRY' 'Would capture pre-flight snapshots and stop dependent network services (BITS, netprofm, NlaSvc, Dnscache, Dhcp, iphlpsvc, dot3svc, WlanSvc, CryptSvc, mpssvc)'
-        } else {
-            foreach ($ea in @(Get-EthernetAdapters)) {
-                try {
-                    $snap = Capture-PreflightSnapshot $ea
-                    if ($snap -and $snap.Guid) { $script:State.Snapshot[$snap.Guid] = $snap }
-                } catch {}
-            }
-            if (-not $script:IsDry) { Save-State }
-            $script:State.Misc['RouteProfile'] = 'Adaptive'
-            $script:State.Misc['DnsProfile'] = 'Adaptive'
-            $script:State.Misc['FailStreak'] = 0
-            $script:State.Misc.Remove('MtuCandidate')
-            $script:State.Misc.Remove('DiscoveredDomain')
-            $script:State.Misc.Remove('DiscoveredPortalIp')
-            $script:State.Misc.Remove('DiscoveredPortalUrl')
-            
-            # Teardown dependent services in strict reverse topological order to release kernel sockets, handles, and crypto locks
-            $downSvcs = @('BITS', 'netprofm', 'NlaSvc', 'Dnscache', 'Dhcp', 'iphlpsvc', 'dot3svc', 'WlanSvc', 'CryptSvc', 'mpssvc')
-            foreach ($s in $downSvcs) {
-                try { Stop-Service -Name $s -Force -ErrorAction SilentlyContinue } catch {}
-            }
-        }
-
-        # ----------------------------------------------------------------------
-        # STAGE 2/10: DUAL-ARCHITECTURE WINSOCK CATALOG OBLITERATION (64-BIT & 32-BIT)
-        # ----------------------------------------------------------------------
-        Write-Log 'STEP' 'STAGE 2/10  Dual-architecture Winsock LSP/NSP catalog wipe (64-bit System32 & 32-bit SysWOW64)'
-        if ($script:IsDry) {
-            Write-Log 'DRY' 'Would execute 64-bit and 32-bit: netsh winsock reset catalog & netsh winsock reset'
-            Write-Log 'DRY' 'Would reset Winsock AutodialFlags to 0 in registry'
