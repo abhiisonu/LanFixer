@@ -10669,9 +10669,17 @@ try {
             $sw.Stop()
             Write-HealSummary $r $sw
             if ($r -and $r.Conn -eq 'Captive' -and -not $script:IsDry) {
-                [void](Invoke-WithLock { [void](Open-Portal); Save-State })
-                if ((Get-InternetState -NoCache).State -eq 'Captive') {
-                    if (Wait-ForAuthentication 120) { [void](Invoke-WithLock { Complete-Authentication }) }
+                $signedHeadless = $false
+                $portalSrc = if ($r.Ip) { [string]$r.Ip } else { Get-PrimarySourceIp }
+                if ($script:Cfg.AutoPortalLogin -and (Get-PortalCredentials)) {
+                    $signedHeadless = [bool](Invoke-HeadlessPortalLogin (Get-InternetState -NoCache -SourceIp $portalSrc) -Manual)
+                    if ($signedHeadless) { [void](Invoke-WithLock { Complete-Authentication; Save-State }); Write-Log 'OK' 'Signed in automatically using stored vault credentials.' }
+                }
+                if (-not $signedHeadless) {
+                    [void](Invoke-WithLock { [void](Open-Portal); Save-State })
+                    if ((Get-InternetState -NoCache).State -eq 'Captive') {
+                        if (Wait-ForAuthentication 120) { [void](Invoke-WithLock { Complete-Authentication }) }
+                    }
                 }
             }
         }
@@ -10681,9 +10689,17 @@ try {
             $sw.Stop()
             Write-HealSummary $r $sw
             if ($r -and $r.Conn -eq 'Captive' -and -not $script:IsDry) {
-                [void](Invoke-WithLock { [void](Open-Portal); Save-State })
-                if ((Get-InternetState -NoCache).State -eq 'Captive') {
-                    if (Wait-ForAuthentication 120) { [void](Invoke-WithLock { Complete-Authentication }) }
+                $signedHeadless = $false
+                $portalSrc = if ($r.Ip) { [string]$r.Ip } else { Get-PrimarySourceIp }
+                if ($script:Cfg.AutoPortalLogin -and (Get-PortalCredentials)) {
+                    $signedHeadless = [bool](Invoke-HeadlessPortalLogin (Get-InternetState -NoCache -SourceIp $portalSrc) -Manual)
+                    if ($signedHeadless) { [void](Invoke-WithLock { Complete-Authentication; Save-State }); Write-Log 'OK' 'Signed in automatically using stored vault credentials.' }
+                }
+                if (-not $signedHeadless) {
+                    [void](Invoke-WithLock { [void](Open-Portal); Save-State })
+                    if ((Get-InternetState -NoCache).State -eq 'Captive') {
+                        if (Wait-ForAuthentication 120) { [void](Invoke-WithLock { Complete-Authentication }) }
+                    }
                 }
             }
         }
