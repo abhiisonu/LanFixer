@@ -1,3 +1,9 @@
+            try {
+                $wr = [System.Net.HttpWebRequest]::Create('http://connectivitycheck.gstatic.com/generate_204')
+                $wr.Timeout = 2500
+                $wr.AllowAutoRedirect = $false
+                $wr.Proxy = $null   # a local proxy answering 204 must not count as internet
+                $resp = $wr.GetResponse()
                 $c = [int]$resp.StatusCode
                 if ($c -eq 204) { $state = 'Online'; $via = 'system' }
                 elseif (($c -ge 300 -and $c -le 399) -or ($c -ge 200 -and $c -le 299) -or $c -eq 401 -or $c -eq 407 -or $c -eq 511) {
@@ -310,7 +316,7 @@ function Get-AdapterHealth($Ad) {
     $gw = @(Get-GatewaysV4 $Ad) | Select-Object -First 1
     $h.Gateway = $gw
     if ($gw) { $ga = Test-GatewayAlive $Ad $gw; $h.GwRtt = $ga.Rtt; $h.GwAlive = $ga.Alive; $h.GwVia = $ga.Via }
-    $h.Conn = (Get-InternetState -SourceIp $h.Ip).State
+    $h.Conn = (Get-InternetState -NoCache -SourceIp $h.Ip).State
     switch ($h.Conn) {
         'Online'  { $h.Problem = 'Healthy' }
         'Captive' { $h.Problem = 'Captive' }
@@ -707,7 +713,14 @@ function Repair-Dhcp($Ad, [switch]$ForceRelease) {
     [void](Invoke-Change "Zero-reboot hardware/link reset on $($Ad.Name)" { Reset-PhysicalAdapterHardware $Ad })
     $script:PendingRestart.Remove($guid)
     # Adaptive STP convergence window (up to 45s, instant early-exit on lease acquisition)
-    for ($i = 0; $i -lt 90; $i++) { if (Get-ValidIPv4 $Ad) { Write-Log 'OK' 'Lease acquired after link reset.'; return $true }; Start-Sleep -Milliseconds 500 }
+    for ($i = 0; $i -lt 90; $i++) {
+        if ($i % 4 -eq 0) {
+            $freshAd = Get-NetAdapter -Name $Ad.Name -ErrorAction SilentlyContinue
+            if ($freshAd) { $Ad = $freshAd }
+        }
+        if (Get-ValidIPv4 $Ad) { Write-Log 'OK' 'Lease acquired after link reset.'; return $true }
+        Start-Sleep -Milliseconds 500
+    }
     # Step 3: DHCP stack unfreeze and release/renew
     [void](Invoke-Change "DHCP stack unfreeze and release/renew on $($Ad.Name)" {
         Stop-Service -Name Dhcp -Force -ErrorAction SilentlyContinue
@@ -721,12 +734,24 @@ function Repair-Dhcp($Ad, [switch]$ForceRelease) {
             } catch {}
         }
         Start-Service -Name Dhcp -ErrorAction SilentlyContinue
+        Start-Service -Name WlanSvc -ErrorAction SilentlyContinue
+        Start-Service -Name Wcmsvc -ErrorAction SilentlyContinue
+        Start-Service -Name iphlpsvc -ErrorAction SilentlyContinue
+        Start-Service -Name NlaSvc -ErrorAction SilentlyContinue
+        Start-Service -Name netprofm -ErrorAction SilentlyContinue
         [void](Invoke-Native $ipconfig @('/release', $Ad.Name) 10000)
         $r = Invoke-Native $ipconfig @('/renew', $Ad.Name) 25000
         if ($r.TimedOut) { throw 'ipconfig /renew timed out' }
         if ($r.ExitCode -ne 0) { Write-Log 'WARN' ('ipconfig /renew said: ' + (([string]$r.Output -replace '\s+', ' ').Trim())) }
     })
-    for ($i = 0; $i -lt 16; $i++) { if (Get-ValidIPv4 $Ad) { Write-Log 'OK' 'Lease acquired after release/renew.'; return $true }; Start-Sleep -Milliseconds 500 }
+    for ($i = 0; $i -lt 16; $i++) {
+        if ($i % 4 -eq 0) {
+            $freshAd = Get-NetAdapter -Name $Ad.Name -ErrorAction SilentlyContinue
+            if ($freshAd) { $Ad = $freshAd }
+        }
+        if (Get-ValidIPv4 $Ad) { Write-Log 'OK' 'Lease acquired after release/renew.'; return $true }
+        Start-Sleep -Milliseconds 500
+    }
     Write-Log 'ALERT' 'DHCP still not answering.'
     Write-Log 'INFO' (Get-DhcpFailureDiagnosis $Ad)
     return $false
@@ -773,28 +798,3 @@ function Shield-DataLink($Ctx) {
                 $snap = Get-SubTable 'Snapshot' $guid
                 $orig = if ($snap.ContainsKey('Dad4')) { [int]$snap['Dad4'] } else { [int]$script:Cfg.DefaultDad }
                 if (-not $dupNow -and $cur -eq [int]$script:Cfg.CampusDad -and $orig -ne $cur) {
-                    [void](Invoke-Change "Non-campus network: duplicate-address probes restored to $orig on $($ad.Name)" {
-                        Set-NetIPInterface -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -DadTransmits $orig -ErrorAction Stop
-                    })
-                }
-            }
-        } else { Write-Log 'INFO' 'Environment unknown: leaving duplicate-address settings untouched.' }
-    }
-    $Ctx.Repaired = $false
-    if ($ipif -and [string]$ipif.Dhcp -eq 'Disabled') {
-        $stGw = @(Get-GatewaysV4 $ad) | Select-Object -First 1
-        $stAlive = $false
-        if ($stGw) {
-            $stAlive = (Test-GatewayAlive $ad $stGw).Alive
-        } elseif ($Mode -eq 'AutoHeal') {
-            $stAlive = $true
-        } else {
-            $peerArp = @(Get-NetNeighbor -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object {
-                @('Reachable','Stale','Delay','Probe') -contains [string]$_.State -and
-                $_.IPAddress -notmatch '^(169\.254\.|127\.|224\.|239\.|255\.)' -and
-                $_.LinkLayerAddress -and $_.LinkLayerAddress -notmatch '^(00-)+00$|^(ff-)+ff$'
-            })
-            if ($peerArp.Count -gt 0) { $stAlive = $true }
-        }
-        if (-not $stAlive) {
-            $origIpInfo = $null

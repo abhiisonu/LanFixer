@@ -1,3 +1,41 @@
+                $hUp = Get-SubTable 'Env' ([string]$adUp.InterfaceGuid)
+                $healthUp = if ($adUp.ifIndex -eq $primary.ifIndex) { $health } else { Get-AdapterHealth $adUp }
+                $hUp.Up = $true; $hUp.Ip = [string]$healthUp.Ip
+                Shield-RouteMetrics @{ Ad = $adUp; Env = $enviUp } $healthUp.Conn
+            }
+            [void](Clear-FailStreakIfRecovered ([string]$health.Problem))
+            Save-State
+            return 0
+        }
+        $streak = [int]$script:State.Misc['FailStreak']
+        if ($streak -ge [int]$script:Cfg.BreakerFails -and -not $newConn -and -not (Test-Elapsed 'LastFull' 3600)) {
+            Write-Log 'INFO' "Repair breaker open ($streak failed passes in a row): next automatic attempt within the hour, or as soon as the cable is re-plugged."
+            Save-State
+            return 0
+        }
+        Write-Log 'INFO' ("AutoHeal pass: problem={0} newConnection={1} dnsPhaseMismatch={2}" -f $health.Problem, $newConn, $mismatch)
+        $r = Pick-Hash (Invoke-HealPipeline)
+        if ($null -eq $r) { $r = @{ Conn = 'Offline'; Problem = 'Offline' } }
+        if (Test-HardFailure ([string]$r.Problem)) {
+            $script:State.Misc['FailStreak'] = $streak + 1
+            if (($streak + 1) -eq [int]$script:Cfg.BreakerFails) { Write-Log 'ALERT' 'Automatic repair has not fixed the connection after several passes: check the cable and wall port, and check your MAC from the audit [6] or report [R].' }
+        } else {
+            if ($streak -gt 0 -or (Test-HardFailure ([string]$health.Problem))) {
+                if ($r.Conn -eq 'Online') { Invoke-RecoveryToast ([string]$r.Ip) }
+            }
+            $script:State.Misc['FailStreak'] = 0
+        }
+        $script:State.Misc['LastAutoHealUpCount'] = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' }).Count
+        Set-StateTime 'LastAutoHealRun'; Save-State
+        if ($r.Conn -eq 'Captive') {
+            if ($newConn -or (Test-Elapsed 'LastPortal' 1800)) { if (Test-Elapsed 'LastPortal' 20) { [void](Open-Portal) } }
+            $watch = $true
+        }
+    } finally { Exit-Lock }
+    if ($watch) { Invoke-AuthWatch }
+    return 0
+}
+
 # ==============================================================================
 # WATCHDOG (SYSTEM task, runs ONLY the ACL-locked copy) + portal helper task (user session)
 # ==============================================================================
@@ -713,7 +751,8 @@ function Set-RouteProfileMode([string]$Name) {
         if ($Name -eq 'Windows') {
             Restore-InterfaceMetrics "Routing profile set to Windows Default"
         } elseif ($primaryEth) {
-            $st = if ($ethUps.Count -gt 0) { (Get-InternetState -NoCache).State } else { 'Offline' }
+            $srcIp = Get-ValidIPv4 $primaryEth
+            $st = if ($srcIp) { (Get-InternetState -NoCache -SourceIp $srcIp).State } else { 'Offline' }
             $ctx = @{ Ad = $primaryEth; Env = (Get-AdapterEnvironment $primaryEth) }
             Shield-RouteMetrics $ctx $st
         }
@@ -759,42 +798,3 @@ function Get-PathMtu([string]$Target) {
     }
     try {
         if (& $probe 1472) { return 1500 }
-        if (-not (& $probe 548)) { return $null }
-        $lo = 548; $hi = 1472
-        while (($hi - $lo) -gt 8) { $mid = [int](($lo + $hi) / 2); if (& $probe $mid) { $lo = $mid } else { $hi = $mid } }
-        return ($lo + 28)
-    } finally { $p.Dispose() }
-}
-# ==============================================================================
-# READ-ONLY AUDIT
-# ==============================================================================
-# TCP connect to well-known IPv6 literals from the adapter's own IPv6 address. True if any answers.
-function Test-Ipv6Reach([string]$SourceIp, [string[]]$Targets = @('2606:4700:4700::1111', '2001:4860:4860::8888'), [int]$Port = 443, [int]$TimeoutMs = 1500) {
-    foreach ($tg in $Targets) {
-        $s = $null
-        try {
-            # inside the try: with IPv6 switched off in Windows this constructor throws, and that must stay silent
-            $s = New-Object System.Net.Sockets.Socket([System.Net.Sockets.AddressFamily]::InterNetworkV6, [System.Net.Sockets.SocketType]::Stream, [System.Net.Sockets.ProtocolType]::Tcp)
-            if ($SourceIp) { $s.Bind((New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Parse($SourceIp), 0))) }
-            $iar = $s.BeginConnect([System.Net.IPAddress]::Parse($tg), $Port, $null, $null)
-            if ($iar.AsyncWaitHandle.WaitOne($TimeoutMs, $false)) { try { $s.EndConnect($iar); return $true } catch {} }
-        } catch {} finally { if ($s) { try { $s.Close() } catch {} } }
-    }
-    return $false
-}
-# Pure decision (unit-tested): the harmful case is "IPv6 advertised, IPv6 internet dead, IPv4 fine" - apps that try
-# IPv6 first then stall for many seconds before falling back.
-function Get-Ipv6Verdict([bool]$HasGlobal, [bool]$HasRoute, [string]$Conn, [bool]$Reach) {
-    if (-not $HasGlobal) { return 'None' }
-    if (-not $HasRoute) { return 'NoRoute' }
-    if ($Conn -ne 'Online') { return 'Untested' }
-    if ($Reach) { return 'Working' }
-    return 'Blackhole'
-}
-function Show-Diagnostics {
-    Write-Banner 'SYSTEM DIAGNOSTICS AUDIT'
-    $issues = New-Object System.Collections.ArrayList
-    $ads = @(Get-EthernetAdapters)
-    Write-Section 'NETWORK ADAPTER HARDWARE'
-    if ($ads.Count -eq 0) { Write-KV 'Ethernet' 'none found' 'Red'; [void]$issues.Add('No physical Ethernet adapter found (disabled? USB dongle unplugged?)') }
-    foreach ($a in $ads) {

@@ -1,3 +1,42 @@
+    if ($script:StoreReady) {
+        $logPath = Join-Path $script:StoreDir 'sentinel.log'
+        $bakPath = Join-Path $script:StoreDir 'sentinel.log.bak'
+        try {
+            if (Test-Path -LiteralPath $logPath) {
+                $fi = Get-Item -LiteralPath $logPath -ErrorAction SilentlyContinue
+                if ($fi -and $fi.Length -gt 524288) {
+                    Move-Item -LiteralPath $logPath -Destination $bakPath -Force -ErrorAction SilentlyContinue
+                }
+            }
+            [System.IO.File]::AppendAllText($logPath, $line + "`r`n", [System.Text.Encoding]::ASCII)
+        } catch {}
+    }
+}
+
+function New-SentinelTaskXml([string]$CmdArgs) {
+    return @"
+<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>Lan Fixer 24/7 Autonomous Sentinel Daemon (Continuous Reactive Self-Healing)</Description>
+    <Author>Lan Fixer</Author>
+  </RegistrationInfo>
+  <Triggers>
+    <BootTrigger>
+      <Enabled>true</Enabled>
+      <Delay>PT15S</Delay>
+    </BootTrigger>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <Delay>PT10S</Delay>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>S-1-5-18</UserId>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
   <Settings>
     <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
     <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
@@ -183,14 +222,22 @@ function Show-SentinelHud($Adapter, $LinkHealth, [string]$Status, [int]$Cadence)
     }
 }
 
-function Wait-SentinelCadence([int]$Seconds, [bool]$Interactive) {
-    $ticks = [int]($Seconds * 10)
+function Wait-SentinelCadence([int]$Seconds, [bool]$Interactive, $Adapter = $null) {
+    $ticks = [int]($Seconds * 4)
+    $origStatus = if ($Adapter) { [string]$Adapter.Status } else { '' }
+    $origIp = if ($Adapter) { Get-ValidIPv4 $Adapter } else { '' }
     for ($i = 0; $i -lt $ticks; $i++) {
         if (-not $script:SentinelRunning) { break }
-        if ($script:SentinelEventTriggered) {
-            $script:SentinelEventTriggered = $false
-            Write-SentinelLog 'EVENT' "Reactive event: Network change detected via .NET kernel event! Resuming immediately."
-            break
+        if ($Adapter -and ($i % 4 -eq 0 -and $i -gt 0)) {
+            $freshAd = Get-NetAdapter -Name $Adapter.Name -ErrorAction SilentlyContinue
+            if ($freshAd) {
+                $curStatus = [string]$freshAd.Status
+                $curIp = Get-ValidIPv4 $freshAd
+                if ($curStatus -ne $origStatus -or $curIp -ne $origIp) {
+                    Write-SentinelLog 'EVENT' ("Reactive event: State transition on {0} ({1} -> {2}, IP {3} -> {4})! Resuming immediately." -f $freshAd.Name, $origStatus, $curStatus, $(if ($origIp) { $origIp } else { 'None' }), $(if ($curIp) { $curIp } else { 'None' }))
+                    break
+                }
+            }
         }
         if ($Interactive -and (Test-KeyAvailable)) {
             $k = Read-KeyNow
@@ -217,7 +264,7 @@ function Wait-SentinelCadence([int]$Seconds, [bool]$Interactive) {
                 break
             }
         }
-        Start-Sleep -Milliseconds 100
+        Start-Sleep -Milliseconds 250
     }
 }
 
@@ -252,26 +299,14 @@ function Start-AutonomousDaemon([int]$IntervalSec = 10, [switch]$Headless) {
         Write-Log 'OK' ("Autonomous Sentinel active. Press 'q' to stop, 'r' to force scan, 'l' to view log.")
     }
 
-    $addressHandler = $null
-    $availHandler = $null
-    try {
-        $addressHandler = [System.Net.NetworkInformation.NetworkAddressChangedEventHandler]{
-            $script:SentinelEventTriggered = $true
-        }
-        $availHandler = [System.Net.NetworkInformation.NetworkAvailabilityChangedEventHandler]{
-            param($s, $e)
-            $script:SentinelEventTriggered = $true
-        }
-        [System.Net.NetworkInformation.NetworkChange]::add_NetworkAddressChanged($addressHandler)
-        [System.Net.NetworkInformation.NetworkChange]::add_NetworkAvailabilityChanged($availHandler)
-    } catch {}
-
+    # Reactive NetworkChange event tracking via thread-safe polled transition detector
     $currentCadence = $IntervalSec
     $lastHudRender = [DateTime]::MinValue
 
     try {
         while ($script:SentinelRunning) {
-            $script:SentinelStats.TotalCycles++
+            try {
+                $script:SentinelStats.TotalCycles++
 
             if ($script:SentinelStats.TotalCycles % 100 -eq 0) {
                 [System.GC]::Collect()
@@ -325,7 +360,7 @@ function Start-AutonomousDaemon([int]$IntervalSec = 10, [switch]$Headless) {
                     Show-SentinelHud $ad $linkHealth $state.State $currentCadence
                     $lastHudRender = Get-Date
                 }
-                Wait-SentinelCadence $currentCadence $isConsole
+                Wait-SentinelCadence $currentCadence $isConsole $ad
                 continue
             }
 
@@ -353,7 +388,7 @@ function Start-AutonomousDaemon([int]$IntervalSec = 10, [switch]$Headless) {
                         $script:SentinelStats.T2_Captive++
                         $currentCadence = 3
                         if ($isConsole) { Show-SentinelHud $ad $linkHealth 'Online' $currentCadence }
-                        Wait-SentinelCadence $currentCadence $isConsole
+                        Wait-SentinelCadence $currentCadence $isConsole $ad
                         continue
                     }
                 }
@@ -370,7 +405,7 @@ function Start-AutonomousDaemon([int]$IntervalSec = 10, [switch]$Headless) {
                 $script:DaemonConsecutiveFails = 0
                 $currentCadence = [Math]::Min(15, $IntervalSec)
                 if ($isConsole) { Show-SentinelHud $ad $linkHealth 'Captive (Login Ready)' $currentCadence }
-                Wait-SentinelCadence $currentCadence $isConsole
+                Wait-SentinelCadence $currentCadence $isConsole $ad
                 continue
             }
 
@@ -564,17 +599,15 @@ function Start-AutonomousDaemon([int]$IntervalSec = 10, [switch]$Headless) {
                 $lastHudRender = Get-Date
             }
 
-            Wait-SentinelCadence $currentCadence $isConsole
+            Wait-SentinelCadence $currentCadence $isConsole $ad
+        } catch {
+            Write-SentinelLog 'FAIL' ("Unexpected daemon iteration error: {0}" -f $_.Exception.Message)
+            Wait-SentinelCadence 3 $isConsole $ad
         }
-    } finally {
-        if ($addressHandler) {
-            try { [System.Net.NetworkInformation.NetworkChange]::remove_NetworkAddressChanged($addressHandler) } catch {}
-        }
-        if ($availHandler) {
-            try { [System.Net.NetworkInformation.NetworkChange]::remove_NetworkAvailabilityChanged($availHandler) } catch {}
-        }
-        Write-SentinelLog 'INFO' "Autonomous Sentinel Daemon shutdown cleanly."
     }
+} finally {
+    Write-SentinelLog 'INFO' "Autonomous Sentinel Daemon shutdown cleanly."
+}
 }
 
 function Start-Interactive {
@@ -765,36 +798,3 @@ try {
         'DoomsdayReset'     { Invoke-DoomsdayReset }
         'Doomsday'          { Invoke-DoomsdayReset }
         'ArmageddonReset'   { Invoke-ArmageddonReset }
-        'Armageddon'        { Invoke-ArmageddonReset }
-        'ResetOptions'      { Show-View 'reset & system recovery options' { Show-ResetMenu } }
-        'ResetMenu'         { Show-View 'reset & system recovery options' { Show-ResetMenu } }
-        'SetRouteProfile'   { Set-RouteProfileMode $RouteProfile }
-        'Route'             { Show-RouteMenu }
-        'RouteMenu'         { Show-RouteMenu }
-        'Heal' {
-            $sw = [System.Diagnostics.Stopwatch]::StartNew()
-            $r = Pick-Hash (Invoke-WithLock { Invoke-HealPipeline })
-            $sw.Stop()
-            Write-HealSummary $r $sw
-            if ($r -and $r.Conn -eq 'Captive' -and -not $script:IsDry) {
-                [void](Invoke-WithLock { [void](Open-Portal); Save-State })
-                if ((Get-InternetState -NoCache).State -eq 'Captive') {
-                    if (Wait-ForAuthentication 120) { [void](Invoke-WithLock { Complete-Authentication }) }
-                }
-            }
-        }
-        'QuickHeal' {
-            $sw = [System.Diagnostics.Stopwatch]::StartNew()
-            $r = Pick-Hash (Invoke-WithLock { Invoke-HealPipeline })
-            $sw.Stop()
-            Write-HealSummary $r $sw
-            if ($r -and $r.Conn -eq 'Captive' -and -not $script:IsDry) {
-                [void](Invoke-WithLock { [void](Open-Portal); Save-State })
-                if ((Get-InternetState -NoCache).State -eq 'Captive') {
-                    if (Wait-ForAuthentication 120) { [void](Invoke-WithLock { Complete-Authentication }) }
-                }
-            }
-        }
-        'Diagnose'          { Show-Diagnostics }
-        'Audit'             { Show-Diagnostics }
-        'Report'            { New-SupportReport }

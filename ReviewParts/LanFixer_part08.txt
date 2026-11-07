@@ -1,3 +1,37 @@
+        } else {
+            # 64-bit System32 Winsock Catalog Reset
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('winsock', 'reset', 'catalog') 8000)
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('winsock', 'reset') 5000)
+
+            # 32-bit SysWOW64 Winsock Catalog Reset (cleanses legacy 32-bit LSP hooks and browser shims)
+            $wowNetsh = Join-Path $env:SystemRoot 'SysWOW64\netsh.exe'
+            if (Test-Path -LiteralPath $wowNetsh) {
+                [void](Invoke-Native $wowNetsh @('winsock', 'reset', 'catalog') 8000)
+                [void](Invoke-Native $wowNetsh @('winsock', 'reset') 5000)
+            }
+
+            # Zero out Winsock AutodialFlags to defeat phantom dial-up/RAS prompts
+            try {
+                $ws2Key = 'HKLM:\SYSTEM\CurrentControlSet\Services\WinSock2\Parameters'
+                if (Test-Path -LiteralPath $ws2Key) {
+                    Set-ItemProperty -LiteralPath $ws2Key -Name 'AutodialFlags' -Value 0 -Type DWord -ErrorAction SilentlyContinue
+                }
+            } catch {}
+        }
+
+        # ----------------------------------------------------------------------
+        # STAGE 3/10: DUAL-STACK TCP/IP FACTORY RESTORATION & GLOBAL HEURISTICS NORMALIZATION
+        # ----------------------------------------------------------------------
+        Write-Log 'STEP' 'STAGE 3/10  Dual-stack TCP/IP stack restoration, global heuristics reset, tunnel defeat & HTTP flush'
+        if ($script:IsDry) {
+            Write-Log 'DRY' 'Would execute: netsh int ip reset & netsh int ipv6 reset'
+            Write-Log 'DRY' 'Would execute: netsh int tcp reset & normalize autotuning/RSS/RSC/timestamps'
+            Write-Log 'DRY' 'Would disable transition tunnels: Teredo, ISATAP, 6to4'
+            Write-Log 'DRY' 'Would flush HTTP driver log buffers'
+        } else {
+            $ipLog = Join-Path $env:TEMP ('netsh_ip_reset_' + [Guid]::NewGuid().ToString('N').Substring(0,8) + '.log')
+            $ipv6Log = Join-Path $env:TEMP ('netsh_ipv6_reset_' + [Guid]::NewGuid().ToString('N').Substring(0,8) + '.log')
+            try {
                 [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'ip', 'reset', $ipLog) 10000)
             } finally {
                 if (Test-Path -LiteralPath $ipLog) { Remove-Item -LiteralPath $ipLog -Force -ErrorAction SilentlyContinue }
@@ -764,37 +798,3 @@ function Invoke-DoomsdayReset {
         # ----------------------------------------------------------------------
         # STAGE 12/12: TOPOLOGICAL 13-SERVICE RESUSCITATION, 802.1X RECONNECT & VERIFY
         # ----------------------------------------------------------------------
-        Write-Log 'STEP' 'STAGE 12/12 Resuscitating 13 core networking services, 802.1X, running DHCP & verifying'
-        if ($script:IsDry) {
-            Write-Log 'DRY' 'Would start services in topological order: BFE -> mpssvc -> CryptSvc -> RmSvc -> WlanSvc -> dot3svc -> bthserv -> WwanSvc -> Dhcp -> Dnscache -> iphlpsvc -> NlaSvc -> netprofm -> BITS'
-            Write-Log 'DRY' 'Would execute: netsh lan reconnect'
-            Write-Log 'DRY' 'Would execute: ipconfig /release *, /renew *, /registerdns'
-            Write-Log 'DRY' 'Would await STP convergence and execute 7-layer heal pipeline'
-        } else {
-            $upSvcs = @('BFE', 'mpssvc', 'CryptSvc', 'RmSvc', 'WlanSvc', 'dot3svc', 'bthserv', 'WwanSvc', 'Dhcp', 'Dnscache', 'iphlpsvc', 'NlaSvc', 'netprofm', 'BITS')
-            foreach ($s in $upSvcs) {
-                try {
-                    Set-Service -Name $s -StartupType Automatic -ErrorAction SilentlyContinue
-                    Start-Service -Name $s -ErrorAction SilentlyContinue
-                } catch {}
-            }
-            Start-Sleep -Milliseconds 1500
-
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('lan', 'reconnect') 5000)
-
-            [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/release') 8000)
-            [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/release6') 8000)
-            Start-Sleep -Milliseconds 1000
-            # Wait for STP listening/learning convergence before DHCP renewal
-            foreach ($ea in @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })) {
-                [void](Wait-StpConvergence $ea 15)
-            }
-            [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/renew') 15000)
-            [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/renew6') 15000)
-            [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/registerdns') 5000)
-        }
-
-        # 7-Layer Ethernet & Multi-Homed Heal Pipeline
-        $resHeal = Pick-Hash (Invoke-HealPipeline -SkipSystemStack)
-        $anyVerifyFail = $false
-        $upAdapters = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' })

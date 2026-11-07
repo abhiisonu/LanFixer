@@ -1,3 +1,37 @@
+        Write-Log 'STEP' 'STAGE 12/12 Resuscitating 13 core networking services, 802.1X, running DHCP & verifying'
+        if ($script:IsDry) {
+            Write-Log 'DRY' 'Would start services in topological order: BFE -> mpssvc -> CryptSvc -> RmSvc -> WlanSvc -> dot3svc -> bthserv -> WwanSvc -> Dhcp -> Dnscache -> iphlpsvc -> NlaSvc -> netprofm -> BITS'
+            Write-Log 'DRY' 'Would execute: netsh lan reconnect'
+            Write-Log 'DRY' 'Would execute: ipconfig /release *, /renew *, /registerdns'
+            Write-Log 'DRY' 'Would await STP convergence and execute 7-layer heal pipeline'
+        } else {
+            $upSvcs = @('BFE', 'mpssvc', 'CryptSvc', 'RmSvc', 'WlanSvc', 'dot3svc', 'bthserv', 'WwanSvc', 'Dhcp', 'Dnscache', 'iphlpsvc', 'NlaSvc', 'netprofm', 'BITS')
+            foreach ($s in $upSvcs) {
+                try {
+                    Set-Service -Name $s -StartupType Automatic -ErrorAction SilentlyContinue
+                    Start-Service -Name $s -ErrorAction SilentlyContinue
+                } catch {}
+            }
+            Start-Sleep -Milliseconds 1500
+
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('lan', 'reconnect') 5000)
+
+            [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/release') 8000)
+            [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/release6') 8000)
+            Start-Sleep -Milliseconds 1000
+            # Wait for STP listening/learning convergence before DHCP renewal
+            foreach ($ea in @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })) {
+                [void](Wait-StpConvergence $ea 15)
+            }
+            [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/renew') 15000)
+            [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/renew6') 15000)
+            [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/registerdns') 5000)
+        }
+
+        # 7-Layer Ethernet & Multi-Homed Heal Pipeline
+        $resHeal = Pick-Hash (Invoke-HealPipeline -SkipSystemStack)
+        $anyVerifyFail = $false
+        $upAdapters = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' })
         $primarySrc = ''
         foreach ($ua in $upAdapters) {
             $candidateIp = Get-ValidIPv4 $ua
@@ -283,7 +317,7 @@ function Invoke-HealPipeline([switch]$SkipSystemStack) {
     Write-Log 'STEP' 'LAYER 2/7  Data link & DHCP lease renewal'
     foreach ($c in $ctxs) { [void](Shield-Dot3Svc $c.Ad); Shield-DataLink $c }
     $primaryIp = Get-PrimarySourceIp
-    $conn = if ($primaryIp) { (Get-InternetState -NoCache -SourceIp $primaryIp).State } else { (Get-InternetState -NoCache).State }
+    $conn = if ($primaryIp) { (Get-InternetState -NoCache -SourceIp $primaryIp).State } else { 'Offline' }
 
     Write-Log 'STEP' 'LAYER 3/7  Gateway ARP integrity & route metrics'
     foreach ($c in $ctxs) { Shield-GatewayArp $c $conn; Shield-RouteMetrics $c $conn; Shield-PathMtu $c $conn; Shield-DefaultRoutes $c }
@@ -291,7 +325,7 @@ function Invoke-HealPipeline([switch]$SkipSystemStack) {
     Write-Log 'STEP' 'LAYER 4/7  Adaptive DNS configuration & resolver health'
     foreach ($c in $ctxs) { [void](Shield-TcpOffloads $c.Ad); Shield-Dns $c $conn }
 
-    $connAfterDns = if ($primaryIp) { (Get-InternetState -NoCache -SourceIp $primaryIp).State } else { (Get-InternetState -NoCache).State }
+    $connAfterDns = if ($primaryIp) { (Get-InternetState -NoCache -SourceIp $primaryIp).State } else { 'Offline' }
     if ($connAfterDns -eq 'Online' -and $conn -ne 'Online') {
         $conn = 'Online'
         foreach ($c in $ctxs) { Shield-RouteMetrics $c $conn; Shield-PathMtu $c $conn }
@@ -313,7 +347,7 @@ function Invoke-HealPipeline([switch]$SkipSystemStack) {
         if ($c.Env.Env -eq 'Campus') { $res.Campus = $true }
     }
     if (-not $script:IsDry) { Set-StateTime 'LastFull'; $script:State.Misc['Version'] = $script:Version; Save-State }
-    $res.Conn = (Get-InternetState -NoCache).State
+    $res.Conn = if ($primaryIp) { (Get-InternetState -NoCache -SourceIp $primaryIp).State } else { 'Offline' }
     $res.Ip = if ($ups.Count -gt 0) { [string](Get-ValidIPv4 $ups[0]) } else { '' }
     $res.Problem = (Get-AdapterHealth $ups[0]).Problem
     if (Clear-FailStreakIfRecovered ([string]$res.Problem)) { Save-State }
@@ -668,7 +702,9 @@ function Wait-ForAuthentication([int]$TimeoutSec = 180) {
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $i = 0
     while ($sw.Elapsed.TotalSeconds -lt $TimeoutSec) {
-        if ((Get-InternetState -NoCache).State -eq 'Online') { Out-Line @(); return $true }
+        $srcIp = Get-PrimarySourceIp
+        $st = if ($srcIp) { (Get-InternetState -NoCache -SourceIp $srcIp).State } else { (Get-InternetState -NoCache).State }
+        if ($st -eq 'Online') { Out-Line @(); return $true }
         $t = Get-Date
         while (((Get-Date) - $t).TotalSeconds -lt 3) {
             $sp = $script:G.spin[$i % $script:G.spin.Count]; $i++
@@ -688,7 +724,9 @@ function Invoke-AuthWatch {
     while ((Get-Date) -lt $deadline) {
         Start-Sleep -Seconds 4
         if (@(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' }).Count -eq 0) { Write-Log 'INFO' 'Auth watch: link dropped; cleaning up.'; if (Enter-Lock 10000) { try { Invoke-RoamingCleanup; Save-State } finally { Exit-Lock } }; return }
-        if ((Get-InternetState -NoCache).State -eq 'Online') {
+        $srcIp = Get-PrimarySourceIp
+        $st = if ($srcIp) { (Get-InternetState -NoCache -SourceIp $srcIp).State } else { (Get-InternetState -NoCache).State }
+        if ($st -eq 'Online') {
             if (Enter-Lock 15000) {
                 try { Complete-Authentication; Write-Log 'OK' 'Auth watch: login detected, DNS switched to post-login profile.' } finally { Exit-Lock }
             }
@@ -760,41 +798,3 @@ function Invoke-AutoHeal {
         if (-not $needFull) {
             foreach ($adUp in $ups) {
                 $enviUp = Get-AdapterEnvironment $adUp
-                $hUp = Get-SubTable 'Env' ([string]$adUp.InterfaceGuid)
-                $healthUp = if ($adUp.ifIndex -eq $primary.ifIndex) { $health } else { Get-AdapterHealth $adUp }
-                $hUp.Up = $true; $hUp.Ip = [string]$healthUp.Ip
-                Shield-RouteMetrics @{ Ad = $adUp; Env = $enviUp } $healthUp.Conn
-            }
-            [void](Clear-FailStreakIfRecovered ([string]$health.Problem))
-            Save-State
-            return 0
-        }
-        $streak = [int]$script:State.Misc['FailStreak']
-        if ($streak -ge [int]$script:Cfg.BreakerFails -and -not $newConn -and -not (Test-Elapsed 'LastFull' 3600)) {
-            Write-Log 'INFO' "Repair breaker open ($streak failed passes in a row): next automatic attempt within the hour, or as soon as the cable is re-plugged."
-            Save-State
-            return 0
-        }
-        Write-Log 'INFO' ("AutoHeal pass: problem={0} newConnection={1} dnsPhaseMismatch={2}" -f $health.Problem, $newConn, $mismatch)
-        $r = Pick-Hash (Invoke-HealPipeline)
-        if ($null -eq $r) { $r = @{ Conn = 'Offline'; Problem = 'Offline' } }
-        if (Test-HardFailure ([string]$r.Problem)) {
-            $script:State.Misc['FailStreak'] = $streak + 1
-            if (($streak + 1) -eq [int]$script:Cfg.BreakerFails) { Write-Log 'ALERT' 'Automatic repair has not fixed the connection after several passes: check the cable and wall port, and check your MAC from the audit [6] or report [R].' }
-        } else {
-            if ($streak -gt 0 -or (Test-HardFailure ([string]$health.Problem))) {
-                if ($r.Conn -eq 'Online') { Invoke-RecoveryToast ([string]$r.Ip) }
-            }
-            $script:State.Misc['FailStreak'] = 0
-        }
-        $script:State.Misc['LastAutoHealUpCount'] = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' }).Count
-        Set-StateTime 'LastAutoHealRun'; Save-State
-        if ($r.Conn -eq 'Captive') {
-            if ($newConn -or (Test-Elapsed 'LastPortal' 1800)) { if (Test-Elapsed 'LastPortal' 20) { [void](Open-Portal) } }
-            $watch = $true
-        }
-    } finally { Exit-Lock }
-    if ($watch) { Invoke-AuthWatch }
-    return 0
-}
-

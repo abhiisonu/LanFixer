@@ -1,3 +1,28 @@
+                    [void](Invoke-Change "Non-campus network: duplicate-address probes restored to $orig on $($ad.Name)" {
+                        Set-NetIPInterface -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -DadTransmits $orig -ErrorAction Stop
+                    })
+                }
+            }
+        } else { Write-Log 'INFO' 'Environment unknown: leaving duplicate-address settings untouched.' }
+    }
+    $Ctx.Repaired = $false
+    if ($ipif -and [string]$ipif.Dhcp -eq 'Disabled') {
+        $stGw = @(Get-GatewaysV4 $ad) | Select-Object -First 1
+        $stAlive = $false
+        if ($stGw) {
+            $stAlive = (Test-GatewayAlive $ad $stGw).Alive
+        } elseif ($Mode -eq 'AutoHeal') {
+            $stAlive = $true
+        } else {
+            $peerArp = @(Get-NetNeighbor -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object {
+                @('Reachable','Stale','Delay','Probe') -contains [string]$_.State -and
+                $_.IPAddress -notmatch '^(169\.254\.|127\.|224\.|239\.|255\.)' -and
+                $_.LinkLayerAddress -and $_.LinkLayerAddress -notmatch '^(00-)+00$|^(ff-)+ff$'
+            })
+            if ($peerArp.Count -gt 0) { $stAlive = $true }
+        }
+        if (-not $stAlive) {
+            $origIpInfo = $null
             $stIps = @(Get-NetIPAddress -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -notmatch '^(169\.254\.|127\.)' })
             if ($stIps.Count -gt 0) {
                 $origIpInfo = @{ IPAddress = [string]$stIps[0].IPAddress; PrefixLength = [int]$stIps[0].PrefixLength; DefaultGateway = $(if ($stGw) { [string]$stGw } else { '' }) }
@@ -313,7 +338,10 @@ function Shield-RouteMetrics($Ctx, [string]$ConnState) {
     if ($Ctx -and -not $Ctx.Ad -and ($Ctx.InterfaceIndex -or $Ctx.InterfaceGuid)) {
         $Ctx = @{ Ad = $Ctx; Env = (Get-AdapterEnvironment $Ctx) }
     }
-    if (-not $ConnState) { $ConnState = (Get-InternetState -NoCache).State }
+    if (-not $ConnState) {
+        $curIp = if ($Ctx -and $Ctx.Ad) { Get-ValidIPv4 $Ctx.Ad } else { Get-PrimarySourceIp }
+        $ConnState = if ($curIp) { (Get-InternetState -NoCache -SourceIp $curIp).State } else { 'Offline' }
+    }
     $ad = $Ctx.Ad
     if (-not $ad) { return }
     $others = @(Get-OtherUplinkAdapters)
@@ -770,31 +798,3 @@ function Shield-Portal($Ctxs) {
     $tcp = Test-TcpPort $ep.Ip $ep.Port 900
     if ($tcp) { Write-Log 'OK' ("Portal {0}:{1} reachable" -f $ep.Ip, $ep.Port) }
     else { Write-Log 'WARN' ("Portal {0}:{1} not reachable (normal if the session is already authenticated and the firewall hides it)" -f $ep.Ip, $ep.Port) }
-    foreach ($cx in $camp) {
-        $src = [string](Get-ValidIPv4 $cx.Ad)
-        $ip = Resolve-HostBounded $ep.Host 1800 $src -NoPin
-        if ($ip) { Write-Log 'OK' "Portal name resolves on $($cx.Ad.Name): $($ep.Host) -> $ip" }
-        else { Write-Log 'WARN' "Portal name $($ep.Host) does not resolve through $($cx.Ad.Name)'s own DNS." }
-    }
-}
-
-# ==============================================================================
-# LAYER 6 - EXPOSURE: treat the hostel LAN as untrusted (Public firewall profile)
-# ==============================================================================
-function Shield-Profile($Ctx) {
-    if (-not $script:Cfg.ForcePublic -or $Ctx.Env.Env -ne 'Campus') { return }
-    $np = Get-NetConnectionProfile -InterfaceIndex $Ctx.Ad.ifIndex -ErrorAction SilentlyContinue | Select-Object -First 1
-    if (-not $np) { return }
-    if ([string]$np.NetworkCategory -eq 'Private') {
-        Save-Original 'NetProfiles' ("Cat:" + $np.Name) 'Private'
-        [void](Invoke-Change "Network '$($np.Name)' set to Public (blocks discovery/sharing from other hostel devices)" {
-            Set-NetConnectionProfile -InterfaceIndex $Ctx.Ad.ifIndex -NetworkCategory Public -ErrorAction Stop
-        })
-    } else { Write-Log 'INFO' "Network profile is $($np.NetworkCategory) (already safe or domain-managed)." }
-}
-
-# ==============================================================================
-# LAYER 7 - SERVICES: NetBIOS chatter, NCSI sanity, stuck "no internet" icon
-# ==============================================================================
-function Restore-LlmnrIfManaged([string]$Why) {
-    if ($script:State.Misc['LlmnrManaged'] -ne $true) { return }

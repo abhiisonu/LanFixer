@@ -1,3 +1,42 @@
+        if (-not (& $probe 548)) { return $null }
+        $lo = 548; $hi = 1472
+        while (($hi - $lo) -gt 8) { $mid = [int](($lo + $hi) / 2); if (& $probe $mid) { $lo = $mid } else { $hi = $mid } }
+        return ($lo + 28)
+    } finally { $p.Dispose() }
+}
+# ==============================================================================
+# READ-ONLY AUDIT
+# ==============================================================================
+# TCP connect to well-known IPv6 literals from the adapter's own IPv6 address. True if any answers.
+function Test-Ipv6Reach([string]$SourceIp, [string[]]$Targets = @('2606:4700:4700::1111', '2001:4860:4860::8888'), [int]$Port = 443, [int]$TimeoutMs = 1500) {
+    foreach ($tg in $Targets) {
+        $s = $null
+        try {
+            # inside the try: with IPv6 switched off in Windows this constructor throws, and that must stay silent
+            $s = New-Object System.Net.Sockets.Socket([System.Net.Sockets.AddressFamily]::InterNetworkV6, [System.Net.Sockets.SocketType]::Stream, [System.Net.Sockets.ProtocolType]::Tcp)
+            if ($SourceIp) { $s.Bind((New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Parse($SourceIp), 0))) }
+            $iar = $s.BeginConnect([System.Net.IPAddress]::Parse($tg), $Port, $null, $null)
+            if ($iar.AsyncWaitHandle.WaitOne($TimeoutMs, $false)) { try { $s.EndConnect($iar); return $true } catch {} }
+        } catch {} finally { if ($s) { try { $s.Close() } catch {} } }
+    }
+    return $false
+}
+# Pure decision (unit-tested): the harmful case is "IPv6 advertised, IPv6 internet dead, IPv4 fine" - apps that try
+# IPv6 first then stall for many seconds before falling back.
+function Get-Ipv6Verdict([bool]$HasGlobal, [bool]$HasRoute, [string]$Conn, [bool]$Reach) {
+    if (-not $HasGlobal) { return 'None' }
+    if (-not $HasRoute) { return 'NoRoute' }
+    if ($Conn -ne 'Online') { return 'Untested' }
+    if ($Reach) { return 'Working' }
+    return 'Blackhole'
+}
+function Show-Diagnostics {
+    Write-Banner 'SYSTEM DIAGNOSTICS AUDIT'
+    $issues = New-Object System.Collections.ArrayList
+    $ads = @(Get-EthernetAdapters)
+    Write-Section 'NETWORK ADAPTER HARDWARE'
+    if ($ads.Count -eq 0) { Write-KV 'Ethernet' 'none found' 'Red'; [void]$issues.Add('No physical Ethernet adapter found (disabled? USB dongle unplugged?)') }
+    foreach ($a in $ads) {
         $col = $(if ($a.Status -eq 'Up') { 'Green' } else { 'Red' })
         Write-KV 'Adapter' ("{0} [{1}]" -f $a.Name, $a.Status) $col
         Write-KV '  Controller' ([string]$a.InterfaceDescription)
@@ -759,42 +798,3 @@ function Invoke-LogicTests {
     Write-Check 'Logic: gateway liveness proxy probes the configured campus only on the home campus' (($gaDef.IndexOf('$homeAd') -ge 0) -and ($gaDef.IndexOf('Test-TcpPort $Gw 53') -ge 0))
     $ssDef = [string](Get-Command Save-State -ErrorAction SilentlyContinue).Definition
     Write-Check 'Logic: Save-State verifies the temp file before replacing state and guards the .bak copy' (($ssDef.IndexOf('Test-StateFile $tmp') -ge 0) -and ($ssDef.IndexOf('Test-StateFile $script:StateFile') -ge 0))
-    $tsGood = Join-Path ([System.IO.Path]::GetTempPath()) ('lf_state_ok_' + [guid]::NewGuid().ToString('N') + '.clixml')
-    $tsBad = Join-Path ([System.IO.Path]::GetTempPath()) ('lf_state_bad_' + [guid]::NewGuid().ToString('N') + '.clixml')
-    $tsOk = $false; $tsRej = $false; $tsMiss = $false
-    try {
-        @{ Snapshot = @{}; Misc = @{ A = 1 } } | Export-Clixml -LiteralPath $tsGood -Depth 4
-        [System.IO.File]::WriteAllText($tsBad, '<Objs Version="1.1.0.1"><Obj RefId="0"><TN')
-        $tsOk = (Test-StateFile $tsGood)
-        $tsRej = (-not (Test-StateFile $tsBad))
-        $tsMiss = (-not (Test-StateFile ($tsGood + '.missing')))
-    } catch {}
-    foreach ($tf in @($tsGood, $tsBad)) { try { Remove-Item -LiteralPath $tf -Force -ErrorAction SilentlyContinue } catch {} }
-    Write-Check 'Logic: Test-StateFile accepts a good state file and rejects truncated or missing ones' ($tsOk -and $tsRej -and $tsMiss)
-    Write-Check 'Logic: non-campus DNS action matrix (Rescue / KeepRescue / Restore)' (((Get-OtherDnsAction 'NoDns' $false 'Auto' $false) -eq 'Rescue') -and ((Get-OtherDnsAction 'Online' $true 'Public' $false) -eq 'KeepRescue') -and ((Get-OtherDnsAction 'Online' $true 'Public' $true) -eq 'Restore') -and ((Get-OtherDnsAction 'Online' $false 'Auto' $false) -eq 'Restore') -and ((Get-OtherDnsAction 'Online' $true 'Campus' $false) -eq 'Restore'))
-    $sdDef2 = [string](Get-Command Shield-Dns -ErrorAction SilentlyContinue).Definition
-    Write-Check 'Logic: Shield-Dns keeps a still-needed rescue (source-bound probe) and gates configured portal values on Home' (($sdDef2.IndexOf('Get-OtherDnsAction') -ge 0) -and ($sdDef2.IndexOf('Test-DhcpDnsUsable $guid') -ge 0) -and ($sdDef2.IndexOf('$homeNet') -ge 0))
-    Write-Check 'Logic: watchdog disabled-state detection' ((Test-WatchdogDisabled 'false') -and (Test-WatchdogDisabled ' False ') -and -not (Test-WatchdogDisabled 'true') -and -not (Test-WatchdogDisabled '') -and -not (Test-WatchdogDisabled $null))
-    $uwDef = [string](Get-Command Update-WatchdogIfStale -ErrorAction SilentlyContinue).Definition
-    Write-Check 'Logic: Update-WatchdogIfStale re-registers a task that was disabled while armed' ($uwDef.IndexOf('Test-WatchdogDisabled') -ge 0)
-    $siDef = [string](Get-Command Start-Interactive -ErrorAction SilentlyContinue).Definition
-    Write-Check 'Logic: dashboard autopilot makes one sign-in attempt when it opens on an already captive link' (($siDef.IndexOf('$autoLoginTried') -ge 0) -and ($siDef.IndexOf('Invoke-HeadlessPortalLogin') -ge 0))
-    Write-Check 'Logic: dashboard allows key [R] to export support report and preserves F5/Space refresh' ($siDef.IndexOf("Key -eq 'F5'") -ge 0 -and $siDef.IndexOf("ch -eq 'r'") -lt 0)
-    Write-Check 'Logic: Get-StepperLines handles 0 or 1 rows safely without division by zero' ((@(Get-StepperLines @() 80)).Count -eq 0 -and (@(Get-StepperLines @(@{ State = 'ok' }) 80)).Count -eq 0)
-    $wlDef = [string](Get-Command Write-Log -ErrorAction SilentlyContinue).Definition
-    Write-Check 'Logic: Write-Log suppresses console output during active dashboard loop' ($wlDef.IndexOf('InDashboard') -ge 0)
-    $uprDef = [string](Get-Command Update-PulseRow -ErrorAction SilentlyContinue).Definition
-    Write-Check 'Logic: Update-PulseRow uses absolute ANSI row positioning' ($uprDef.IndexOf('$targetRow') -ge 0 -and $uprDef.IndexOf('$promptRow') -ge 0)
-    Write-Check 'Logic: dashboard routing priority sync triggers strictly on Wi-Fi Protected or non-Ethernet First' ($siDef.IndexOf("Routing -eq 'Wi-Fi Protected'") -ge 0 -and $siDef.IndexOf("Routing -ne 'Ethernet First'") -ge 0 -and $siDef.IndexOf("Ethernet Primary") -lt 0)
-    $inDef = [string](Get-Command Invoke-Native -ErrorAction SilentlyContinue).Definition
-    Write-Check 'Logic: Invoke-Native disposes process handle and waits for rundown' (($inDef.IndexOf('$p.Dispose()') -ge 0) -and ($inDef.IndexOf('$p.WaitForExit(1000)') -ge 0))
-    $shaDef = [string](Get-Command Get-FileSha256 -ErrorAction SilentlyContinue).Definition
-    Write-Check 'Logic: Get-FileSha256 safely disposes stream and crypto handles in finally' (($shaDef.IndexOf('$stream.Dispose()') -ge 0) -and ($shaDef.IndexOf('$sha.Dispose()') -ge 0))
-    $elDef2 = [string](Get-Command Enter-Lock -ErrorAction SilentlyContinue).Definition
-    Write-Check 'Logic: Enter-Lock refuses non-admin callers without constructing Global mutex' ($elDef2.IndexOf('if (-not $script:IsAdmin) { return $false }') -ge 0)
-    $gdmDef = [string](Get-Command Get-DashboardModel -ErrorAction SilentlyContinue).Definition
-    Write-Check 'Logic: Get-DashboardModel reserves categorized dock for width 74+ and height 28+' ($gdmDef.IndexOf('$uiH -ge 28') -ge 0)
-    $cfgKeepHome = $script:Cfg
-    $script:Cfg = @{ CampusDns = '172.16.1.2'; PortalIp = '10.114.0.5'; CampusDomain = 'nitjsr.ac.in'; PortalHost = 'gateway.nitjsr.ac.in' }
-    $hvA = (Get-HomeCampusVerdict @('172.16.1.2', '8.8.8.8') '' $false $null)
-    $hvB = (Get-HomeCampusVerdict @() 'hostel.nitjsr.ac.in' $false $null)

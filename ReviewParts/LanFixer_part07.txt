@@ -1,3 +1,31 @@
+    foreach ($cx in $camp) {
+        $src = [string](Get-ValidIPv4 $cx.Ad)
+        $ip = Resolve-HostBounded $ep.Host 1800 $src -NoPin
+        if ($ip) { Write-Log 'OK' "Portal name resolves on $($cx.Ad.Name): $($ep.Host) -> $ip" }
+        else { Write-Log 'WARN' "Portal name $($ep.Host) does not resolve through $($cx.Ad.Name)'s own DNS." }
+    }
+}
+
+# ==============================================================================
+# LAYER 6 - EXPOSURE: treat the hostel LAN as untrusted (Public firewall profile)
+# ==============================================================================
+function Shield-Profile($Ctx) {
+    if (-not $script:Cfg.ForcePublic -or $Ctx.Env.Env -ne 'Campus') { return }
+    $np = Get-NetConnectionProfile -InterfaceIndex $Ctx.Ad.ifIndex -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $np) { return }
+    if ([string]$np.NetworkCategory -eq 'Private') {
+        Save-Original 'NetProfiles' ("Cat:" + $np.Name) 'Private'
+        [void](Invoke-Change "Network '$($np.Name)' set to Public (blocks discovery/sharing from other hostel devices)" {
+            Set-NetConnectionProfile -InterfaceIndex $Ctx.Ad.ifIndex -NetworkCategory Public -ErrorAction Stop
+        })
+    } else { Write-Log 'INFO' "Network profile is $($np.NetworkCategory) (already safe or domain-managed)." }
+}
+
+# ==============================================================================
+# LAYER 7 - SERVICES: NetBIOS chatter, NCSI sanity, stuck "no internet" icon
+# ==============================================================================
+function Restore-LlmnrIfManaged([string]$Why) {
+    if ($script:State.Misc['LlmnrManaged'] -ne $true) { return }
     $snap = Get-SubTable 'Snapshot' 'Global'
     $orig = $null
     if ($snap.ContainsKey('Llmnr')) { $orig = $snap['Llmnr'] }
@@ -663,6 +691,9 @@ function Invoke-SupremeOmnifix {
             Restart-Service -Name Dhcp -Force -ErrorAction SilentlyContinue
             Restart-Service -Name NlaSvc -Force -ErrorAction SilentlyContinue
             Start-Service -Name netprofm -ErrorAction SilentlyContinue
+            Start-Service -Name iphlpsvc -ErrorAction SilentlyContinue
+            Start-Service -Name Wcmsvc -ErrorAction SilentlyContinue
+            Start-Service -Name WlanSvc -ErrorAction SilentlyContinue
         }
         Write-Log 'STEP' 'STAGE 5/5  Verifying live IPv4 A-record & HTTPS reachability (GitHub & Google Auth)'
         $anyVerifyFail = $false
@@ -693,6 +724,9 @@ function Invoke-SupremeOmnifix {
                 Restart-Service -Name Dhcp -Force -ErrorAction SilentlyContinue
                 Restart-Service -Name NlaSvc -Force -ErrorAction SilentlyContinue
                 Start-Service -Name netprofm -ErrorAction SilentlyContinue
+                Start-Service -Name iphlpsvc -ErrorAction SilentlyContinue
+                Start-Service -Name Wcmsvc -ErrorAction SilentlyContinue
+                Start-Service -Name WlanSvc -ErrorAction SilentlyContinue
                 foreach ($ea in @(Get-EthernetAdapters)) { Reset-PhysicalAdapterHardware $ea }
             })
             foreach ($testHost in @('github.com', 'accounts.google.com')) {
@@ -764,37 +798,3 @@ function Invoke-UltraSystemReset {
         if ($script:IsDry) {
             Write-Log 'DRY' 'Would execute 64-bit and 32-bit: netsh winsock reset catalog & netsh winsock reset'
             Write-Log 'DRY' 'Would reset Winsock AutodialFlags to 0 in registry'
-        } else {
-            # 64-bit System32 Winsock Catalog Reset
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('winsock', 'reset', 'catalog') 8000)
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('winsock', 'reset') 5000)
-
-            # 32-bit SysWOW64 Winsock Catalog Reset (cleanses legacy 32-bit LSP hooks and browser shims)
-            $wowNetsh = Join-Path $env:SystemRoot 'SysWOW64\netsh.exe'
-            if (Test-Path -LiteralPath $wowNetsh) {
-                [void](Invoke-Native $wowNetsh @('winsock', 'reset', 'catalog') 8000)
-                [void](Invoke-Native $wowNetsh @('winsock', 'reset') 5000)
-            }
-
-            # Zero out Winsock AutodialFlags to defeat phantom dial-up/RAS prompts
-            try {
-                $ws2Key = 'HKLM:\SYSTEM\CurrentControlSet\Services\WinSock2\Parameters'
-                if (Test-Path -LiteralPath $ws2Key) {
-                    Set-ItemProperty -LiteralPath $ws2Key -Name 'AutodialFlags' -Value 0 -Type DWord -ErrorAction SilentlyContinue
-                }
-            } catch {}
-        }
-
-        # ----------------------------------------------------------------------
-        # STAGE 3/10: DUAL-STACK TCP/IP FACTORY RESTORATION & GLOBAL HEURISTICS NORMALIZATION
-        # ----------------------------------------------------------------------
-        Write-Log 'STEP' 'STAGE 3/10  Dual-stack TCP/IP stack restoration, global heuristics reset, tunnel defeat & HTTP flush'
-        if ($script:IsDry) {
-            Write-Log 'DRY' 'Would execute: netsh int ip reset & netsh int ipv6 reset'
-            Write-Log 'DRY' 'Would execute: netsh int tcp reset & normalize autotuning/RSS/RSC/timestamps'
-            Write-Log 'DRY' 'Would disable transition tunnels: Teredo, ISATAP, 6to4'
-            Write-Log 'DRY' 'Would flush HTTP driver log buffers'
-        } else {
-            $ipLog = Join-Path $env:TEMP ('netsh_ip_reset_' + [Guid]::NewGuid().ToString('N').Substring(0,8) + '.log')
-            $ipv6Log = Join-Path $env:TEMP ('netsh_ipv6_reset_' + [Guid]::NewGuid().ToString('N').Substring(0,8) + '.log')
-            try {

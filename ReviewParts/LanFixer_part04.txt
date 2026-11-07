@@ -778,6 +778,12 @@ function Get-InternetState {
     if (-not $script:Cfg.ProbeSourceBind) { $SourceIp = '' }
     elseif (-not $explicit) { $SourceIp = Get-PrimarySourceIp }
     if ($null -eq $SourceIp) { $SourceIp = '' }
+    if (-not $SourceIp -or $SourceIp -like '169.254.*') {
+        $upEths = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })
+        if ($upEths.Count -gt 0 -and (Test-OtherUplinkActive)) {
+            return @{ State = 'Offline'; DnsOk = $false; Code = 0; Location = ''; Error = 'NoValidIpOnEthernet' }
+        }
+    }
     $ckey = ('{0}|{1}' -f $SourceIp, $explicit)
     if (-not $NoCache -and $script:ConnCache -and $script:ConnCache.Key -eq $ckey -and (((Get-Date) - $script:ConnCache.Time).TotalSeconds -lt 1.8)) { return $script:ConnCache.Result }
     $none = @{ Code = 0; Body = ''; Location = ''; Error = '' }
@@ -792,9 +798,3 @@ function Get-InternetState {
         if ($u1.Code -eq 204) { $state = 'Online'; $via = 'system'; $p1 = $u1 }
         elseif (($u1.Code -ge 300 -and $u1.Code -le 399) -or ($u1.Code -ge 200 -and $u1.Code -le 299) -or $u1.Code -eq 401 -or $u1.Code -eq 407 -or $u1.Code -eq 511) { $state = 'Captive'; $via = 'system'; $p1 = $u1 }
         if ($state -eq 'Offline' -or $state -eq 'NoDns') {
-            try {
-                $wr = [System.Net.HttpWebRequest]::Create('http://connectivitycheck.gstatic.com/generate_204')
-                $wr.Timeout = 2500
-                $wr.AllowAutoRedirect = $false
-                $wr.Proxy = $null   # a local proxy answering 204 must not count as internet
-                $resp = $wr.GetResponse()

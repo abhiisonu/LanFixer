@@ -3178,6 +3178,12 @@ function Get-InternetState {
     if (-not $script:Cfg.ProbeSourceBind) { $SourceIp = '' }
     elseif (-not $explicit) { $SourceIp = Get-PrimarySourceIp }
     if ($null -eq $SourceIp) { $SourceIp = '' }
+    if (-not $SourceIp -or $SourceIp -like '169.254.*') {
+        $upEths = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })
+        if ($upEths.Count -gt 0 -and (Test-OtherUplinkActive)) {
+            return @{ State = 'Offline'; DnsOk = $false; Code = 0; Location = ''; Error = 'NoValidIpOnEthernet' }
+        }
+    }
     $ckey = ('{0}|{1}' -f $SourceIp, $explicit)
     if (-not $NoCache -and $script:ConnCache -and $script:ConnCache.Key -eq $ckey -and (((Get-Date) - $script:ConnCache.Time).TotalSeconds -lt 1.8)) { return $script:ConnCache.Result }
     $none = @{ Code = 0; Body = ''; Location = ''; Error = '' }
@@ -3510,7 +3516,7 @@ function Get-AdapterHealth($Ad) {
     $gw = @(Get-GatewaysV4 $Ad) | Select-Object -First 1
     $h.Gateway = $gw
     if ($gw) { $ga = Test-GatewayAlive $Ad $gw; $h.GwRtt = $ga.Rtt; $h.GwAlive = $ga.Alive; $h.GwVia = $ga.Via }
-    $h.Conn = (Get-InternetState -SourceIp $h.Ip).State
+    $h.Conn = (Get-InternetState -NoCache -SourceIp $h.Ip).State
     switch ($h.Conn) {
         'Online'  { $h.Problem = 'Healthy' }
         'Captive' { $h.Problem = 'Captive' }
@@ -3907,7 +3913,14 @@ function Repair-Dhcp($Ad, [switch]$ForceRelease) {
     [void](Invoke-Change "Zero-reboot hardware/link reset on $($Ad.Name)" { Reset-PhysicalAdapterHardware $Ad })
     $script:PendingRestart.Remove($guid)
     # Adaptive STP convergence window (up to 45s, instant early-exit on lease acquisition)
-    for ($i = 0; $i -lt 90; $i++) { if (Get-ValidIPv4 $Ad) { Write-Log 'OK' 'Lease acquired after link reset.'; return $true }; Start-Sleep -Milliseconds 500 }
+    for ($i = 0; $i -lt 90; $i++) {
+        if ($i % 4 -eq 0) {
+            $freshAd = Get-NetAdapter -Name $Ad.Name -ErrorAction SilentlyContinue
+            if ($freshAd) { $Ad = $freshAd }
+        }
+        if (Get-ValidIPv4 $Ad) { Write-Log 'OK' 'Lease acquired after link reset.'; return $true }
+        Start-Sleep -Milliseconds 500
+    }
     # Step 3: DHCP stack unfreeze and release/renew
     [void](Invoke-Change "DHCP stack unfreeze and release/renew on $($Ad.Name)" {
         Stop-Service -Name Dhcp -Force -ErrorAction SilentlyContinue
@@ -3921,12 +3934,24 @@ function Repair-Dhcp($Ad, [switch]$ForceRelease) {
             } catch {}
         }
         Start-Service -Name Dhcp -ErrorAction SilentlyContinue
+        Start-Service -Name WlanSvc -ErrorAction SilentlyContinue
+        Start-Service -Name Wcmsvc -ErrorAction SilentlyContinue
+        Start-Service -Name iphlpsvc -ErrorAction SilentlyContinue
+        Start-Service -Name NlaSvc -ErrorAction SilentlyContinue
+        Start-Service -Name netprofm -ErrorAction SilentlyContinue
         [void](Invoke-Native $ipconfig @('/release', $Ad.Name) 10000)
         $r = Invoke-Native $ipconfig @('/renew', $Ad.Name) 25000
         if ($r.TimedOut) { throw 'ipconfig /renew timed out' }
         if ($r.ExitCode -ne 0) { Write-Log 'WARN' ('ipconfig /renew said: ' + (([string]$r.Output -replace '\s+', ' ').Trim())) }
     })
-    for ($i = 0; $i -lt 16; $i++) { if (Get-ValidIPv4 $Ad) { Write-Log 'OK' 'Lease acquired after release/renew.'; return $true }; Start-Sleep -Milliseconds 500 }
+    for ($i = 0; $i -lt 16; $i++) {
+        if ($i % 4 -eq 0) {
+            $freshAd = Get-NetAdapter -Name $Ad.Name -ErrorAction SilentlyContinue
+            if ($freshAd) { $Ad = $freshAd }
+        }
+        if (Get-ValidIPv4 $Ad) { Write-Log 'OK' 'Lease acquired after release/renew.'; return $true }
+        Start-Sleep -Milliseconds 500
+    }
     Write-Log 'ALERT' 'DHCP still not answering.'
     Write-Log 'INFO' (Get-DhcpFailureDiagnosis $Ad)
     return $false
@@ -4313,7 +4338,10 @@ function Shield-RouteMetrics($Ctx, [string]$ConnState) {
     if ($Ctx -and -not $Ctx.Ad -and ($Ctx.InterfaceIndex -or $Ctx.InterfaceGuid)) {
         $Ctx = @{ Ad = $Ctx; Env = (Get-AdapterEnvironment $Ctx) }
     }
-    if (-not $ConnState) { $ConnState = (Get-InternetState -NoCache).State }
+    if (-not $ConnState) {
+        $curIp = if ($Ctx -and $Ctx.Ad) { Get-ValidIPv4 $Ctx.Ad } else { Get-PrimarySourceIp }
+        $ConnState = if ($curIp) { (Get-InternetState -NoCache -SourceIp $curIp).State } else { 'Offline' }
+    }
     $ad = $Ctx.Ad
     if (-not $ad) { return }
     $others = @(Get-OtherUplinkAdapters)
@@ -5463,6 +5491,9 @@ function Invoke-SupremeOmnifix {
             Restart-Service -Name Dhcp -Force -ErrorAction SilentlyContinue
             Restart-Service -Name NlaSvc -Force -ErrorAction SilentlyContinue
             Start-Service -Name netprofm -ErrorAction SilentlyContinue
+            Start-Service -Name iphlpsvc -ErrorAction SilentlyContinue
+            Start-Service -Name Wcmsvc -ErrorAction SilentlyContinue
+            Start-Service -Name WlanSvc -ErrorAction SilentlyContinue
         }
         Write-Log 'STEP' 'STAGE 5/5  Verifying live IPv4 A-record & HTTPS reachability (GitHub & Google Auth)'
         $anyVerifyFail = $false
@@ -5493,6 +5524,9 @@ function Invoke-SupremeOmnifix {
                 Restart-Service -Name Dhcp -Force -ErrorAction SilentlyContinue
                 Restart-Service -Name NlaSvc -Force -ErrorAction SilentlyContinue
                 Start-Service -Name netprofm -ErrorAction SilentlyContinue
+                Start-Service -Name iphlpsvc -ErrorAction SilentlyContinue
+                Start-Service -Name Wcmsvc -ErrorAction SilentlyContinue
+                Start-Service -Name WlanSvc -ErrorAction SilentlyContinue
                 foreach ($ea in @(Get-EthernetAdapters)) { Reset-PhysicalAdapterHardware $ea }
             })
             foreach ($testHost in @('github.com', 'accounts.google.com')) {
@@ -6683,7 +6717,7 @@ function Invoke-HealPipeline([switch]$SkipSystemStack) {
     Write-Log 'STEP' 'LAYER 2/7  Data link & DHCP lease renewal'
     foreach ($c in $ctxs) { [void](Shield-Dot3Svc $c.Ad); Shield-DataLink $c }
     $primaryIp = Get-PrimarySourceIp
-    $conn = if ($primaryIp) { (Get-InternetState -NoCache -SourceIp $primaryIp).State } else { (Get-InternetState -NoCache).State }
+    $conn = if ($primaryIp) { (Get-InternetState -NoCache -SourceIp $primaryIp).State } else { 'Offline' }
 
     Write-Log 'STEP' 'LAYER 3/7  Gateway ARP integrity & route metrics'
     foreach ($c in $ctxs) { Shield-GatewayArp $c $conn; Shield-RouteMetrics $c $conn; Shield-PathMtu $c $conn; Shield-DefaultRoutes $c }
@@ -6691,7 +6725,7 @@ function Invoke-HealPipeline([switch]$SkipSystemStack) {
     Write-Log 'STEP' 'LAYER 4/7  Adaptive DNS configuration & resolver health'
     foreach ($c in $ctxs) { [void](Shield-TcpOffloads $c.Ad); Shield-Dns $c $conn }
 
-    $connAfterDns = if ($primaryIp) { (Get-InternetState -NoCache -SourceIp $primaryIp).State } else { (Get-InternetState -NoCache).State }
+    $connAfterDns = if ($primaryIp) { (Get-InternetState -NoCache -SourceIp $primaryIp).State } else { 'Offline' }
     if ($connAfterDns -eq 'Online' -and $conn -ne 'Online') {
         $conn = 'Online'
         foreach ($c in $ctxs) { Shield-RouteMetrics $c $conn; Shield-PathMtu $c $conn }
@@ -6713,7 +6747,7 @@ function Invoke-HealPipeline([switch]$SkipSystemStack) {
         if ($c.Env.Env -eq 'Campus') { $res.Campus = $true }
     }
     if (-not $script:IsDry) { Set-StateTime 'LastFull'; $script:State.Misc['Version'] = $script:Version; Save-State }
-    $res.Conn = (Get-InternetState -NoCache).State
+    $res.Conn = if ($primaryIp) { (Get-InternetState -NoCache -SourceIp $primaryIp).State } else { 'Offline' }
     $res.Ip = if ($ups.Count -gt 0) { [string](Get-ValidIPv4 $ups[0]) } else { '' }
     $res.Problem = (Get-AdapterHealth $ups[0]).Problem
     if (Clear-FailStreakIfRecovered ([string]$res.Problem)) { Save-State }
@@ -7068,7 +7102,9 @@ function Wait-ForAuthentication([int]$TimeoutSec = 180) {
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $i = 0
     while ($sw.Elapsed.TotalSeconds -lt $TimeoutSec) {
-        if ((Get-InternetState -NoCache).State -eq 'Online') { Out-Line @(); return $true }
+        $srcIp = Get-PrimarySourceIp
+        $st = if ($srcIp) { (Get-InternetState -NoCache -SourceIp $srcIp).State } else { (Get-InternetState -NoCache).State }
+        if ($st -eq 'Online') { Out-Line @(); return $true }
         $t = Get-Date
         while (((Get-Date) - $t).TotalSeconds -lt 3) {
             $sp = $script:G.spin[$i % $script:G.spin.Count]; $i++
@@ -7088,7 +7124,9 @@ function Invoke-AuthWatch {
     while ((Get-Date) -lt $deadline) {
         Start-Sleep -Seconds 4
         if (@(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' }).Count -eq 0) { Write-Log 'INFO' 'Auth watch: link dropped; cleaning up.'; if (Enter-Lock 10000) { try { Invoke-RoamingCleanup; Save-State } finally { Exit-Lock } }; return }
-        if ((Get-InternetState -NoCache).State -eq 'Online') {
+        $srcIp = Get-PrimarySourceIp
+        $st = if ($srcIp) { (Get-InternetState -NoCache -SourceIp $srcIp).State } else { (Get-InternetState -NoCache).State }
+        if ($st -eq 'Online') {
             if (Enter-Lock 15000) {
                 try { Complete-Authentication; Write-Log 'OK' 'Auth watch: login detected, DNS switched to post-login profile.' } finally { Exit-Lock }
             }
@@ -7913,7 +7951,8 @@ function Set-RouteProfileMode([string]$Name) {
         if ($Name -eq 'Windows') {
             Restore-InterfaceMetrics "Routing profile set to Windows Default"
         } elseif ($primaryEth) {
-            $st = if ($ethUps.Count -gt 0) { (Get-InternetState -NoCache).State } else { 'Offline' }
+            $srcIp = Get-ValidIPv4 $primaryEth
+            $st = if ($srcIp) { (Get-InternetState -NoCache -SourceIp $srcIp).State } else { 'Offline' }
             $ctx = @{ Ad = $primaryEth; Env = (Get-AdapterEnvironment $primaryEth) }
             Shield-RouteMetrics $ctx $st
         }
@@ -9783,14 +9822,22 @@ function Show-SentinelHud($Adapter, $LinkHealth, [string]$Status, [int]$Cadence)
     }
 }
 
-function Wait-SentinelCadence([int]$Seconds, [bool]$Interactive) {
-    $ticks = [int]($Seconds * 10)
+function Wait-SentinelCadence([int]$Seconds, [bool]$Interactive, $Adapter = $null) {
+    $ticks = [int]($Seconds * 4)
+    $origStatus = if ($Adapter) { [string]$Adapter.Status } else { '' }
+    $origIp = if ($Adapter) { Get-ValidIPv4 $Adapter } else { '' }
     for ($i = 0; $i -lt $ticks; $i++) {
         if (-not $script:SentinelRunning) { break }
-        if ($script:SentinelEventTriggered) {
-            $script:SentinelEventTriggered = $false
-            Write-SentinelLog 'EVENT' "Reactive event: Network change detected via .NET kernel event! Resuming immediately."
-            break
+        if ($Adapter -and ($i % 4 -eq 0 -and $i -gt 0)) {
+            $freshAd = Get-NetAdapter -Name $Adapter.Name -ErrorAction SilentlyContinue
+            if ($freshAd) {
+                $curStatus = [string]$freshAd.Status
+                $curIp = Get-ValidIPv4 $freshAd
+                if ($curStatus -ne $origStatus -or $curIp -ne $origIp) {
+                    Write-SentinelLog 'EVENT' ("Reactive event: State transition on {0} ({1} -> {2}, IP {3} -> {4})! Resuming immediately." -f $freshAd.Name, $origStatus, $curStatus, $(if ($origIp) { $origIp } else { 'None' }), $(if ($curIp) { $curIp } else { 'None' }))
+                    break
+                }
+            }
         }
         if ($Interactive -and (Test-KeyAvailable)) {
             $k = Read-KeyNow
@@ -9817,7 +9864,7 @@ function Wait-SentinelCadence([int]$Seconds, [bool]$Interactive) {
                 break
             }
         }
-        Start-Sleep -Milliseconds 100
+        Start-Sleep -Milliseconds 250
     }
 }
 
@@ -9852,26 +9899,14 @@ function Start-AutonomousDaemon([int]$IntervalSec = 10, [switch]$Headless) {
         Write-Log 'OK' ("Autonomous Sentinel active. Press 'q' to stop, 'r' to force scan, 'l' to view log.")
     }
 
-    $addressHandler = $null
-    $availHandler = $null
-    try {
-        $addressHandler = [System.Net.NetworkInformation.NetworkAddressChangedEventHandler]{
-            $script:SentinelEventTriggered = $true
-        }
-        $availHandler = [System.Net.NetworkInformation.NetworkAvailabilityChangedEventHandler]{
-            param($s, $e)
-            $script:SentinelEventTriggered = $true
-        }
-        [System.Net.NetworkInformation.NetworkChange]::add_NetworkAddressChanged($addressHandler)
-        [System.Net.NetworkInformation.NetworkChange]::add_NetworkAvailabilityChanged($availHandler)
-    } catch {}
-
+    # Reactive NetworkChange event tracking via thread-safe polled transition detector
     $currentCadence = $IntervalSec
     $lastHudRender = [DateTime]::MinValue
 
     try {
         while ($script:SentinelRunning) {
-            $script:SentinelStats.TotalCycles++
+            try {
+                $script:SentinelStats.TotalCycles++
 
             if ($script:SentinelStats.TotalCycles % 100 -eq 0) {
                 [System.GC]::Collect()
@@ -9925,7 +9960,7 @@ function Start-AutonomousDaemon([int]$IntervalSec = 10, [switch]$Headless) {
                     Show-SentinelHud $ad $linkHealth $state.State $currentCadence
                     $lastHudRender = Get-Date
                 }
-                Wait-SentinelCadence $currentCadence $isConsole
+                Wait-SentinelCadence $currentCadence $isConsole $ad
                 continue
             }
 
@@ -9953,7 +9988,7 @@ function Start-AutonomousDaemon([int]$IntervalSec = 10, [switch]$Headless) {
                         $script:SentinelStats.T2_Captive++
                         $currentCadence = 3
                         if ($isConsole) { Show-SentinelHud $ad $linkHealth 'Online' $currentCadence }
-                        Wait-SentinelCadence $currentCadence $isConsole
+                        Wait-SentinelCadence $currentCadence $isConsole $ad
                         continue
                     }
                 }
@@ -9970,7 +10005,7 @@ function Start-AutonomousDaemon([int]$IntervalSec = 10, [switch]$Headless) {
                 $script:DaemonConsecutiveFails = 0
                 $currentCadence = [Math]::Min(15, $IntervalSec)
                 if ($isConsole) { Show-SentinelHud $ad $linkHealth 'Captive (Login Ready)' $currentCadence }
-                Wait-SentinelCadence $currentCadence $isConsole
+                Wait-SentinelCadence $currentCadence $isConsole $ad
                 continue
             }
 
@@ -10164,17 +10199,15 @@ function Start-AutonomousDaemon([int]$IntervalSec = 10, [switch]$Headless) {
                 $lastHudRender = Get-Date
             }
 
-            Wait-SentinelCadence $currentCadence $isConsole
+            Wait-SentinelCadence $currentCadence $isConsole $ad
+        } catch {
+            Write-SentinelLog 'FAIL' ("Unexpected daemon iteration error: {0}" -f $_.Exception.Message)
+            Wait-SentinelCadence 3 $isConsole $ad
         }
-    } finally {
-        if ($addressHandler) {
-            try { [System.Net.NetworkInformation.NetworkChange]::remove_NetworkAddressChanged($addressHandler) } catch {}
-        }
-        if ($availHandler) {
-            try { [System.Net.NetworkInformation.NetworkChange]::remove_NetworkAvailabilityChanged($availHandler) } catch {}
-        }
-        Write-SentinelLog 'INFO' "Autonomous Sentinel Daemon shutdown cleanly."
     }
+} finally {
+    Write-SentinelLog 'INFO' "Autonomous Sentinel Daemon shutdown cleanly."
+}
 }
 
 function Start-Interactive {
