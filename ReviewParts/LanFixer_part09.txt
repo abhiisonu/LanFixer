@@ -1,3 +1,12 @@
+                            $gw = if ($gws.Count -gt 0) { [string]$gws[0] } else { '' }
+                            $script:State.Snapshot[$gKey]['StaticIp4'] = @{
+                                IPAddress      = [string]$manIps[0].IPAddress
+                                PrefixLength   = [int]$manIps[0].PrefixLength
+                                DefaultGateway = $gw
+                            }
+                        }
+                    }
+                } catch {}
 
                 # Eradicate manual static IP addresses and default routes that cause blackholes
                 try {
@@ -372,34 +381,48 @@ function Invoke-HealPipeline([switch]$SkipSystemStack) {
     }
 
     Write-Log 'STEP' 'LAYER 2/7  Data link & DHCP lease renewal'
-    foreach ($c in $ctxs) { [void](Refresh-ContextAdapter $c); [void](Shield-Dot3Svc $c.Ad); Shield-DataLink $c }
+    foreach ($c in $ctxs) {
+        try { [void](Refresh-ContextAdapter $c); [void](Shield-Dot3Svc $c.Ad); Shield-DataLink $c }
+        catch { Write-Log 'WARN' ("Layer 2 data link remediation failed on {0}: {1}" -f $c.Ad.Name, $_.Exception.Message) }
+    }
     Invoke-LogIntelligence $ups
     $primaryIp = Get-PrimarySourceIp
     $conn = if ($primaryIp) { (Get-InternetState -NoCache -SourceIp $primaryIp).State } else { 'Offline' }
 
     Write-Log 'STEP' 'LAYER 3/7  Gateway ARP integrity & route metrics'
-    foreach ($c in $ctxs) { [void](Refresh-ContextAdapter $c); Shield-GatewayArp $c $conn; Shield-RouteMetrics $c $conn; Shield-PathMtu $c $conn; Shield-DefaultRoutes $c }
+    foreach ($c in $ctxs) {
+        try { [void](Refresh-ContextAdapter $c); Shield-GatewayArp $c $conn; Shield-RouteMetrics $c $conn; Shield-PathMtu $c $conn; Shield-DefaultRoutes $c }
+        catch { Write-Log 'WARN' ("Layer 3 routing/ARP remediation failed on {0}: {1}" -f $c.Ad.Name, $_.Exception.Message) }
+    }
 
     Write-Log 'STEP' 'LAYER 4/7  Adaptive DNS configuration & resolver health'
-    foreach ($c in $ctxs) { [void](Refresh-ContextAdapter $c); Shield-Dns $c $conn }
+    foreach ($c in $ctxs) {
+        try { [void](Refresh-ContextAdapter $c); Shield-Dns $c $conn }
+        catch { Write-Log 'WARN' ("Layer 4 DNS configuration failed on {0}: {1}" -f $c.Ad.Name, $_.Exception.Message) }
+    }
 
     $primaryIp = Get-PrimarySourceIp
     $connAfterDns = if ($primaryIp) { (Get-InternetState -NoCache -SourceIp $primaryIp).State } else { 'Offline' }
     if ($connAfterDns -eq 'Online' -and $conn -ne 'Online') {
         $conn = 'Online'
-        foreach ($c in $ctxs) { [void](Refresh-ContextAdapter $c); Shield-RouteMetrics $c $conn; Shield-PathMtu $c $conn }
+        foreach ($c in $ctxs) {
+            try { [void](Refresh-ContextAdapter $c); Shield-RouteMetrics $c $conn; Shield-PathMtu $c $conn } catch {}
+        }
     }
 
     Write-Log 'STEP' 'LAYER 5/7  Captive portal routing & reachability'
     foreach ($c in $ctxs) { [void](Refresh-ContextAdapter $c) }
-    Shield-Portal $ctxs
+    try { Shield-Portal $ctxs } catch { Write-Log 'WARN' ("Layer 5 portal checks encountered error: {0}" -f $_.Exception.Message) }
 
     Write-Log 'STEP' 'LAYER 6/7  Network profile & firewall security'
-    foreach ($c in $ctxs) { [void](Refresh-ContextAdapter $c); Shield-Profile $c }
+    foreach ($c in $ctxs) {
+        try { [void](Refresh-ContextAdapter $c); Shield-Profile $c }
+        catch { Write-Log 'WARN' ("Layer 6 profile remediation failed on {0}: {1}" -f $c.Ad.Name, $_.Exception.Message) }
+    }
 
     Write-Log 'STEP' 'LAYER 7/7  Network stack & service synchronization'
     foreach ($c in $ctxs) { [void](Refresh-ContextAdapter $c) }
-    Shield-Services $ctxs $conn
+    try { Shield-Services $ctxs $conn } catch { Write-Log 'WARN' ("Layer 7 services remediation encountered error: {0}" -f $_.Exception.Message) }
 
     foreach ($c in $ctxs) {
         $h = Get-SubTable 'Env' ([string]$c.Ad.InterfaceGuid)
@@ -590,6 +613,7 @@ function Invoke-HeadlessPortalLogin {
         $Inet = @{ State = 'Captive'; Location = $script:Cfg.PortalUrl; Via = 'link' }
     }
     if ($Inet.State -ne 'Captive') { if ($Manual) { Write-Log 'INFO' 'This link is not behind the login page right now; nothing to do.' }; return $false }
+    if ($Inet.Location) { try { Ensure-CampusPortalPath ([uri]$Inet.Location) } catch {} }
     if ($Inet.Location -and -not (Get-CredentialPortalUrl ([string]$Inet.Location))) {
         if (Get-SafePortalUrl ([string]$Inet.Location)) { Write-Log 'INFO' 'This network login page is not the configured campus portal, so the saved password was NOT sent. Sign in in the browser (or set the portal up in config.json to allow auto sign-in here).' }
         else { Write-Log 'ALERT' 'The login redirect does not point to the campus portal: password NOT sent. Treat this network with suspicion.' }
@@ -774,27 +798,3 @@ function Wait-ForAuthentication([int]$TimeoutSec = 180) {
         $srcIp = Get-PrimarySourceIp
         $st = if ($srcIp) { (Get-InternetState -NoCache -SourceIp $srcIp).State } else { (Get-InternetState -NoCache).State }
         if ($st -eq 'Online') { Out-Line @(); return $true }
-        $t = Get-Date
-        while (((Get-Date) - $t).TotalSeconds -lt 3) {
-            $sp = $script:G.spin[$i % $script:G.spin.Count]; $i++
-            if ($script:Ui.Vt) { [Console]::Write("`r" + $script:Esc + '[2K') } else { Write-Host "`r" -NoNewline }
-            Out-Line @((Seg 'warn' ('    ' + $sp + ' ')), (Seg 'text' 'waiting for the campus login'), (Seg 'dim' ('  ' + $script:G.mid + '  {0} s left  ' -f [int]($TimeoutSec - $sw.Elapsed.TotalSeconds))), (Seg 'faint' 'any key stops')) -NoNewline
-            try { if (Test-KeyAvailable) { [void](Read-KeyNow); Out-Line @(); return $false } } catch {}
-            Start-Sleep -Milliseconds 120
-        }
-    }
-    Out-Line @()
-    return $false
-}
-function Invoke-AuthWatch {
-    $maxSec = if ($Mode -eq 'AutoHeal') { 60 } else { [int]$script:Cfg.AuthWatchSec }
-    $deadline = (Get-Date).AddSeconds($maxSec)
-    Write-Log 'INFO' 'Auth watch: waiting for portal login to switch DNS to the fast path.'
-    while ((Get-Date) -lt $deadline) {
-        Start-Sleep -Seconds 4
-        if (@(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' }).Count -eq 0) { Write-Log 'INFO' 'Auth watch: link dropped; cleaning up.'; if (Enter-Lock 10000) { try { Invoke-RoamingCleanup; Save-State } finally { Exit-Lock } }; return }
-        $srcIp = Get-PrimarySourceIp
-        $st = if ($srcIp) { (Get-InternetState -NoCache -SourceIp $srcIp).State } else { (Get-InternetState -NoCache).State }
-        if ($st -eq 'Online') {
-            if (Enter-Lock 15000) {
-                try { Complete-Authentication; Write-Log 'OK' 'Auth watch: login detected, DNS switched to post-login profile.' } finally { Exit-Lock }

@@ -1,3 +1,27 @@
+                continue
+            }
+            $script:InDashboard = $false
+            $handled = Invoke-DashboardKey $ch $adv
+            Clear-InputBuffer
+            if ($handled) {
+                Clear-Screen
+                $script:LiveGwRtt = $null
+                $t = Get-Telemetry; $adv = Get-Advice $t; $lastTel = Get-Date; $draw = $true
+            } else {
+                $script:InDashboard = $true
+            }
+        }
+    } finally {
+        $script:InDashboard = $false
+        try {
+            $intFile = Join-Path $script:StoreDir 'interactive.json'
+            if (Test-Path -LiteralPath $intFile) {
+                $meta = ConvertFrom-Json (Get-Content -LiteralPath $intFile -Raw -ErrorAction SilentlyContinue)
+                if ($meta -and $meta.Pid -eq $PID) { Remove-Item -LiteralPath $intFile -Force -ErrorAction SilentlyContinue }
+            }
+        } catch {}
+        try { if ($script:Pulse.Ping) { $script:Pulse.Ping.Dispose(); $script:Pulse.Ping = $null; $script:Pulse.Task = $null } } catch {}
+        try { [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = [System.Diagnostics.ProcessPriorityClass]::Normal } catch {}
         Exit-Screen
     }
 }

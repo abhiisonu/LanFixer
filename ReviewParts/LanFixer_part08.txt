@@ -1,3 +1,12 @@
+    if ($r -and $r.Conn -eq 'Captive' -and -not $script:IsDry) {
+        [void](Invoke-WithLock { [void](Open-Portal); Save-State })
+        if ($script:UiOn -and (Get-InternetState -NoCache).State -eq 'Captive') {
+            Out-Line @((Seg 'dim' '  Sign in on the page that opened; the fast DNS path is applied for you afterwards.'))
+            if (Wait-ForAuthentication 180) { Complete-Authentication; Write-Log 'OK' 'Signed in. Post-login DNS applied.' }
+        }
+    }
+}
+
 # ==============================================================================
 # ULTRA SYSTEM RESET - THE SUPREME HYPER-NUCLEAR REMEDIATION ENGINE
 # ==============================================================================
@@ -789,12 +798,3 @@ function Invoke-DoomsdayReset {
                         if ($gKey -and (-not $script:State.Snapshot.ContainsKey($gKey) -or -not $script:State.Snapshot[$gKey].ContainsKey('StaticIp4'))) {
                             if (-not $script:State.Snapshot.ContainsKey($gKey)) { $script:State.Snapshot[$gKey] = @{} }
                             $gws = @(Get-GatewaysV4 $ad)
-                            $gw = if ($gws.Count -gt 0) { [string]$gws[0] } else { '' }
-                            $script:State.Snapshot[$gKey]['StaticIp4'] = @{
-                                IPAddress      = [string]$manIps[0].IPAddress
-                                PrefixLength   = [int]$manIps[0].PrefixLength
-                                DefaultGateway = $gw
-                            }
-                        }
-                    }
-                } catch {}

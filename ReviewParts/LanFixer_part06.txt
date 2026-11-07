@@ -1,3 +1,6 @@
+                        Set-NetIPInterface -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -DadTransmits $orig -ErrorAction Stop
+                    })
+                }
             }
         } else { Write-Log 'INFO' 'Environment unknown: leaving duplicate-address settings untouched.' }
     }
@@ -148,7 +151,12 @@ function Shield-GatewayArp($Ctx, [string]$ConnState) {
         $dec = Get-ArpDecision ([string]$mem[$gw]) $mac $script:State.Misc['ArpCand'][$gw] (Get-Date)
         if ($dec -eq 'candidate') {
             $script:State.Misc['ArpCand'][$gw] = @{ Mac = $mac; Since = (Get-Date).ToString('o') }
-            Write-Log 'ALERT' ("Gateway {0} now answers from {1}, but it used to answer from {2}. Not locking it. If IT did not replace the router, treat this network with suspicion." -f $gw, $mac, [string]$mem[$gw])
+            $isVrrp = ($mac -match '^(?:00-00-5E-00-01|00-00-5E-00-02|00-00-0C-07-AC|00-05-73-A0)')
+            if ($isVrrp) {
+                Write-Log 'INFO' ("High-availability redundancy transition (VRRP/HSRP) detected for gateway {0}: {1} -> {2}." -f $gw, [string]$mem[$gw], $mac)
+            } else {
+                Write-Log 'ALERT' ("Gateway {0} now answers from {1}, but it used to answer from {2}. Not locking it. If IT did not replace the router, treat this network with suspicion." -f $gw, $mac, [string]$mem[$gw])
+            }
             continue
         }
         if ($dec -eq 'wait') { Write-Log 'WARN' ("Gateway {0} still answers from the new MAC {1}; it is locked only after 24 stable hours." -f $gw, $mac); continue }
@@ -377,8 +385,8 @@ function Shield-RouteMetrics($Ctx, [string]$ConnState) {
             [void](Set-InterfaceMetric $eth ([int]$plan.Ethernet) ("Ethernet {0} metric set to {1} ({2})" -f $af, $plan.Ethernet, $plan.Why))
         }
     }
-    $targetWireless = @(Get-AllWirelessAdapters)
-    $allTargetOthers = @(@($others) + @($targetWireless) | Sort-Object ifIndex -Unique)
+    $targetWireless = @(Get-AllWirelessAdapters | Where-Object { $_.Status -eq 'Up' })
+    $allTargetOthers = @(@($others | Where-Object { $_.Status -eq 'Up' }) + @($targetWireless) | Sort-Object ifIndex -Unique)
     foreach ($w in $allTargetOthers) {
         foreach ($af in @('IPv4', 'IPv6')) {
             $wi = Get-NetIPInterface -InterfaceIndex $w.ifIndex -AddressFamily $af -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -442,6 +450,7 @@ function Measure-ResolversFast([string[]]$Servers, [int]$TimeoutMs = 600, [int]$
                     catch { if ($u) { try { $u.Close() } catch {} }; $u = $null }
                 }
                 if (-not $u) { $u = New-Object System.Net.Sockets.UdpClient }
+                try { $u.Client.ReceiveBufferSize = 4096; $u.Client.SendBufferSize = 4096 } catch {}
                 $u.Connect($s, $Port)
                 [void]$u.Send($pkt, $pkt.Length)
                 $pending[$s] = @{ U = $u; SW = [System.Diagnostics.Stopwatch]::StartNew() }
@@ -789,12 +798,3 @@ function Shield-Dns($Ctx, [string]$ConnState) {
                 $dead = @($cands | Where-Object { $null -eq $scores[$_] })
                 if ($live.Count -gt 0) {
                     $order = @($live + $dead)
-                    $phase = 'Campus'
-                } else {
-                    $order = @(Get-BestDnsOrder $guid $campus)
-                    if (@($order | Where-Object { $campus -notcontains $_ }).Count -gt 0) { $phase = 'Public' } else { $phase = 'Campus' }
-                }
-            }
-        }
-    }
-    $order = @($order | Select-Object -Unique)

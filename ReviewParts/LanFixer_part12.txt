@@ -1,3 +1,27 @@
+            $iRoam = $seg.IndexOf('Invoke-RoamingCleanup')
+            $iStack = $seg.IndexOf('Shield-SystemStack')
+            $seqOk = ($iRoam -ge 0 -and $iStack -ge 0 -and $iRoam -lt $iStack)
+        }
+        $ssIdx = $srcTxt.IndexOf('function Shield-SystemStack')
+        if ($ssIdx -ge 0) {
+            $seg2 = $srcTxt.Substring($ssIdx, [Math]::Min(16000, $srcTxt.Length - $ssIdx))
+            $unsaved = 0
+            $pos = 0
+            while (($pos = $seg2.IndexOf('Set-DnsClientServerAddress', $pos)) -ge 0) {
+                $from = [Math]::Max(0, $pos - 900)
+                if ($seg2.Substring($from, $pos - $from).IndexOf('Save-Original') -lt 0) { $unsaved++ }
+                $pos += 20
+            }
+            $stackSnapOk = ($unsaved -eq 0)
+        }
+        Write-Check 'Logic: unplugged Heal restores 3rd-party services BEFORE Shield-SystemStack' $seqOk
+        Write-Check 'Logic: every Shield-SystemStack DNS write snapshots the original first' $stackSnapOk
+    } else {
+        Write-Check 'Logic: source-order guards (script source not readable)' $true $true 'run from a readable file to check this'
+    }
+    # v4.6.0: S6 long unbreakable token/URL wrap test (must never exceed Width)
+    $longUrl = 'https://gateway.nitjsr.ac.in:8003/index.php?zone=nitjsr&redirurl=https%3A%2F%2Fwww.example.com%2Fvery%2Flong%2Fpath%2Fsegment%2Fthat%2Fhas%2Fno%2Fspaces'
+    $wrappedUrl = @(Split-Words $longUrl 30 99)
     Write-Check 'UI: Split-Words slices unbreakable 150-char URLs so no line exceeds Width' ((@($wrappedUrl | Where-Object { $_.Length -gt 30 }).Count -eq 0) -and (($wrappedUrl -join '') -ceq $longUrl))
     # v4.6.0: S7 LF-only chunked transfer decoding & HTML5 formless password input fallback
     $lfChunk = [System.Text.Encoding]::ASCII.GetBytes("5`nhello`n6`n world`n0`n`n")
@@ -774,27 +798,3 @@ function Capture-PreflightSnapshot($Ad) {
     } catch {}
     try { $snap.Gateways = @(Get-GatewaysV4 $Ad) } catch {}
     try {
-        $dns = Get-DnsClientServerAddress -InterfaceIndex $Ad.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue
-        if ($dns) { $snap.Dns = @($dns.ServerAddresses) }
-    } catch {}
-    try {
-        $ipif = Get-IPv4Interface $Ad
-        if ($ipif) {
-            $snap.Metric = [int]$ipif.InterfaceMetric
-            $snap.Mtu    = [int]$ipif.NlMtu
-        }
-    } catch {}
-    try {
-        $routes = @(Get-NetRoute -InterfaceIndex $Ad.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue)
-        foreach ($rt in $routes) {
-            $snap.Routes += @{
-                DestinationPrefix = [string]$rt.DestinationPrefix
-                NextHop           = [string]$rt.NextHop
-                RouteMetric       = [int]$rt.RouteMetric
-            }
-        }
-    } catch {}
-    return $snap
-}
-
-function Restore-PreflightSnapshot($Snapshot) {

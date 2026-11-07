@@ -1,3 +1,27 @@
+            [void](Restore-ManagedAdapterDns 'Reset DHCP')
+            # 2. Forget all DNS management and return to the default recommended profile.
+            $script:State.Dns = @{}
+            $script:State.Misc['DnsProfile'] = 'Adaptive'
+            Remove-CampusNrpt
+            foreach ($a in @(Get-EthernetAdapters)) { [void](Set-AdapterDnsAutomatic $a) }
+            # The reset helpers mark an adapter managed while they write; here the user asked to FORGET DNS management,
+            # so no flag may survive: otherwise a later roaming cleanup would put a stale substituted resolver back.
+            if (-not $script:IsDry) { $script:State.Dns = @{} }
+            Clear-DnsClientCache -ErrorAction SilentlyContinue
+            if (-not $script:IsDry) { Save-State }
+            Write-Log 'OK' 'Cleared all custom DNS rules, reset adapters to automatic DHCP, and restored Adaptive profile.'
+        } else {
+            $script:State.Misc['DnsProfile'] = $Name
+            if (-not $script:IsDry) { Save-State }
+            Apply-DnsNow
+            Write-Log 'OK' "DNS profile is now: $Name"
+        }
+    })
+}
+function Set-RouteProfileMode([string]$Name) {
+    if (-not (Assert-Admin)) { return }
+    $valid = @('Adaptive', 'Ethernet', 'Wifi', 'Windows')
+    if ($valid -notcontains $Name) { Write-Log 'WARN' "Unknown routing profile '$Name'. Valid: $($valid -join ', ')"; return }
     [void](Invoke-WithLock {
         $script:State.Misc['RouteProfile'] = $Name
         Write-Log 'OK' "Routing priority profile is now: $Name"
@@ -61,7 +85,7 @@ function Get-PathMtu([string]$Target) {
         param($Size)
         $buf = New-Object byte[] $Size
         for ($k = 0; $k -lt 3; $k++) {
-            try { $r = $p.Send($Target, 900, $buf, $opt); if ($r.Status -eq [System.Net.NetworkInformation.IPStatus]::Success) { return $true } } catch {}
+            try { $r = $p.Send($Target, 450, $buf, $opt); if ($r.Status -eq [System.Net.NetworkInformation.IPStatus]::Success) { return $true } } catch {}
         }
         return $false
     }
@@ -774,27 +798,3 @@ function Invoke-LogicTests {
             $seg = $srcTxt.Substring($hp, [Math]::Min(6000, $srcTxt.Length - $hp))
             $end = $seg.IndexOf("`n}")
             if ($end -gt 0) { $seg = $seg.Substring(0, $end) }
-            $iRoam = $seg.IndexOf('Invoke-RoamingCleanup')
-            $iStack = $seg.IndexOf('Shield-SystemStack')
-            $seqOk = ($iRoam -ge 0 -and $iStack -ge 0 -and $iRoam -lt $iStack)
-        }
-        $ssIdx = $srcTxt.IndexOf('function Shield-SystemStack')
-        if ($ssIdx -ge 0) {
-            $seg2 = $srcTxt.Substring($ssIdx, [Math]::Min(16000, $srcTxt.Length - $ssIdx))
-            $unsaved = 0
-            $pos = 0
-            while (($pos = $seg2.IndexOf('Set-DnsClientServerAddress', $pos)) -ge 0) {
-                $from = [Math]::Max(0, $pos - 900)
-                if ($seg2.Substring($from, $pos - $from).IndexOf('Save-Original') -lt 0) { $unsaved++ }
-                $pos += 20
-            }
-            $stackSnapOk = ($unsaved -eq 0)
-        }
-        Write-Check 'Logic: unplugged Heal restores 3rd-party services BEFORE Shield-SystemStack' $seqOk
-        Write-Check 'Logic: every Shield-SystemStack DNS write snapshots the original first' $stackSnapOk
-    } else {
-        Write-Check 'Logic: source-order guards (script source not readable)' $true $true 'run from a readable file to check this'
-    }
-    # v4.6.0: S6 long unbreakable token/URL wrap test (must never exceed Width)
-    $longUrl = 'https://gateway.nitjsr.ac.in:8003/index.php?zone=nitjsr&redirurl=https%3A%2F%2Fwww.example.com%2Fvery%2Flong%2Fpath%2Fsegment%2Fthat%2Fhas%2Fno%2Fspaces'
-    $wrappedUrl = @(Split-Words $longUrl 30 99)

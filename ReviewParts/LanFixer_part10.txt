@@ -1,3 +1,27 @@
+        $t = Get-Date
+        while (((Get-Date) - $t).TotalSeconds -lt 3) {
+            $sp = $script:G.spin[$i % $script:G.spin.Count]; $i++
+            if ($script:Ui.Vt) { [Console]::Write("`r" + $script:Esc + '[2K') } else { Write-Host "`r" -NoNewline }
+            Out-Line @((Seg 'warn' ('    ' + $sp + ' ')), (Seg 'text' 'waiting for the campus login'), (Seg 'dim' ('  ' + $script:G.mid + '  {0} s left  ' -f [int]($TimeoutSec - $sw.Elapsed.TotalSeconds))), (Seg 'faint' 'any key stops')) -NoNewline
+            try { if (Test-KeyAvailable) { [void](Read-KeyNow); Out-Line @(); return $false } } catch {}
+            Start-Sleep -Milliseconds 120
+        }
+    }
+    Out-Line @()
+    return $false
+}
+function Invoke-AuthWatch {
+    $maxSec = if ($Mode -eq 'AutoHeal') { 60 } else { [int]$script:Cfg.AuthWatchSec }
+    $deadline = (Get-Date).AddSeconds($maxSec)
+    Write-Log 'INFO' 'Auth watch: waiting for portal login to switch DNS to the fast path.'
+    while ((Get-Date) -lt $deadline) {
+        Start-Sleep -Seconds 4
+        if (@(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' }).Count -eq 0) { Write-Log 'INFO' 'Auth watch: link dropped; cleaning up.'; if (Enter-Lock 10000) { try { Invoke-RoamingCleanup; Save-State } finally { Exit-Lock } }; return }
+        $srcIp = Get-PrimarySourceIp
+        $st = if ($srcIp) { (Get-InternetState -NoCache -SourceIp $srcIp).State } else { (Get-InternetState -NoCache).State }
+        if ($st -eq 'Online') {
+            if (Enter-Lock 15000) {
+                try { Complete-Authentication; Write-Log 'OK' 'Auth watch: login detected, DNS switched to post-login profile.' } finally { Exit-Lock }
             }
             return
         }
@@ -774,27 +798,3 @@ function Set-DnsProfileMode([string]$Name) {
             # 1. Hand every adapter this tool substituted a resolver on back to the user's OWN value first. The managed
             #    flags are the only record of which adapters those are, so this must run BEFORE the wipe below - and it
             #    is what stops a Wi-Fi / USB-tethering / Bluetooth-PAN resolver from being orphaned by this reset.
-            [void](Restore-ManagedAdapterDns 'Reset DHCP')
-            # 2. Forget all DNS management and return to the default recommended profile.
-            $script:State.Dns = @{}
-            $script:State.Misc['DnsProfile'] = 'Adaptive'
-            Remove-CampusNrpt
-            foreach ($a in @(Get-EthernetAdapters)) { [void](Set-AdapterDnsAutomatic $a) }
-            # The reset helpers mark an adapter managed while they write; here the user asked to FORGET DNS management,
-            # so no flag may survive: otherwise a later roaming cleanup would put a stale substituted resolver back.
-            if (-not $script:IsDry) { $script:State.Dns = @{} }
-            Clear-DnsClientCache -ErrorAction SilentlyContinue
-            if (-not $script:IsDry) { Save-State }
-            Write-Log 'OK' 'Cleared all custom DNS rules, reset adapters to automatic DHCP, and restored Adaptive profile.'
-        } else {
-            $script:State.Misc['DnsProfile'] = $Name
-            if (-not $script:IsDry) { Save-State }
-            Apply-DnsNow
-            Write-Log 'OK' "DNS profile is now: $Name"
-        }
-    })
-}
-function Set-RouteProfileMode([string]$Name) {
-    if (-not (Assert-Admin)) { return }
-    $valid = @('Adaptive', 'Ethernet', 'Wifi', 'Windows')
-    if ($valid -notcontains $Name) { Write-Log 'WARN' "Unknown routing profile '$Name'. Valid: $($valid -join ', ')"; return }

@@ -3267,7 +3267,11 @@ function Test-GatewayAlive($Ad, [string]$Gw) {
         }
         return @{ Alive = $false; Rtt = $null; Via = '' }
     }
-    if ($script:IsAdmin -and -not $script:IsDry -and $ex -and [string]$ex.State -ne 'Permanent') {
+    $gwSrc = [string](Get-ValidIPv4 $Ad)
+    if ($gwSrc -and ((Test-TcpPort $Gw 80 350 $gwSrc) -or (Test-TcpPort $Gw 443 350 $gwSrc) -or (Test-TcpPort $Gw 53 350 $gwSrc))) {
+        return @{ Alive = $true; Rtt = $null; Via = 'tcp' }
+    }
+    if ($script:IsAdmin -and -not $script:IsDry -and $ex -and @('Unreachable','Incomplete') -contains [string]$ex.State) {
         Remove-NetNeighbor -InterfaceIndex $Ad.ifIndex -IPAddress $Gw -Confirm:$false -ErrorAction SilentlyContinue
     }
     [void](Test-Ping $Gw 700)
@@ -3673,8 +3677,6 @@ function Optimize-PhySiliconBuffers($Ad) {
         return $false
     }
     $health = Test-NdisLinkHealth $Ad
-    if ($health.Discards -lt 1000) { return $false }
-
     $guid = [string]$Ad.InterfaceGuid
     $modified = $false
     $rxKw = '*ReceiveBuffers'
@@ -3688,10 +3690,11 @@ function Optimize-PhySiliconBuffers($Ad) {
         try { $cur = [int](@($p.RegistryValue) | Select-Object -First 1) } catch { $cur = $null }
         if ($null -eq $cur) { continue }
 
+        if ($health.Discards -lt 500 -and $cur -ge 512) { continue }
         $target = if ($cur -lt 512) { 512 } elseif ($cur -lt 1024) { 1024 } else { 2048 }
         if ($target -gt $cur) {
             Save-Original $guid ("Adv:" + $kw) [string]$cur
-            $ok = Invoke-Change ("Scaled ring buffer {0} from {1} to {2} on {3} (NDIS discard mitigation)" -f $kw, $cur, $target, $Ad.Name) {
+            $ok = Invoke-Change ("Scaled ring buffer {0} from {1} to {2} on {3} (NDIS burst buffer optimization)" -f $kw, $cur, $target, $Ad.Name) {
                 Set-NetAdapterAdvancedProperty -Name $Ad.Name -RegistryKeyword $kw -RegistryValue @([string]$target) -NoRestart -ErrorAction Stop
             }
             if ($ok) { $modified = $true; $script:PendingRestart[$guid] = $Ad.Name }
@@ -4148,7 +4151,12 @@ function Shield-GatewayArp($Ctx, [string]$ConnState) {
         $dec = Get-ArpDecision ([string]$mem[$gw]) $mac $script:State.Misc['ArpCand'][$gw] (Get-Date)
         if ($dec -eq 'candidate') {
             $script:State.Misc['ArpCand'][$gw] = @{ Mac = $mac; Since = (Get-Date).ToString('o') }
-            Write-Log 'ALERT' ("Gateway {0} now answers from {1}, but it used to answer from {2}. Not locking it. If IT did not replace the router, treat this network with suspicion." -f $gw, $mac, [string]$mem[$gw])
+            $isVrrp = ($mac -match '^(?:00-00-5E-00-01|00-00-5E-00-02|00-00-0C-07-AC|00-05-73-A0)')
+            if ($isVrrp) {
+                Write-Log 'INFO' ("High-availability redundancy transition (VRRP/HSRP) detected for gateway {0}: {1} -> {2}." -f $gw, [string]$mem[$gw], $mac)
+            } else {
+                Write-Log 'ALERT' ("Gateway {0} now answers from {1}, but it used to answer from {2}. Not locking it. If IT did not replace the router, treat this network with suspicion." -f $gw, $mac, [string]$mem[$gw])
+            }
             continue
         }
         if ($dec -eq 'wait') { Write-Log 'WARN' ("Gateway {0} still answers from the new MAC {1}; it is locked only after 24 stable hours." -f $gw, $mac); continue }
@@ -4377,8 +4385,8 @@ function Shield-RouteMetrics($Ctx, [string]$ConnState) {
             [void](Set-InterfaceMetric $eth ([int]$plan.Ethernet) ("Ethernet {0} metric set to {1} ({2})" -f $af, $plan.Ethernet, $plan.Why))
         }
     }
-    $targetWireless = @(Get-AllWirelessAdapters)
-    $allTargetOthers = @(@($others) + @($targetWireless) | Sort-Object ifIndex -Unique)
+    $targetWireless = @(Get-AllWirelessAdapters | Where-Object { $_.Status -eq 'Up' })
+    $allTargetOthers = @(@($others | Where-Object { $_.Status -eq 'Up' }) + @($targetWireless) | Sort-Object ifIndex -Unique)
     foreach ($w in $allTargetOthers) {
         foreach ($af in @('IPv4', 'IPv6')) {
             $wi = Get-NetIPInterface -InterfaceIndex $w.ifIndex -AddressFamily $af -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -4442,6 +4450,7 @@ function Measure-ResolversFast([string[]]$Servers, [int]$TimeoutMs = 600, [int]$
                     catch { if ($u) { try { $u.Close() } catch {} }; $u = $null }
                 }
                 if (-not $u) { $u = New-Object System.Net.Sockets.UdpClient }
+                try { $u.Client.ReceiveBufferSize = 4096; $u.Client.SendBufferSize = 4096 } catch {}
                 $u.Connect($s, $Port)
                 [void]$u.Send($pkt, $pkt.Length)
                 $pending[$s] = @{ U = $u; SW = [System.Diagnostics.Stopwatch]::StartNew() }
@@ -5130,9 +5139,9 @@ function Shield-TcpKeepAlive($Ctxs) {
 function Shield-TcpAutoTuning {
     try {
         $tcpSetting = Get-NetTCPSetting -SettingName Internet -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($tcpSetting -and [string]$tcpSetting.AutoTuningLevelLocal -eq 'Disabled') {
-            Save-Original 'Global' 'TcpAutoTuning' 'Disabled'
-            [void](Invoke-Change 'TCP Window Auto-Tuning restored to Normal (was Disabled by third-party optimizer)' {
+        if ($tcpSetting -and (@('Disabled', 'HighlyRestricted', 'Restricted') -contains [string]$tcpSetting.AutoTuningLevelLocal)) {
+            Save-Original 'Global' 'TcpAutoTuning' ([string]$tcpSetting.AutoTuningLevelLocal)
+            [void](Invoke-Change ("TCP Window Auto-Tuning restored to Normal (was {0})" -f [string]$tcpSetting.AutoTuningLevelLocal) {
                 Set-NetTCPSetting -SettingName Internet -AutoTuningLevelLocal Normal -ErrorAction Stop
             })
         }
@@ -6772,34 +6781,48 @@ function Invoke-HealPipeline([switch]$SkipSystemStack) {
     }
 
     Write-Log 'STEP' 'LAYER 2/7  Data link & DHCP lease renewal'
-    foreach ($c in $ctxs) { [void](Refresh-ContextAdapter $c); [void](Shield-Dot3Svc $c.Ad); Shield-DataLink $c }
+    foreach ($c in $ctxs) {
+        try { [void](Refresh-ContextAdapter $c); [void](Shield-Dot3Svc $c.Ad); Shield-DataLink $c }
+        catch { Write-Log 'WARN' ("Layer 2 data link remediation failed on {0}: {1}" -f $c.Ad.Name, $_.Exception.Message) }
+    }
     Invoke-LogIntelligence $ups
     $primaryIp = Get-PrimarySourceIp
     $conn = if ($primaryIp) { (Get-InternetState -NoCache -SourceIp $primaryIp).State } else { 'Offline' }
 
     Write-Log 'STEP' 'LAYER 3/7  Gateway ARP integrity & route metrics'
-    foreach ($c in $ctxs) { [void](Refresh-ContextAdapter $c); Shield-GatewayArp $c $conn; Shield-RouteMetrics $c $conn; Shield-PathMtu $c $conn; Shield-DefaultRoutes $c }
+    foreach ($c in $ctxs) {
+        try { [void](Refresh-ContextAdapter $c); Shield-GatewayArp $c $conn; Shield-RouteMetrics $c $conn; Shield-PathMtu $c $conn; Shield-DefaultRoutes $c }
+        catch { Write-Log 'WARN' ("Layer 3 routing/ARP remediation failed on {0}: {1}" -f $c.Ad.Name, $_.Exception.Message) }
+    }
 
     Write-Log 'STEP' 'LAYER 4/7  Adaptive DNS configuration & resolver health'
-    foreach ($c in $ctxs) { [void](Refresh-ContextAdapter $c); Shield-Dns $c $conn }
+    foreach ($c in $ctxs) {
+        try { [void](Refresh-ContextAdapter $c); Shield-Dns $c $conn }
+        catch { Write-Log 'WARN' ("Layer 4 DNS configuration failed on {0}: {1}" -f $c.Ad.Name, $_.Exception.Message) }
+    }
 
     $primaryIp = Get-PrimarySourceIp
     $connAfterDns = if ($primaryIp) { (Get-InternetState -NoCache -SourceIp $primaryIp).State } else { 'Offline' }
     if ($connAfterDns -eq 'Online' -and $conn -ne 'Online') {
         $conn = 'Online'
-        foreach ($c in $ctxs) { [void](Refresh-ContextAdapter $c); Shield-RouteMetrics $c $conn; Shield-PathMtu $c $conn }
+        foreach ($c in $ctxs) {
+            try { [void](Refresh-ContextAdapter $c); Shield-RouteMetrics $c $conn; Shield-PathMtu $c $conn } catch {}
+        }
     }
 
     Write-Log 'STEP' 'LAYER 5/7  Captive portal routing & reachability'
     foreach ($c in $ctxs) { [void](Refresh-ContextAdapter $c) }
-    Shield-Portal $ctxs
+    try { Shield-Portal $ctxs } catch { Write-Log 'WARN' ("Layer 5 portal checks encountered error: {0}" -f $_.Exception.Message) }
 
     Write-Log 'STEP' 'LAYER 6/7  Network profile & firewall security'
-    foreach ($c in $ctxs) { [void](Refresh-ContextAdapter $c); Shield-Profile $c }
+    foreach ($c in $ctxs) {
+        try { [void](Refresh-ContextAdapter $c); Shield-Profile $c }
+        catch { Write-Log 'WARN' ("Layer 6 profile remediation failed on {0}: {1}" -f $c.Ad.Name, $_.Exception.Message) }
+    }
 
     Write-Log 'STEP' 'LAYER 7/7  Network stack & service synchronization'
     foreach ($c in $ctxs) { [void](Refresh-ContextAdapter $c) }
-    Shield-Services $ctxs $conn
+    try { Shield-Services $ctxs $conn } catch { Write-Log 'WARN' ("Layer 7 services remediation encountered error: {0}" -f $_.Exception.Message) }
 
     foreach ($c in $ctxs) {
         $h = Get-SubTable 'Env' ([string]$c.Ad.InterfaceGuid)
@@ -6990,6 +7013,7 @@ function Invoke-HeadlessPortalLogin {
         $Inet = @{ State = 'Captive'; Location = $script:Cfg.PortalUrl; Via = 'link' }
     }
     if ($Inet.State -ne 'Captive') { if ($Manual) { Write-Log 'INFO' 'This link is not behind the login page right now; nothing to do.' }; return $false }
+    if ($Inet.Location) { try { Ensure-CampusPortalPath ([uri]$Inet.Location) } catch {} }
     if ($Inet.Location -and -not (Get-CredentialPortalUrl ([string]$Inet.Location))) {
         if (Get-SafePortalUrl ([string]$Inet.Location)) { Write-Log 'INFO' 'This network login page is not the configured campus portal, so the saved password was NOT sent. Sign in in the browser (or set the portal up in config.json to allow auto sign-in here).' }
         else { Write-Log 'ALERT' 'The login redirect does not point to the campus portal: password NOT sent. Treat this network with suspicion.' }
@@ -8061,7 +8085,7 @@ function Get-PathMtu([string]$Target) {
         param($Size)
         $buf = New-Object byte[] $Size
         for ($k = 0; $k -lt 3; $k++) {
-            try { $r = $p.Send($Target, 900, $buf, $opt); if ($r.Status -eq [System.Net.NetworkInformation.IPStatus]::Success) { return $true } } catch {}
+            try { $r = $p.Send($Target, 450, $buf, $opt); if ($r.Status -eq [System.Net.NetworkInformation.IPStatus]::Success) { return $true } } catch {}
         }
         return $false
     }

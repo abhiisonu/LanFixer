@@ -67,7 +67,11 @@ function Test-GatewayAlive($Ad, [string]$Gw) {
         }
         return @{ Alive = $false; Rtt = $null; Via = '' }
     }
-    if ($script:IsAdmin -and -not $script:IsDry -and $ex -and [string]$ex.State -ne 'Permanent') {
+    $gwSrc = [string](Get-ValidIPv4 $Ad)
+    if ($gwSrc -and ((Test-TcpPort $Gw 80 350 $gwSrc) -or (Test-TcpPort $Gw 443 350 $gwSrc) -or (Test-TcpPort $Gw 53 350 $gwSrc))) {
+        return @{ Alive = $true; Rtt = $null; Via = 'tcp' }
+    }
+    if ($script:IsAdmin -and -not $script:IsDry -and $ex -and @('Unreachable','Incomplete') -contains [string]$ex.State) {
         Remove-NetNeighbor -InterfaceIndex $Ad.ifIndex -IPAddress $Gw -Confirm:$false -ErrorAction SilentlyContinue
     }
     [void](Test-Ping $Gw 700)
@@ -473,8 +477,6 @@ function Optimize-PhySiliconBuffers($Ad) {
         return $false
     }
     $health = Test-NdisLinkHealth $Ad
-    if ($health.Discards -lt 1000) { return $false }
-
     $guid = [string]$Ad.InterfaceGuid
     $modified = $false
     $rxKw = '*ReceiveBuffers'
@@ -488,10 +490,11 @@ function Optimize-PhySiliconBuffers($Ad) {
         try { $cur = [int](@($p.RegistryValue) | Select-Object -First 1) } catch { $cur = $null }
         if ($null -eq $cur) { continue }
 
+        if ($health.Discards -lt 500 -and $cur -ge 512) { continue }
         $target = if ($cur -lt 512) { 512 } elseif ($cur -lt 1024) { 1024 } else { 2048 }
         if ($target -gt $cur) {
             Save-Original $guid ("Adv:" + $kw) [string]$cur
-            $ok = Invoke-Change ("Scaled ring buffer {0} from {1} to {2} on {3} (NDIS discard mitigation)" -f $kw, $cur, $target, $Ad.Name) {
+            $ok = Invoke-Change ("Scaled ring buffer {0} from {1} to {2} on {3} (NDIS burst buffer optimization)" -f $kw, $cur, $target, $Ad.Name) {
                 Set-NetAdapterAdvancedProperty -Name $Ad.Name -RegistryKeyword $kw -RegistryValue @([string]$target) -NoRestart -ErrorAction Stop
             }
             if ($ok) { $modified = $true; $script:PendingRestart[$guid] = $Ad.Name }
@@ -795,6 +798,3 @@ function Shield-DataLink($Ctx) {
                 $orig = if ($snap.ContainsKey('Dad4')) { [int]$snap['Dad4'] } else { [int]$script:Cfg.DefaultDad }
                 if (-not $dupNow -and $cur -eq [int]$script:Cfg.CampusDad -and $orig -ne $cur) {
                     [void](Invoke-Change "Non-campus network: duplicate-address probes restored to $orig on $($ad.Name)" {
-                        Set-NetIPInterface -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -DadTransmits $orig -ErrorAction Stop
-                    })
-                }

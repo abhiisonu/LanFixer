@@ -1,3 +1,12 @@
+                    $phase = 'Campus'
+                } else {
+                    $order = @(Get-BestDnsOrder $guid $campus)
+                    if (@($order | Where-Object { $campus -notcontains $_ }).Count -gt 0) { $phase = 'Public' } else { $phase = 'Campus' }
+                }
+            }
+        }
+    }
+    $order = @($order | Select-Object -Unique)
     if ($phase -eq 'Auto') {
         if (-not (Set-AdapterDnsAutomatic $ad)) { Write-Log 'INFO' "DNS already automatic on $($ad.Name) (profile $prof)." }
         Remove-CampusNrpt
@@ -330,9 +339,9 @@ function Shield-TcpKeepAlive($Ctxs) {
 function Shield-TcpAutoTuning {
     try {
         $tcpSetting = Get-NetTCPSetting -SettingName Internet -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($tcpSetting -and [string]$tcpSetting.AutoTuningLevelLocal -eq 'Disabled') {
-            Save-Original 'Global' 'TcpAutoTuning' 'Disabled'
-            [void](Invoke-Change 'TCP Window Auto-Tuning restored to Normal (was Disabled by third-party optimizer)' {
+        if ($tcpSetting -and (@('Disabled', 'HighlyRestricted', 'Restricted') -contains [string]$tcpSetting.AutoTuningLevelLocal)) {
+            Save-Original 'Global' 'TcpAutoTuning' ([string]$tcpSetting.AutoTuningLevelLocal)
+            [void](Invoke-Change ("TCP Window Auto-Tuning restored to Normal (was {0})" -f [string]$tcpSetting.AutoTuningLevelLocal) {
                 Set-NetTCPSetting -SettingName Internet -AutoTuningLevelLocal Normal -ErrorAction Stop
             })
         }
@@ -789,12 +798,3 @@ function Invoke-SupremeOmnifix {
     $swOmni.Stop()
     Write-HealSummary $r $swOmni
     # Lock is now released before the 180s human browser wait so background watchdog passes never block!
-    if ($r -and $r.Conn -eq 'Captive' -and -not $script:IsDry) {
-        [void](Invoke-WithLock { [void](Open-Portal); Save-State })
-        if ($script:UiOn -and (Get-InternetState -NoCache).State -eq 'Captive') {
-            Out-Line @((Seg 'dim' '  Sign in on the page that opened; the fast DNS path is applied for you afterwards.'))
-            if (Wait-ForAuthentication 180) { Complete-Authentication; Write-Log 'OK' 'Signed in. Post-login DNS applied.' }
-        }
-    }
-}
-

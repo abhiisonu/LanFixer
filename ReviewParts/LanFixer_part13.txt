@@ -1,3 +1,27 @@
+        $dns = Get-DnsClientServerAddress -InterfaceIndex $Ad.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue
+        if ($dns) { $snap.Dns = @($dns.ServerAddresses) }
+    } catch {}
+    try {
+        $ipif = Get-IPv4Interface $Ad
+        if ($ipif) {
+            $snap.Metric = [int]$ipif.InterfaceMetric
+            $snap.Mtu    = [int]$ipif.NlMtu
+        }
+    } catch {}
+    try {
+        $routes = @(Get-NetRoute -InterfaceIndex $Ad.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue)
+        foreach ($rt in $routes) {
+            $snap.Routes += @{
+                DestinationPrefix = [string]$rt.DestinationPrefix
+                NextHop           = [string]$rt.NextHop
+                RouteMetric       = [int]$rt.RouteMetric
+            }
+        }
+    } catch {}
+    return $snap
+}
+
+function Restore-PreflightSnapshot($Snapshot) {
     if (-not $Snapshot -or -not $Snapshot.ifIndex) { return $false }
     $ifIdx = [int]$Snapshot.ifIndex
     $adName = [string]$Snapshot.Name
@@ -774,27 +798,3 @@ function Start-Interactive {
                 $adv = Get-Advice $t
                 $lastTel = Get-Date
                 $draw = $true
-                continue
-            }
-            $script:InDashboard = $false
-            $handled = Invoke-DashboardKey $ch $adv
-            Clear-InputBuffer
-            if ($handled) {
-                Clear-Screen
-                $script:LiveGwRtt = $null
-                $t = Get-Telemetry; $adv = Get-Advice $t; $lastTel = Get-Date; $draw = $true
-            } else {
-                $script:InDashboard = $true
-            }
-        }
-    } finally {
-        $script:InDashboard = $false
-        try {
-            $intFile = Join-Path $script:StoreDir 'interactive.json'
-            if (Test-Path -LiteralPath $intFile) {
-                $meta = ConvertFrom-Json (Get-Content -LiteralPath $intFile -Raw -ErrorAction SilentlyContinue)
-                if ($meta -and $meta.Pid -eq $PID) { Remove-Item -LiteralPath $intFile -Force -ErrorAction SilentlyContinue }
-            }
-        } catch {}
-        try { if ($script:Pulse.Ping) { $script:Pulse.Ping.Dispose(); $script:Pulse.Ping = $null; $script:Pulse.Task = $null } } catch {}
-        try { [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = [System.Diagnostics.ProcessPriorityClass]::Normal } catch {}
