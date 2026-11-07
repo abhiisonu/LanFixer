@@ -1,3 +1,147 @@
+            })
+        }
+    }
+    # 4. Always remove DisableSmartNameResolution so Wi-Fi/Bluetooth tethering DNS never gets locked out
+    Shield-SmartDns @()
+    # 5. Safely manage Wi-Fi / Secondary Uplink DNS: try DHCP first, and if DNS still fails on non-campus hotspot, set resilient public DNS (8.8.8.8, 1.1.1.1)
+    $otherUps = @(Get-OtherUplinkAdapters)
+    if ($otherUps.Count -gt 0) {
+        foreach ($ou in $otherUps) {
+            $ouGuid = [string]$ou.InterfaceGuid
+            $ouStatic = Get-StaticDnsString $ouGuid
+            $ouDns = @((Get-DnsClientServerAddress -InterfaceIndex $ou.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses)
+            $ouDhcp = @(Get-DhcpDnsServers $ouGuid)
+            $stuckCampus = ($ouStatic -and ($ouDns -contains $script:Cfg.CampusDns -or $ouDns -contains $script:Cfg.PortalIp) -and ($ouDhcp -notcontains $script:Cfg.CampusDns))
+            $ouSrc = Get-ValidIPv4 $ou
+            $ouDead = $false
+            if ($ouSrc) {
+                $ouAns = @(Get-ScopedDnsAnswers 'accounts.google.com' $ouSrc 1500)
+                if ($ouAns.Count -eq 0) { $ouDead = $true }
+            }
+            if ($stuckCampus -or $ouDead) {
+                [void](Set-AdapterDnsAutomatic $ou)
+                Clear-DnsClientCache -ErrorAction SilentlyContinue
+                if (-not $script:IsDry -and $ouSrc) {
+                    $recheck = @(Get-ScopedDnsAnswers 'accounts.google.com' $ouSrc 1500)
+                    if ($recheck.Count -eq 0) {
+                        $ouEnv = (Get-AdapterEnvironment $ou).Env
+                        if ($ouEnv -ne 'Campus') {
+                            $fallbackDns = @()
+                            $dhcpDns = @(Get-DhcpDnsServers $ouGuid | Where-Object { $_ -ne $script:Cfg.CampusDns -and $_ -ne $script:Cfg.PortalIp })
+                            if ($dhcpDns.Count -gt 0) { $fallbackDns = $dhcpDns }
+                            elseif ($ou.IPv4DefaultGateway) { $fallbackDns = @($ou.IPv4DefaultGateway) }
+                            else { $fallbackDns = @('8.8.8.8','1.1.1.1') }
+                            [void](Set-AdapterDns $ou $fallbackDns)
+                        }
+                        Clear-DnsClientCache -ErrorAction SilentlyContinue
+                    }
+                }
+            }
+        }
+    }
+}
+
+function Invoke-SupremeOmnifix {
+    if (-not (Assert-Admin)) { return }
+    $swOmni = [System.Diagnostics.Stopwatch]::StartNew()
+    Write-Section 'FULL NET RESET (5-STAGE DEEP RECOVERY)'
+    $r = Pick-Hash (Invoke-WithLock {
+        Write-Log 'STEP' 'STAGE 1/5  Cycling PnP hardware transceiver, rescanning bus & neutralizing WFP DNS interceptors / proxies'
+        if (-not $script:IsDry) {
+            foreach ($oa in @(Get-EthernetAdapters)) { Reset-PhysicalAdapterHardware $oa }
+            [void](Invoke-Native (Get-SysExe 'pnputil.exe') @('/scan-devices') 5000)
+        }
+        $script:ConnCache = $null
+        $script:EnvCache = @{}
+        if (-not $script:IsDry) {
+            $script:State.Misc['RouteProfile'] = 'Adaptive'
+            $script:State.Misc['DnsProfile'] = 'Adaptive'
+            $script:State.Misc['FailStreak'] = 0
+            $script:State.Misc.Remove('MtuCandidate')
+            $script:State.Misc.Remove('DiscoveredDomain')
+            $script:State.Misc.Remove('DiscoveredPortalIp')
+            $script:State.Misc.Remove('DiscoveredPortalUrl')
+        }
+        Shield-SystemStack -Aggressive
+        if (-not $script:IsDry) { [void](Invoke-Native (Get-SysExe 'netsh.exe') @('winhttp', 'reset', 'proxy') 5000) }
+        Remove-CampusNrpt
+        Remove-LegacyHostsEntries
+        Remove-CampusHostRoutes
+        foreach ($ea in @(Get-EthernetAdapters)) { Release-ArpLocks $ea; Shield-DnsIntegrity $ea }
+        Write-Log 'STEP' 'STAGE 2/5  Restoring clean routing metrics & MTU across physical Ethernet uplinks'
+        Shield-Aspm
+        foreach ($oa in @(Get-EthernetAdapters)) { [void](Shield-TcpOffloads $oa); [void](Shield-Dot3Svc $oa) }
+        Restore-InterfaceMetrics 'Full Net Reset metrics restore'
+        if (-not $script:IsDry) {
+            foreach ($a in @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' -and $_.MediaType -eq '802.3' })) {
+                Set-NetIPInterface -InterfaceIndex $a.ifIndex -AddressFamily IPv4 -NlMtuBytes 1500 -ErrorAction SilentlyContinue
+            }
+        }
+        Write-Log 'STEP' 'STAGE 3/5  Running 7-Layer Ethernet & Multi-Homed Heal Pipeline'
+        $resHeal = Pick-Hash (Invoke-HealPipeline -SkipSystemStack)
+        Write-Log 'STEP' 'STAGE 4/5  Flushing DNS, ARP, NetBIOS & refreshing network state services'
+        if (-not $script:IsDry) {
+            Clear-DnsClientCache -ErrorAction SilentlyContinue
+            [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/flushdns') 5000)
+            Get-NetNeighbor -AddressFamily IPv4 -ErrorAction SilentlyContinue | Remove-NetNeighbor -Confirm:$false -ErrorAction SilentlyContinue
+            Get-NetNeighbor -AddressFamily IPv6 -ErrorAction SilentlyContinue | Remove-NetNeighbor -Confirm:$false -ErrorAction SilentlyContinue
+            [void](Invoke-Native (Get-SysExe 'nbtstat.exe') @('-R') 5000)
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('winsock', 'reset') 5000)
+            Restart-Service -Name Dhcp -Force -ErrorAction SilentlyContinue
+            Restart-Service -Name NlaSvc -Force -ErrorAction SilentlyContinue
+            Start-Service -Name netprofm -ErrorAction SilentlyContinue
+            Start-Service -Name iphlpsvc -ErrorAction SilentlyContinue
+            Start-Service -Name Wcmsvc -ErrorAction SilentlyContinue
+            Start-Service -Name WlanSvc -ErrorAction SilentlyContinue
+        }
+        Write-Log 'STEP' 'STAGE 5/5  Verifying live IPv4 A-record & HTTPS reachability (GitHub & Google Auth)'
+        $anyVerifyFail = $false
+        $upEths = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })
+        $primarySrc = if ($upEths.Count -gt 0) { Get-ValidIPv4 $upEths[0] } else { '' }
+        foreach ($testHost in @('github.com', 'accounts.google.com')) {
+            $ip = Resolve-HostBounded $testHost 3000 $primarySrc
+            if ($ip) {
+                $tcpOk = Test-TcpPort $ip 443 2500 $primarySrc
+                Write-Log ($(if ($tcpOk) { 'OK' } else { 'WARN' })) ("Verified {0} -> {1} (TCP/443: {2})" -f $testHost, $ip, $(if ($tcpOk) { 'OPEN' } else { 'BLOCKED' }))
+            } else {
+                $anyVerifyFail = $true
+                Write-Log 'FAIL' ("DNS resolution still failed for {0}" -f $testHost)
+            }
+        }
+        if ($anyVerifyFail -and -not $script:IsDry -and ($resHeal.Conn -ne 'Captive')) {
+            Write-Log 'WARN' 'DNS resolution failed for public endpoints. Deploying adaptive public DNS rescue...'
+            foreach ($ea in @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })) {
+                $rescueDns = @(Get-BestDnsOrder ([string]$ea.InterfaceGuid) @())
+                if ($rescueDns.Count -gt 0) {
+                    Write-Log 'INFO' "Applying active public DNS rescue on $($ea.Name): $($rescueDns -join ', ')..."
+                    [void](Set-AdapterDns $ea $rescueDns)
+                }
+            }
+            Clear-DnsClientCache -ErrorAction SilentlyContinue
+            [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/flushdns') 5000)
+            [void](Invoke-Change 'Zero-reboot live network stack cycling (NDIS, DHCP & TCPIP state unfreeze)' {
+                Restart-Service -Name Dhcp -Force -ErrorAction SilentlyContinue
+                Restart-Service -Name NlaSvc -Force -ErrorAction SilentlyContinue
+                Start-Service -Name netprofm -ErrorAction SilentlyContinue
+                Start-Service -Name iphlpsvc -ErrorAction SilentlyContinue
+                Start-Service -Name Wcmsvc -ErrorAction SilentlyContinue
+                Start-Service -Name WlanSvc -ErrorAction SilentlyContinue
+                foreach ($ea in @(Get-EthernetAdapters)) { Reset-PhysicalAdapterHardware $ea }
+            })
+            foreach ($testHost in @('github.com', 'accounts.google.com')) {
+                $ip = Resolve-HostBounded $testHost 3000 $primarySrc
+                if ($ip) {
+                    $tcpOk = Test-TcpPort $ip 443 2500 $primarySrc
+                    Write-Log ($(if ($tcpOk) { 'OK' } else { 'WARN' })) ("Re-verified {0} -> {1} (TCP/443: {2})" -f $testHost, $ip, $(if ($tcpOk) { 'OPEN' } else { 'BLOCKED' }))
+                }
+            }
+        }
+        Save-State
+        $resHeal
+    })
+    $swOmni.Stop()
+    Write-HealSummary $r $swOmni
+    # Lock is now released before the 180s human browser wait so background watchdog passes never block!
     if ($r -and $r.Conn -eq 'Captive' -and -not $script:IsDry) {
         [void](Invoke-WithLock { [void](Open-Portal); Save-State })
         if ($script:UiOn -and (Get-InternetState -NoCache).State -eq 'Captive') {
@@ -654,147 +798,3 @@ function Invoke-DoomsdayReset {
             Write-Log 'DRY' 'Would execute: netsh dnsclient delete global all'
             Write-Log 'DRY' 'Would reset per-interface encrypted DNS across ALL adapters'
             Write-Log 'DRY' 'Would reset WinHTTP proxy/autoproxy/tracing'
-            Write-Log 'DRY' 'Would cancel all active BITS transfers'
-        } else {
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('dnsclient', 'delete', 'global', 'all') 5000)
-            foreach ($ad in @(Get-NetAdapter -ErrorAction SilentlyContinue)) {
-                try {
-                    [void](Invoke-Native (Get-SysExe 'netsh.exe') @('dnsclient', 'delete', 'interface', "name=$($ad.Name)", 'setting=all') 5000)
-                } catch {}
-            }
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('winhttp', 'reset', 'proxy') 5000)
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('winhttp', 'reset', 'autoproxy') 5000)
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('winhttp', 'reset', 'tracing') 5000)
-            try {
-                Get-BitsTransfer -AllUsers -ErrorAction SilentlyContinue | Remove-BitsTransfer -Confirm:$false -ErrorAction SilentlyContinue
-            } catch {}
-        }
-
-        # ----------------------------------------------------------------------
-        # STAGE 7/12: UNIVERSAL PROXY & DEAD VPN KILLSWITCH ANNIHILATION
-        # ----------------------------------------------------------------------
-        Write-Log 'STEP' 'STAGE 7/12 Obliterating system-wide proxies & dead VPN killswitch traps across all hives'
-        if ($script:IsDry) {
-            Write-Log 'DRY' 'Would purge ProxyEnable, ProxyServer, AutoConfigURL across HKCU, HKLM, and HKU'
-            Write-Log 'DRY' 'Would clear process, user, and system proxy environment variables'
-        } else {
-            Shield-Proxies
-            try {
-                $hkuProfiles = @(Get-ChildItem -LiteralPath 'Registry::HKEY_USERS' -ErrorAction SilentlyContinue | Where-Object { $_.PSChildName -notmatch '_Classes$' })
-                foreach ($hp in $hkuProfiles) {
-                    $isPath = "Registry::HKEY_USERS\$($hp.PSChildName)\Software\Microsoft\Windows\CurrentVersion\Internet Settings"
-                    if (Test-Path -LiteralPath $isPath) {
-                        try {
-                            Set-ItemProperty -LiteralPath $isPath -Name 'ProxyEnable' -Value 0 -Type DWord -ErrorAction SilentlyContinue
-                            Set-ItemProperty -LiteralPath $isPath -Name 'ProxyServer' -Value '' -ErrorAction SilentlyContinue
-                            Set-ItemProperty -LiteralPath $isPath -Name 'AutoConfigURL' -Value '' -ErrorAction SilentlyContinue
-                        } catch {}
-                    }
-                }
-            } catch {}
-            foreach ($vName in @('HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy')) {
-                [System.Environment]::SetEnvironmentVariable($vName, $null, [System.EnvironmentVariableTarget]::Process)
-                try { [System.Environment]::SetEnvironmentVariable($vName, $null, [System.EnvironmentVariableTarget]::User) } catch {}
-                try { [System.Environment]::SetEnvironmentVariable($vName, $null, [System.EnvironmentVariableTarget]::Machine) } catch {}
-            }
-        }
-
-        # ----------------------------------------------------------------------
-        # STAGE 8/12: HOSTS FILE SANITIZATION, SYSTEM-WIDE NRPT WIPE & WFP DEFEAT
-        # ----------------------------------------------------------------------
-        Write-Log 'STEP' 'STAGE 8/12 Sanitizing hosts file, eradicating all NRPT rules & neutralizing rogue WFP filters'
-        Remove-LegacyHostsEntries
-        Remove-CampusNrpt
-        try {
-            Get-DnsClientNrptRule -ErrorAction SilentlyContinue | Remove-DnsClientNrptRule -Force -ErrorAction SilentlyContinue
-            $nrptPolKey = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DnsClient\DnsPolicyConfig'
-            if (Test-Path -LiteralPath $nrptPolKey) {
-                Remove-Item -LiteralPath $nrptPolKey -Recurse -Force -ErrorAction SilentlyContinue
-            }
-        } catch {}
-        Remove-CampusHostRoutes
-        Shield-SystemStack -Aggressive
-
-        # ----------------------------------------------------------------------
-        # STAGE 9/12: NCSI CALIBRATION, KERBEROS TICKET & SMB SESSION PURGE
-        # ----------------------------------------------------------------------
-        Write-Log 'STEP' 'STAGE 9/12 Calibrating NCSI active probes, purging Kerberos tickets & clearing SMB sessions'
-        if ($script:IsDry) {
-            Write-Log 'DRY' 'Would calibrate NCSI active probing parameters in registry'
-            Write-Log 'DRY' 'Would execute: klist purge & net use * /delete /y'
-            Write-Log 'DRY' 'Would purge unmanaged NLM signatures'
-        } else {
-            try {
-                $ncsiKey = 'HKLM:\SYSTEM\CurrentControlSet\Services\NlaSvc\Parameters\Internet'
-                if (Test-Path -LiteralPath $ncsiKey) {
-                    Set-ItemProperty -LiteralPath $ncsiKey -Name 'EnableActiveProbing' -Value 1 -Type DWord -ErrorAction SilentlyContinue
-                    Set-ItemProperty -LiteralPath $ncsiKey -Name 'ActiveWebProbeHost' -Value 'www.msftconnecttest.com' -ErrorAction SilentlyContinue
-                    Set-ItemProperty -LiteralPath $ncsiKey -Name 'ActiveWebProbePath' -Value 'connecttest.txt' -ErrorAction SilentlyContinue
-                    Set-ItemProperty -LiteralPath $ncsiKey -Name 'ActiveWebProbeContent' -Value 'Microsoft Connect Test' -ErrorAction SilentlyContinue
-                    Set-ItemProperty -LiteralPath $ncsiKey -Name 'ActiveDnsProbeHost' -Value 'dns.msftncsi.com' -ErrorAction SilentlyContinue
-                    Set-ItemProperty -LiteralPath $ncsiKey -Name 'ActiveDnsProbeContent' -Value '131.107.0.89' -ErrorAction SilentlyContinue
-                }
-            } catch {}
-
-            [void](Invoke-Native (Get-SysExe 'klist.exe') @('purge') 5000)
-            [void](Invoke-Native (Get-SysExe 'net.exe') @('use', '*', '/delete', '/y') 5000)
-
-            try {
-                $nlmSigKey = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\NetworkList\Signatures\Unmanaged'
-                if (Test-Path -LiteralPath $nlmSigKey) {
-                    Get-ChildItem -LiteralPath $nlmSigKey -ErrorAction SilentlyContinue | ForEach-Object {
-                        try { Remove-Item -LiteralPath $_.PSPath -Recurse -Force -ErrorAction SilentlyContinue } catch {}
-                    }
-                }
-            } catch {}
-        }
-
-        # ----------------------------------------------------------------------
-        # STAGE 10/12: LOW-LEVEL ARP/NDP EVICTION, NETBIOS RELEASE & DNS RESOLVER FLUSH
-        # ----------------------------------------------------------------------
-        Write-Log 'STEP' 'STAGE 10/12 Purging ARP/NDP/NetBIOS caches & flushing DNS resolver across all interfaces'
-        if ($script:IsDry) {
-            Write-Log 'DRY' 'Would execute: netsh interface ip delete arpcache, arp -d *, and delete neighbors'
-            Write-Log 'DRY' 'Would execute: nbtstat -R & nbtstat -RR'
-            Write-Log 'DRY' 'Would execute: ipconfig /flushdns, Clear-DnsClientCache, and clear suffix search list'
-        } else {
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('interface', 'ip', 'delete', 'arpcache') 5000)
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'ip', 'delete', 'neighbors') 5000)
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'ipv6', 'delete', 'neighbors') 5000)
-            [void](Invoke-Native (Get-SysExe 'arp.exe') @('-d', '*') 5000)
-            Get-NetNeighbor -AddressFamily IPv4 -ErrorAction SilentlyContinue | Remove-NetNeighbor -Confirm:$false -ErrorAction SilentlyContinue
-            Get-NetNeighbor -AddressFamily IPv6 -ErrorAction SilentlyContinue | Remove-NetNeighbor -Confirm:$false -ErrorAction SilentlyContinue
-
-            [void](Invoke-Native (Get-SysExe 'nbtstat.exe') @('-R') 5000)
-            [void](Invoke-Native (Get-SysExe 'nbtstat.exe') @('-RR') 5000)
-
-            Clear-DnsClientCache -ErrorAction SilentlyContinue
-            [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/flushdns') 5000)
-            try { Set-DnsClientGlobalSetting -SuffixSearchList @() -ErrorAction SilentlyContinue } catch {}
-        }
-
-        # ----------------------------------------------------------------------
-        # STAGE 11/12: STATIC IP CONFLICT PURGE, DHCP ENFORCEMENT, MTU 1500 & LEASE ZEROING
-        # ----------------------------------------------------------------------
-        Write-Log 'STEP' 'STAGE 11/12 Purging static IP conflicts, enforcing DHCP, MTU 1500 & broadcast flag on ALL media'
-        Shield-Aspm
-        Set-UsbSuspendOff
-        $allAdapters = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object {
-            $_.InterfaceDescription -notmatch 'Virtual|Hyper-V|WSL|Tailscale|ZeroTier|WireGuard|TAP|Loopback'
-        })
-        foreach ($ad in $allAdapters) {
-            if ($script:IsDry) {
-                Write-Log 'DRY' "Would purge static IP conflicts, zero DHCP lease, set broadcast flag and MTU 1500 on $($ad.Name)"
-            } else {
-                Release-ArpLocks $ad
-                try { Shield-Hardware $ad } catch {}
-                try { Shield-TcpOffloads $ad } catch {}
-
-                # Snapshot manual static IP before stripping so Restore-Everything can restore it
-                try {
-                    $manIps = @(Get-NetIPAddress -InterfaceIndex $ad.ifIndex -ErrorAction SilentlyContinue | Where-Object { $_.PrefixOrigin -eq 'Manual' })
-                    if ($manIps.Count -gt 0) {
-                        $gKey = [string]$ad.InterfaceGuid
-                        if ($gKey -and (-not $script:State.Snapshot.ContainsKey($gKey) -or -not $script:State.Snapshot[$gKey].ContainsKey('StaticIp4'))) {
-                            if (-not $script:State.Snapshot.ContainsKey($gKey)) { $script:State.Snapshot[$gKey] = @{} }
-                            $gws = @(Get-GatewaysV4 $ad)

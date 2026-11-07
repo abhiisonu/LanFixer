@@ -1,3 +1,166 @@
+        if ((Test-Path -LiteralPath $tk) -and ((Get-ItemProperty -LiteralPath $tk -Name NetbiosOptions -ErrorAction SilentlyContinue).NetbiosOptions -eq 2) -and -not ($snapA -is [hashtable] -and $snapA.ContainsKey('Netbios'))) {
+            [void](Invoke-Change "NetBIOS back to default on $($a.Name)" { Set-ItemProperty -LiteralPath $tk -Name NetbiosOptions -Value 0 -Type DWord -ErrorAction Stop })
+        }
+        $dnsInfo = Get-DnsClientServerAddress -InterfaceIndex $a.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue
+        if ($dnsInfo -and $dnsInfo.ServerAddresses -and -not ($snapA -is [hashtable] -and $snapA.ContainsKey('DnsStatic'))) {
+            $hasCampusDns = $false
+            foreach ($ip in $dnsInfo.ServerAddresses) {
+                if ($ip -eq $script:Cfg.CampusDns -or $ip -eq $script:Cfg.PortalIp) { $hasCampusDns = $true; break }
+            }
+            if ($hasCampusDns -or (Get-SubTable 'Dns' $g).Managed -eq $true) {
+                [void](Invoke-Change "DNS on $($a.Name) reset to automatic (DHCP)" { Set-DnsClientServerAddress -InterfaceIndex $a.ifIndex -ResetServerAddresses -ErrorAction Stop })
+            }
+        }
+    }
+
+    # 4. Universal Interface Metrics Reset (Restore AutomaticMetric on all adapters)
+    Restore-InterfaceMetrics 'Metrics back to their original values'
+    foreach ($ipif in @(Get-NetIPInterface -ErrorAction SilentlyContinue)) {
+        if ($ipif.AutomaticMetric -ne 'Enabled') {
+            [void](Invoke-Change "Adapter $($ipif.InterfaceAlias) $($ipif.AddressFamily) metric reverted to automatic" {
+                Set-NetIPInterface -InterfaceIndex $ipif.ifIndex -AddressFamily $ipif.AddressFamily -AutomaticMetric Enabled -ErrorAction SilentlyContinue
+            })
+        }
+    }
+
+    # 5. Restore IPv6 Transition Tunnels to Windows Defaults
+    [void](Invoke-Change 'IPv6 transition tunnels (Teredo, 6to4, ISATAP) restored to Windows defaults' {
+        [void](Invoke-Native (Get-SysExe 'netsh.exe') @('interface', 'teredo', 'set', 'state', 'default') 5000)
+        [void](Invoke-Native (Get-SysExe 'netsh.exe') @('interface', '6to4', 'set', 'state', 'default') 5000)
+        [void](Invoke-Native (Get-SysExe 'netsh.exe') @('interface', 'isatap', 'set', 'state', 'default') 5000)
+    })
+
+    # 6. Clean DHCP ConnForceBroadcastFlag and Broadcast Toggle Keys
+    try {
+        $ifacesKey = 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces'
+        if (Test-Path -LiteralPath $ifacesKey) {
+            Get-ChildItem -LiteralPath $ifacesKey -ErrorAction SilentlyContinue | ForEach-Object {
+                Remove-ItemProperty -LiteralPath $_.PSPath -Name 'DhcpConnForceBroadcastFlag' -ErrorAction SilentlyContinue
+                Remove-ItemProperty -LiteralPath $_.PSPath -Name 'DhcpConnEnableBcastFlagToggle' -ErrorAction SilentlyContinue
+            }
+        }
+    } catch {}
+
+    # 7. Release All ARP Locks & Flush All Neighbor and Destination Caches
+    foreach ($guid in @($script:State.Arp.Keys)) {
+        $ad = $present | Where-Object { [string]$_.InterfaceGuid -eq [string]$guid } | Select-Object -First 1
+        if ($ad) { Release-ArpLocks $ad }
+    }
+    foreach ($ea in @(Get-EthernetAdapters)) { Release-ArpLocks $ea }
+    [void](Invoke-Native (Get-SysExe 'netsh.exe') @('interface', 'ip', 'delete', 'arpcache') 8000)
+    [void](Invoke-Native (Get-SysExe 'netsh.exe') @('interface', 'ipv6', 'delete', 'destinationcache') 8000)
+    [void](Invoke-Native (Get-SysExe 'netsh.exe') @('interface', 'ipv6', 'delete', 'arpcache') 8000)
+    [void](Invoke-Native (Get-SysExe 'nbtstat.exe') @('-R') 8000)
+    Clear-DnsClientCache -ErrorAction SilentlyContinue
+
+    # 8. Clean Host Routes, NRPT Policies, and Hosts File
+    Remove-CampusHostRoutes
+    Remove-CampusNrpt
+    Remove-LegacyHostsEntries
+
+    # 9. Restore 3rd-Party Tasks, Neutralized Services & NDIS Filters
+    if ($script:State.Misc['NeutralizedTasks'] -is [hashtable]) {
+        foreach ($tn in @($script:State.Misc['NeutralizedTasks'].Keys)) {
+            $tp = [string]$script:State.Misc['NeutralizedTasks'][$tn]
+            [void](Invoke-Change "Restored 3rd-party task $tn" { Enable-ScheduledTask -TaskName $tn -TaskPath $tp -ErrorAction SilentlyContinue | Out-Null })
+        }
+    }
+    if ($script:State.Misc['NeutralizedServices'] -is [hashtable]) {
+        foreach ($sn in @($script:State.Misc['NeutralizedServices'].Keys)) {
+            $rec = $script:State.Misc['NeutralizedServices'][$sn]
+            $origStart = if ($rec -is [hashtable]) { [string]$rec.StartType } else { [string]$rec }
+            if ($origStart -and $origStart -ne 'Disabled') {
+                [void](Invoke-Change "Restored 3rd-party service $sn to $origStart" { Set-Service -Name $sn -StartupType $origStart -ErrorAction SilentlyContinue })
+            }
+        }
+    }
+    if ($script:State.Snapshot.ContainsKey('DeactivatedFilters')) {
+        $df = $script:State.Snapshot['DeactivatedFilters']
+        if ($df -is [hashtable]) {
+            foreach ($adName in $df.Keys) {
+                foreach ($compId in @($df[$adName])) {
+                    [void](Invoke-Change "NDIS filter '$compId' re-enabled on $adName" {
+                        Enable-NetAdapterBinding -Name $adName -ComponentID $compId -Confirm:$false -ErrorAction SilentlyContinue
+                    })
+                }
+            }
+        }
+    }
+
+    # 10. Restore Windows Firewall Rules from Backup
+    $fwBackup = Join-Path $script:StoreDir 'firewall_pre_reset.wfw'
+    if (Test-Path -LiteralPath $fwBackup) {
+        [void](Invoke-Change 'Windows Firewall rules restored from pre-reset backup' {
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('advfirewall', 'import', $fwBackup) 8000)
+        })
+    } else {
+        [void](Invoke-Change 'Windows Firewall restored to factory default policy' {
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('advfirewall', 'reset') 5000)
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('advfirewall', 'set', 'allprofiles', 'state', 'on') 5000)
+        })
+    }
+
+    # 11. Restore NCSI Active Probing Settings to Windows Defaults
+    try {
+        $nk = 'HKLM:\SYSTEM\CurrentControlSet\Services\NlaSvc\Parameters\Internet'
+        if (Test-Path -LiteralPath $nk) {
+            Set-ItemProperty -LiteralPath $nk -Name 'EnableActiveProbing' -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
+            Set-ItemProperty -LiteralPath $nk -Name 'ActiveDnsProbeHost' -Value 'dns.msftncsi.com' -Force -ErrorAction SilentlyContinue
+            Set-ItemProperty -LiteralPath $nk -Name 'ActiveDnsProbeContent' -Value '131.107.0.89' -Force -ErrorAction SilentlyContinue
+            Set-ItemProperty -LiteralPath $nk -Name 'ActiveWebProbeHost' -Value 'www.msftconnecttest.com' -Force -ErrorAction SilentlyContinue
+        }
+    } catch {}
+
+    # 12. Purge Credentials & Clean Machine Store
+    if (-not $script:IsDry) {
+        foreach ($n in @($restartNames.Keys)) {
+            [void](Invoke-Change "Zero-reboot link reset on $n to apply restored driver settings" {
+                $rAd = Get-NetAdapter -Name $n -ErrorAction SilentlyContinue
+                if ($rAd) { Reset-PhysicalAdapterHardware $rAd } else { Restart-NetAdapter -Name $n -Confirm:$false -ErrorAction Stop }
+            })
+        }
+        Remove-PortalCredentials; Write-Log 'OK' 'Saved portal credentials and encrypted vault purged.'
+
+        $scrubFiles = @('sentinel.log', 'sentinel.log.bak', 'firewall_pre_reset.wfw', 'LanFixer_Watchdog.xml', 'LanFixer_Portal.xml', 'LanFixer_Notify.xml', 'LanFixer_Sentinel.xml', 'LanFixer_Core.cmd', 'interactive.json')
+        foreach ($sf in $scrubFiles) {
+            $sfp = Join-Path $script:StoreDir $sf
+            if (Test-Path -LiteralPath $sfp) { Remove-Item -LiteralPath $sfp -Force -ErrorAction SilentlyContinue }
+        }
+
+        $script:State = @{}
+        foreach ($k in 'Snapshot','Env','Dns','Arp','Times','Misc') { $script:State[$k] = @{} }
+        $script:State.Misc['Migrated'] = $true
+        $script:State.Misc['FactoryResetDate'] = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+        Save-State
+    }
+
+    Write-Log 'OK' 'Sovereign Factory Reset Complete. All settings reverted to pristine Windows defaults; zero tasks, zero rules, zero background hooks remain.'
+    Write-Log 'INFO' 'Notice: System is now on standard Windows defaults without LanFixer background tasks or persistent portal routes. On restrictive campus networks, Windows native networking requires LanFixer Autonomous Daemon [B] or Watchdog Guard [2] for zero-touch captive portal sign-in and STP handling.'
+}
+
+function Apply-DnsNow {
+    $script:WatchdogOn = Test-WatchdogInstalled
+    $ups = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })
+    if ($ups.Count -eq 0) {
+        Write-Log 'INFO' 'No active Ethernet link right now; profile saved and will apply automatically on link connect.'
+        Save-State
+        return
+    }
+    $conn = (Get-InternetState -NoCache).State
+    foreach ($a in $ups) {
+        $script:EnvCache.Remove([string]$a.InterfaceGuid)
+        $ctx = @{ Ad = $a; Env = (Get-AdapterEnvironment $a) }
+        Shield-Dns $ctx $conn
+    }
+    Save-State
+}
+function Set-DnsProfileMode([string]$Name) {
+    if (-not (Assert-Admin)) { return }
+    [void](Invoke-WithLock {
+        if ($Name -eq 'ResetDHCP') {
+            # 1. Hand every adapter this tool substituted a resolver on back to the user's OWN value first. The managed
+            #    flags are the only record of which adapters those are, so this must run BEFORE the wipe below - and it
+            #    is what stops a Wi-Fi / USB-tethering / Bluetooth-PAN resolver from being orphaned by this reset.
             [void](Restore-ManagedAdapterDns 'Reset DHCP')
             # 2. Forget all DNS management and return to the default recommended profile.
             $script:State.Dns = @{}
@@ -635,166 +798,3 @@ function Invoke-LogicTests {
                 $tv.DnsPrimary = '172.16.1.2'; $tv.DnsProfile = 'Adaptive'; $tv.Env = 'Campus'; $tv.EnvScore = 4
                 $tv.Watchdog = $true; $tv.Vault = $true; $tv.Paused = $true
                 switch ($variant) {
-                    'ArpPending' { $tv.ArpPending = $true }
-                    'Limited'    { $tv.Admin = $false; $tv.Problem = 'Captive' }
-                    'Protected'  { $tv.Routing = 'Wi-Fi Protected' }
-                }
-                $mdlT = Get-DashboardModel $tv (Get-Advice $tv) $cwT
-                foreach ($lnT in $mdlT.Lines) {
-                    if ((Get-SegsLength $lnT) -gt ($cwT + 2)) { $okTrans = $false }
-                    if (-not $uniT) { foreach ($sgT in $lnT) { if ([string]$sgT.T -match '[^\x20-\x7E]') { $okTrans = $false } } }
-                }
-            }
-        }
-    }
-    Set-UiGlyphs $saveUniT
-    Write-Check 'UI: pending-MAC, Limited Mode and Wi-Fi Protected layouts fit 60/76/100 in both glyph modes' $okTrans
-    # The [K] offer must survive every supported width: dock row when the full layout is used, legend cell when compact.
-    $mdlTxt2 = { param($m) @($m.Lines | ForEach-Object { ((@($_) | ForEach-Object { [string]$_.T }) -join '') }) }
-    $arpFit = $true
-    foreach ($cwK in 60, 76, 100) {
-        $tk = New-Telemetry; $tk.Admin = $true; $tk.Problem = 'Healthy'; $tk.LinkUp = $true; $tk.ArpPending = $true
-        $txtK = @((& $mdlTxt2 (Get-DashboardModel $tk (Get-Advice $tk) $cwK)))
-        if ($cwK -ge 74) { if (@($txtK | Where-Object { $_ -match 'Approve Gateway MAC Change' }).Count -eq 0) { $arpFit = $false } }
-        elseif (@($txtK | Where-Object { $_ -match '\[K\]\s*MAC' }).Count -eq 0) { $arpFit = $false }
-    }
-    Write-Check 'UI: the [K] offer is present at every supported width (dock row or legend cell)' $arpFit
-    # v4.5.6: an UNMAPPED key (arrows, Tab, Backspace, stray letters) must be reported as unhandled, because the main
-    # loop only clears the screen and re-probes when Invoke-DashboardKey says it handled something.
-    Write-Check 'UI: unmapped keys are reported as unhandled (no screen wipe, no re-probe)' (((Invoke-DashboardKey 'z' $null) -eq $false) -and ((Invoke-DashboardKey 'y' $null) -eq $false) -and ((Invoke-DashboardKey 'j' $null) -eq $false))
-    # v4.5.6: Dry-Run must be inert everywhere it claims to be: report success, execute nothing, write nothing.
-    # The probes below are pointed at throwaway files and the other guards are satisfied (store ready, mutex held), so
-    # the ONLY thing that can keep them untouched is the IsDry guard itself - which is what is being tested.
-    $dryPrev = [bool]$script:IsDry
-    $uiPrev = [bool]$script:UiOn
-    $logPrev = [string]$script:LogFile
-    $stPrev = [string]$script:StateFile
-    $readyPrev = [bool]$script:StoreReady
-    $mutexPrev = [bool]$script:HasMutex
-    $adminPrev = [bool]$script:IsAdmin
-    $tmpDir = [System.IO.Path]::GetTempPath()
-    $logTmp = Join-Path $tmpDir ('lanfixer_drylog_' + [guid]::NewGuid().ToString('N') + '.log')
-    $stTmp = Join-Path $tmpDir ('lanfixer_dryst_' + [guid]::NewGuid().ToString('N') + '.clixml')
-    $sentinel = Join-Path $tmpDir ('lanfixer_dry_' + [guid]::NewGuid().ToString('N') + '.tmp')
-    $chgBefore = [int]$script:ChangeCount
-    $ranDry = $false
-    try {
-        [System.IO.File]::WriteAllText($logTmp, 'baseline')
-        [System.IO.File]::WriteAllText($stTmp, 'baseline')
-        $script:LogFile = $logTmp
-        $script:StateFile = $stTmp
-        # Satisfy EVERY other guard (store ready, mutex held, elevated) so IsDry is the only thing left standing
-        # between the dry run and the disk - otherwise a non-elevated audit would pass this probe for the wrong reason.
-        $script:StoreReady = $true
-        $script:HasMutex = $true
-        $script:IsAdmin = $true
-        $script:IsDry = $true; $script:UiOn = $false
-        $ranDry = Invoke-Change 'Dry-Run sentinel: this action must never execute' { Set-Content -LiteralPath $sentinel -Value 'x' -ErrorAction Stop }
-        Write-Log 'INFO' 'dry-run log probe (must never reach the log file)'
-        Save-State
-    } finally {
-        $script:IsDry = $dryPrev; $script:UiOn = $uiPrev
-        $script:LogFile = $logPrev; $script:StateFile = $stPrev
-        $script:StoreReady = $readyPrev; $script:HasMutex = $mutexPrev; $script:IsAdmin = $adminPrev
-    }
-    $logText = if (Test-Path -LiteralPath $logTmp) { [System.IO.File]::ReadAllText($logTmp) } else { '<missing>' }
-    $stText = if (Test-Path -LiteralPath $stTmp) { [System.IO.File]::ReadAllText($stTmp) } else { '<missing>' }
-    Write-Check 'Dry-Run: an action reports success without executing' ($ranDry -eq $true)
-    Write-Check 'Dry-Run: the action created no file at all' (-not (Test-Path -LiteralPath $sentinel))
-    Write-Check 'Dry-Run: the change counter is not incremented' ([int]$script:ChangeCount -eq $chgBefore)
-    Write-Check 'Dry-Run: no log line is written while dry' ($logText -eq 'baseline')
-    Write-Check 'Dry-Run: the state file is not rewritten while dry' ($stText -eq 'baseline')
-    foreach ($tmpProbe in @($logTmp, $stTmp, $sentinel)) { if (Test-Path -LiteralPath $tmpProbe) { Remove-Item -LiteralPath $tmpProbe -Force -ErrorAction SilentlyContinue } }
-    $lg = @(Get-LegendRows @(@('1', 'repair'), @('2', 'watchdog'), @('3', 'dns'), @('4', 'probe'), @('5', 'flush'), @('6', 'audit'), @('7', 'portal'), @('A', 'vault'), @('T', 'preview'), @('R', 'report')) '1' 60)
-    Write-Check 'UI: the key legend wraps instead of overflowing' (($lg.Count -ge 2) -and (@($lg | Where-Object { (Get-SegsLength $_) -gt 62 }).Count -eq 0))
-    $longMsg = 'alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau upsilon'
-    $wl = @(Split-Words $longMsg 30 99)
-    Write-Check 'UI: long messages wrap without losing a single word' ((($wl -join ' ') -ceq $longMsg) -and (@($wl | Where-Object { $_.Length -gt 30 }).Count -eq 0))
-    Write-Check 'Logic: power index text parsed (hex, language independent)' (((ConvertFrom-PowerIndexText '    Current AC Power Setting Index: 0x00000001') -eq 1) -and ((ConvertFrom-PowerIndexText 'Aktueller Wert: 0x00000000') -eq 0) -and ($null -eq (ConvertFrom-PowerIndexText 'junk')))
-    $stSave = $script:State
-    $script:State = @{ Snapshot = @{}; Env = @{}; Dns = @{}; Arp = @{ '{G}' = @{ '10.1.12.1' = 'AA' } }; Times = @{}; Misc = @{ ArpCand = @{ '10.1.12.1' = @{ Mac = 'BB'; Since = (Get-Date).ToString('o') } } } }
-    $pg = @(Get-PendingGatewayMacs)
-    $apOk = Approve-GatewayMac '10.1.12.1' 'BB' -Quiet
-    Write-Check 'Logic: a MAC change waits for YOUR approval, per gateway, then becomes the remembered MAC' (($pg.Count -eq 1) -and ($pg[0].Old -eq 'AA') -and ($pg[0].New -eq 'BB') -and $apOk -and ($script:State.Arp['{G}']['10.1.12.1'] -eq 'BB') -and ($script:State.Misc['ArpCand'].Count -eq 0) -and ((Get-ArpDecision 'BB' 'BB' $null (Get-Date)) -eq 'lock'))
-    # v4.5.0: Interceptor regex precision (proxy/VPN apps not targeted without poison/PIDs)
-    $wfpReg = 'portmaster|nextdns|yogadns|dnscrypt|acrylic|adguard|stubby|warp-svc'
-    Write-Check 'Logic: WFP DNS regex targets true DNS interceptors' ('portmaster' -match $wfpReg -and 'adguard' -match $wfpReg -and 'nextdns' -match $wfpReg)
-    Write-Check 'Logic: WFP DNS regex spares user proxy/VPN apps' ('clash' -notmatch $wfpReg -and 'v2ray' -notmatch $wfpReg -and 'proxifier' -notmatch $wfpReg)
-    # v4.8.0: Inspect real Invoke-DashboardKey definition for aliases and [M] route menu binding
-    $dkDef = [string](Get-Command Invoke-DashboardKey -ErrorAction SilentlyContinue).Definition
-    Write-Check 'Logic: Invoke-DashboardKey maps n to x, c, o aliases, binds m to Show-RouteMenu, and omits dead guide alias' ($dkDef.IndexOf("n = 'x'") -ge 0 -and $dkDef.IndexOf("c = '5'") -ge 0 -and $dkDef.IndexOf("o = '7'") -ge 0 -and $dkDef.IndexOf('Show-RouteMenu') -ge 0 -and $dkDef.IndexOf('guide') -lt 0)
-    $tArp = New-Telemetry; $tArp.Admin = $true; $tArp.Problem = 'Healthy'; $tArp.ArpPending = $true
-    Write-Check 'Logic: ArpPending surfaces [K] in Get-Advice even when link is Healthy' (((Get-Advice $tArp).Key) -eq 'k')
-    Write-Check 'Logic: a fresh telemetry record starts with ArpPending false' ((New-Telemetry).ArpPending -eq $false)
-    # v4.5.4: the [K] offer must appear on the dashboard itself, in BOTH layouts, and only while a candidate waits.
-    $mdlText = { param($m) @($m.Lines | ForEach-Object { ((@($_) | ForEach-Object { [string]$_.T }) -join '') }) }
-    $advArp = Get-Advice $tArp
-    Write-Check 'UI: full dashboard dock offers [K] while a MAC change is pending' (@((& $mdlText (Get-DashboardModel $tArp $advArp 79)) | Where-Object { $_ -match '\[K\]\s*Approve Gateway MAC Change' }).Count -ge 1)
-    Write-Check 'UI: compact dashboard legend offers [K] while a MAC change is pending' (@((& $mdlText (Get-DashboardModel $tArp $advArp 60)) | Where-Object { $_ -match '\[K\]\s*MAC' }).Count -ge 1)
-    $tNoArp = New-Telemetry; $tNoArp.Admin = $true; $tNoArp.Problem = 'Healthy'
-    $advNoArp = Get-Advice $tNoArp
-    Write-Check 'UI: neither layout advertises [K] when no candidate is pending' ((@((& $mdlText (Get-DashboardModel $tNoArp $advNoArp 79)) | Where-Object { $_ -match 'Approve Gateway MAC Change' }).Count -eq 0) -and (@((& $mdlText (Get-DashboardModel $tNoArp $advNoArp 60)) | Where-Object { $_ -match '\[K\]\s*MAC' }).Count -eq 0))
-    $tLim = New-Telemetry; $tLim.Admin = $false; $tLim.Problem = 'Captive'
-    Write-Check 'Logic: Limited mode surfaces [E] elevation key in Get-Advice' (((Get-Advice $tLim).Key) -eq 'e')
-    $advLim = Get-Advice $tLim
-    Write-Check 'Logic: Limited mode names the elevation action and key exactly' (($advLim.Key -eq 'e') -and ($advLim.KeyLabel -eq 'relaunch as Administrator') -and ($advLim.Status -eq 'Running in read-only Limited Mode (without Administrator privileges).') -and ($advLim.Action -eq 'Press [ENTER] to relaunch as Administrator (or press E).'))
-    # v4.5.5: the routing label may never claim "Ethernet First" while Ethernet is actually the demoted path.
-    Write-Check 'Logic: routing label follows the real Ethernet metric' (((Get-RoutingLabel $true 10 $true) -eq 'Ethernet First') -and ((Get-RoutingLabel $true 15 $true) -eq 'Ethernet First') -and ((Get-RoutingLabel $true 45 $true) -eq 'Wi-Fi Protected') -and ((Get-RoutingLabel $true 50 $true) -eq 'Wi-Fi Protected'))
-    Write-Check 'Logic: a captive (metric 50) Ethernet is never reported as Ethernet First' (((Get-RoutingLabel $true 50 $true) -ne 'Ethernet First') -and ((Get-RoutingLabel $false 10 $true) -eq 'automatic') -and ((Get-RoutingLabel $true 0 $false) -eq 'Wi-Fi Protected'))
-    $tRout = New-Telemetry
-    $tRout.Admin = $true; $tRout.Problem = 'Healthy'; $tRout.LinkUp = $true; $tRout.Speed = '1 Gbps'; $tRout.Nic = 'Realtek'
-    $tRout.Ip = '10.1.12.192'; $tRout.Env = 'Campus'; $tRout.EnvScore = 5; $tRout.DnsProfile = 'Adaptive'; $tRout.DnsPrimary = '172.16.1.2'
-    $tRout.Routing = 'Wi-Fi Protected'
-    $routTxt = @((& $mdlText (Get-DashboardModel $tRout (Get-Advice $tRout) 79)))
-    Write-Check 'UI: dashboard prints Wi-Fi Protected verbatim, never lower-cased' ((@($routTxt | Where-Object { $_ -cmatch 'Wi-Fi Protected' }).Count -ge 1) -and (@($routTxt | Where-Object { $_ -cmatch 'wi-fi protected' }).Count -eq 0))
-    $tDual = New-Telemetry
-    $tDual.Admin = $true; $tDual.Problem = 'Healthy'; $tDual.LinkUp = $true; $tDual.Speed = '1 Gbps'; $tDual.Nic = 'Realtek'
-    $tDual.Ip = '10.1.12.192'; $tDual.Env = 'Campus'; $tDual.EnvScore = 5; $tDual.DnsProfile = 'Adaptive'; $tDual.DnsPrimary = '172.16.1.2'
-    $tDual.Routing = 'Wi-Fi Protected'; $tDual.UplinkActive = $true; $tDual.UplinkName = 'Wi-Fi'; $tDual.UplinkProfile = 'NIT_JSR'; $tDual.UplinkIsPrimary = $true
-    $dualTxt = @((& $mdlText (Get-DashboardModel $tDual (Get-Advice $tDual) 79)))
-    Write-Check 'UI: dual-homed dashboard surfaces active Wi-Fi uplink truthfully' ((@($dualTxt | Where-Object { $_ -match 'Uplink:\s*Wi-Fi' }).Count -ge 1) -and (@($dualTxt | Where-Object { $_ -match 'via Wi-Fi' }).Count -ge 1))
-    # v4.5.2: the metric planner must never sabotage a NON-campus wired network (three strict branches).
-    $pOther = Get-RouteMetricPlan 'Other' 'Online' 1
-    Write-Check 'Logic: a HEALTHY non-campus wired link is never demoted (no campus routes)' (($pOther.Mode -eq 'Restore') -and ($pOther.CampusRoutes -eq $false) -and ([int]$pOther.Ethernet -eq 0))
-    Write-Check 'Logic: an unknown environment is treated as non-campus, never as the campus' (((Get-RouteMetricPlan 'Unknown' 'Online' 2).Mode -eq 'Restore') -and ((Get-RouteMetricPlan 'Unknown' 'Captive' 1).CampusRoutes -eq $false))
-    Write-Check 'Logic: a non-campus captive link also leaves routing untouched' (((Get-RouteMetricPlan 'Other' 'Captive' 1).Mode -eq 'Restore') -and ((Get-RouteMetricPlan 'Other' 'Offline' 0).Mode -eq 'Restore'))
-    $pCap = Get-RouteMetricPlan 'Campus' 'Captive' 1
-    Write-Check 'Logic: unauthenticated campus demotes Ethernet to 50, protects Wi-Fi at 15, injects campus routes' (($pCap.Mode -eq 'Protect') -and ([int]$pCap.Ethernet -eq 50) -and ([int]$pCap.Others -eq 15) -and ($pCap.CampusRoutes -eq $true))
-    $pOn = Get-RouteMetricPlan 'Campus' 'Online' 1
-    Write-Check 'Logic: authenticated campus promotes Ethernet to 10 over Wi-Fi 40 and removes campus routes' (($pOn.Mode -eq 'Promote') -and ([int]$pOn.Ethernet -eq 10) -and ([int]$pOn.Others -eq 40) -and ($pOn.CampusRoutes -eq $false))
-    $pLone = Get-RouteMetricPlan 'Campus' 'Offline' 0
-    Write-Check 'Logic: campus link down with no secondary uplink restores instead of pinning 50/15' (($pLone.Mode -eq 'Restore') -and ($pLone.CampusRoutes -eq $false))
-    Write-Check 'Logic: campus NoDns with a secondary uplink still protects the working uplink' (((Get-RouteMetricPlan 'Campus' 'NoDns' 1).Mode -eq 'Protect') -and ((Get-RouteMetricPlan 'Campus' 'NoDns' 0).Mode -eq 'Restore'))
-    # v4.5.2: DNS answer parser (pure) - the source-scoped lookup is only as honest as this parser.
-    [byte[]]$dnsQ = New-DnsQueryPacket 'a.bc' 4660
-    [byte[]]$dnsA = [byte[]]@(0x12,0x34,0x81,0x80,0,1,0,1,0,0,0,0) + [byte[]]$dnsQ[12..21] + [byte[]]@(0xC0,0x0C,0,1,0,1,0,0,0,60,0,4,1,2,3,4)
-    Write-Check 'Logic: DNS A-record parser reads a real answer' (@(Get-DnsAAnswers $dnsA $dnsQ) -contains '1.2.3.4')
-    [byte[]]$dnsForeign = [byte[]]@(0x99,0x99,0x81,0x80,0,1,0,1,0,0,0,0) + [byte[]]$dnsQ[12..21] + [byte[]]@(0xC0,0x0C,0,1,0,1,0,0,0,60,0,4,1,2,3,4)
-    Write-Check 'Logic: DNS A-record parser refuses a foreign transaction id' (@(Get-DnsAAnswers $dnsForeign $dnsQ).Count -eq 0)
-    [byte[]]$dnsNx = [byte[]]@(0x12,0x34,0x81,0x83,0,1,0,0,0,0,0,0) + [byte[]]$dnsQ[12..21]
-    Write-Check 'Logic: DNS A-record parser refuses NXDOMAIN with no answers' (@(Get-DnsAAnswers $dnsNx $dnsQ).Count -eq 0)
-    [byte[]]$dnsCname = [byte[]]@(0x12,0x34,0x81,0x80,0,1,0,1,0,0,0,0) + [byte[]]$dnsQ[12..21] + [byte[]]@(0xC0,0x0C,0,5,0,1,0,0,0,60,0,2,0xC0,0x0C)
-    Write-Check 'Logic: DNS A-record parser ignores a CNAME-only answer' (@(Get-DnsAAnswers $dnsCname $dnsQ).Count -eq 0)
-    Write-Check 'Logic: DNS A-record parser survives truncated and empty input' ((@(Get-DnsAAnswers ([byte[]]@(0x12,0x34)) $dnsQ).Count -eq 0) -and (@(Get-DnsAAnswers $null $null).Count -eq 0) -and (@(Get-DnsAAnswers $dnsA $null).Count -eq 0))
-    Write-Check 'Logic: scoped DNS never answers for a missing name/source' ((@(Get-ScopedDnsAnswers '' '10.1.14.191').Count -eq 0) -and (@(Get-ScopedDnsAnswers 'a.bc' '').Count -eq 0))
-    # v4.5.3: DNS profile state machine - ResetDHCP is an ACTION, never a resting state.
-    $stDns = $script:State
-    $script:State = @{ Snapshot = @{}; Env = @{}; Dns = @{}; Arp = @{}; Times = @{}; Misc = @{ DnsProfile = 'ResetDHCP' } }
-    Write-Check 'Logic: a legacy stuck ResetDHCP profile reads back as Adaptive' ((Get-DnsProfileName) -eq 'Adaptive')
-    $script:State.Misc['DnsProfile'] = 'Cloudflare'
-    Write-Check 'Logic: a real DNS profile is still reported verbatim' ((Get-DnsProfileName) -eq 'Cloudflare')
-    $script:State.Misc['DnsProfile'] = 'nonsense'
-    Write-Check 'Logic: an unknown DNS profile falls back to Adaptive' ((Get-DnsProfileName) -eq 'Adaptive')
-    $script:State = $stDns
-    Write-Check 'Logic: managed-DNS restore sweep exists (roaming + factory reset use it)' ((Get-Command Restore-ManagedAdapterDns -ErrorAction SilentlyContinue) -and ((Get-Command Restore-ManagedAdapterDns).Parameters.ContainsKey('Why')))
-    # Source-level guards: the ORDER of the unplugged heal and "every Shield-SystemStack DNS write snapshots first".
-    $srcTxt = ''
-    try { if ($script:SelfPath -and (Test-Path -LiteralPath $script:SelfPath)) { $srcTxt = [System.IO.File]::ReadAllText($script:SelfPath) } } catch {}
-    if ($srcTxt) {
-        $seqOk = $false
-        $stackSnapOk = $false
-        $hp = $srcTxt.IndexOf('function Invoke-HealPipeline')
-        if ($hp -ge 0) {
-            $seg = $srcTxt.Substring($hp, [Math]::Min(6000, $srcTxt.Length - $hp))
-            $end = $seg.IndexOf("`n}")
-            if ($end -gt 0) { $seg = $seg.Substring(0, $end) }

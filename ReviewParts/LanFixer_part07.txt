@@ -1,3 +1,89 @@
+                Set-NetIPInterface -InterfaceIndex $Ad.ifIndex -AddressFamily IPv6 -RouterDiscovery Disabled -ErrorAction SilentlyContinue
+                Disable-NetAdapterBinding -Name $Ad.Name -ComponentId 'ms_tcpip6' -Confirm:$false -ErrorAction Stop
+            }
+            if ($ok -and -not $script:IsDry) {
+                (Get-SubTable 'Dns' $guid).Ipv6Neutralized = $true
+                (Get-SubTable 'Dns' $guid).Managed = $true
+                Clear-DnsClientCache -ErrorAction SilentlyContinue
+                $script:ConnCache = $null
+            }
+        }
+    } catch {
+        Write-Log 'WARN' "Shield-DnsIntegrity skipped on $($Ad.Name): $_"
+    }
+}
+function Shield-DohFallback {
+    if (-not $script:IsAdmin -or $script:IsDry) { return }
+    if (-not (Get-Command 'Get-DnsClientDohServerAddress' -ErrorAction SilentlyContinue)) { return }
+    try {
+        $dohList = @(Get-DnsClientDohServerAddress -ErrorAction SilentlyContinue | Where-Object { -not $_.AllowFallbackToUdp })
+        foreach ($doh in $dohList) {
+            Write-Log 'INFO' "Permitting UDP fallback for DoH server: $($doh.ServerAddress)"
+            Set-DnsClientDohServerAddress -ServerAddress $doh.ServerAddress -AllowFallbackToUdp $true -ErrorAction SilentlyContinue
+        }
+    } catch {}
+}
+function Shield-Dns($Ctx, [string]$ConnState) {
+    Shield-DohFallback
+    $ad = $Ctx.Ad
+    Shield-DnsIntegrity $ad
+    $guid = [string]$ad.InterfaceGuid
+    $d = Get-SubTable 'Dns' $guid
+    $prof = Get-DnsProfileName
+    if ($Ctx.Env.Env -eq 'Other') {
+        Restore-Ipv6IfNeutralized $ad
+        Remove-CampusNrpt
+        if (($prof -eq 'Adaptive' -or $prof -eq 'DHCP') -and $ConnState -ne 'NoDns') {
+            if ($d.Managed -eq $true -and [string]$d.Phase -eq 'Public') {
+                if ((Get-OtherDnsAction $ConnState $true ([string]$d.Phase) (Test-DhcpDnsUsable $guid ([string](Get-ValidIPv4 $ad)))) -eq 'KeepRescue') {
+                    Write-Log 'INFO' 'Non-campus network: the network resolvers still do not answer, so the DNS rescue stays in place (released automatically once they work).'
+                    return
+                }
+            }
+            Restore-AdapterDns $ad
+            Write-Log 'INFO' 'Non-campus network: DNS is left to the network (any change made earlier is reverted).'
+            return
+        }
+        $dhcpOther = @(Get-DhcpDnsServers $guid)
+        $orderOther = switch ($prof) {
+            'Cloudflare' { @($script:Cfg.CfDns) + $dhcpOther }
+            'Hybrid'     { @('9.9.9.9', '8.8.8.8') + $dhcpOther }
+            default      { @(Get-BestDnsOrder $guid $dhcpOther) }
+        }
+        $orderOther = @($orderOther | Where-Object { $_ } | Select-Object -Unique)
+        if ($orderOther.Count -gt 0) {
+            if (-not (Set-AdapterDns $ad $orderOther)) {
+                if (-not $script:IsDry) { Clear-DnsClientCache -ErrorAction SilentlyContinue }
+                Write-Log 'INFO' "DNS already set on $($ad.Name) (profile $prof)."
+            }
+            if (-not $script:IsDry) { $d.Phase = 'Public'; $d.ConnApplied = $(if ($ConnState -eq 'Online') { 'Online' } else { 'NotOnline' }) }
+        }
+        return
+    }
+    if ($Ctx.Env.Env -ne 'Campus') { Write-Log 'INFO' 'Environment unknown: DNS untouched.'; return }
+    $campus = @(Get-DhcpDnsServers $guid)
+    $homeNet = ($null -eq $Ctx.Env.Home) -or [bool]$Ctx.Env.Home
+    if ($campus.Count -eq 0) { $campus = @($script:Cfg.CampusDns) }
+    $phase = 'Auto'
+    $order = @()
+    switch ($prof) {
+        'DHCP'       { $phase = 'Auto' }
+        'ResetDHCP'  { $phase = 'Auto' }
+        'Hybrid'     { $order = @('9.9.9.9', '8.8.8.8') + $campus; $phase = 'Public' }
+        'Cloudflare' { $order = @($script:Cfg.CfDns) + $campus; $phase = 'Public' }
+        default {
+            if ($ConnState -eq 'Online' -or $ConnState -eq 'NoDns' -or $ConnState -eq 'Offline') {
+                $order = @(Get-BestDnsOrder $guid $campus)
+                if (@($order | Where-Object { $campus -notcontains $_ }).Count -gt 0) { $phase = 'Public' } else { $phase = 'Campus' }
+            } else {
+                $cands = @($campus)
+                foreach ($gwIp in @(Get-GatewaysV4 $ad)) { if ($gwIp -and $cands -notcontains $gwIp) { $cands += $gwIp } }
+                if ($homeNet -and $cands -notcontains $script:Cfg.PortalIp) { $cands += $script:Cfg.PortalIp }
+                $scores = Measure-ResolversFast $cands 400
+                $live = @($cands | Where-Object { $null -ne $scores[$_] } | Sort-Object { $scores[$_] })
+                $dead = @($cands | Where-Object { $null -eq $scores[$_] })
+                if ($live.Count -gt 0) {
+                    $order = @($live + $dead)
                     $phase = 'Campus'
                 } else {
                     $order = @(Get-BestDnsOrder $guid $campus)
@@ -53,6 +139,16 @@ function Shield-Portal($Ctxs) {
 # LAYER 6 - EXPOSURE: treat the hostel LAN as untrusted (Public firewall profile)
 # ==============================================================================
 function Shield-Profile($Ctx) {
+    try {
+        foreach ($fSvc in @('BFE','mpssvc')) {
+            $sc = Get-Service -Name $fSvc -ErrorAction SilentlyContinue
+            if ($sc -and $sc.Status -ne 'Running') {
+                [void](Invoke-Change ("Started firewall service {0} ({1})" -f $fSvc, $sc.DisplayName) {
+                    Start-Service -Name $fSvc -ErrorAction SilentlyContinue
+                })
+            }
+        }
+    } catch {}
     if (-not $script:Cfg.ForcePublic) { return }
     $ad = $Ctx.Ad
     $np = Get-NetConnectionProfile -InterfaceIndex $ad.ifIndex -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -443,6 +539,54 @@ function Shield-Proxies {
     return $changed
 }
 
+function Shield-TransportProtocols {
+    if ($script:IsDry) { Write-Log 'DRY' 'Would calibrate TCP transport stack & congestion provider'; return }
+    try {
+        Shield-TcpAutoTuning
+        $tcpSetting = Get-NetTCPSetting -SettingName Internet -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($tcpSetting) {
+            if ($tcpSetting.CongestionProvider -and [string]$tcpSetting.CongestionProvider -match '^(Default|None)$') {
+                $avail = @(Get-NetTCPSetting -ErrorAction SilentlyContinue | Select-Object -ExpandProperty CongestionProvider -Unique)
+                $targetProvider = if ($avail -contains 'CUBIC') { 'CUBIC' } elseif ($avail -contains 'CTCP') { 'CTCP' } else { '' }
+                if ($targetProvider) {
+                    Save-Original 'Global' 'TcpCongestionProvider' ([string]$tcpSetting.CongestionProvider)
+                    [void](Invoke-Change ("TCP Congestion Provider upgraded to {0} (was {1})" -f $targetProvider, [string]$tcpSetting.CongestionProvider) {
+                        Set-NetTCPSetting -SettingName Internet -CongestionProvider $targetProvider -ErrorAction Stop
+                    })
+                }
+            }
+            if ($tcpSetting.InitialRtoMs -and [int]$tcpSetting.InitialRtoMs -gt 3000) {
+                Save-Original 'Global' 'TcpInitialRtoMs' ([int]$tcpSetting.InitialRtoMs)
+                [void](Invoke-Change ("TCP Initial RTO calibrated from {0}ms to 2000ms" -f [int]$tcpSetting.InitialRtoMs) {
+                    Set-NetTCPSetting -SettingName Internet -InitialRtoMs 2000 -ErrorAction Stop
+                })
+            }
+            try {
+                $tcpParamKey = 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters'
+                if (Test-Path -LiteralPath $tcpParamKey) {
+                    $curRetries = (Get-ItemProperty -LiteralPath $tcpParamKey -Name TcpMaxConnectRetransmissions -ErrorAction SilentlyContinue).TcpMaxConnectRetransmissions
+                    if ($null -ne $curRetries -and [int]$curRetries -lt 3) {
+                        Save-Original 'Global' 'TcpMaxConnectRetransmissions' [int]$curRetries
+                        [void](Invoke-Change ("Calibrated TcpMaxConnectRetransmissions to 3 (was {0})" -f [int]$curRetries) {
+                            Set-ItemProperty -LiteralPath $tcpParamKey -Name TcpMaxConnectRetransmissions -Value 3 -Type DWord -Force -ErrorAction Stop
+                        })
+                    }
+                }
+            } catch {}
+            try {
+                $netsh = Get-SysExe 'netsh.exe'
+                if (Test-Path -LiteralPath $netsh) {
+                    $tcpGlobal = Invoke-Native $netsh @('int', 'tcp', 'show', 'global') 4000
+                    if ($tcpGlobal.Output -match 'hystart\s*:\s*disabled') {
+                        [void](Invoke-Native $netsh @('int', 'tcp', 'set', 'global', 'hystart=enabled') 4000)
+                        Write-Log 'INFO' 'TCP HyStart enabled for high-bandwidth throughput.'
+                    }
+                }
+            } catch {}
+        }
+    } catch {}
+}
+
 function Shield-SystemStack([switch]$Aggressive) {
     if (-not $script:IsAdmin) { return }
     [void](Shield-Proxies)
@@ -654,147 +798,3 @@ function Shield-SystemStack([switch]$Aggressive) {
         if ($Aggressive -or -not (Test-TcpPort $Matches[1] ([int]$Matches[2]) 300)) {
             [void](Invoke-Change 'Reset dead WinHTTP loopback proxy' {
                 [void](Invoke-Native (Get-SysExe 'netsh.exe') @('winhttp', 'reset', 'proxy') 5000)
-            })
-        }
-    }
-    # 4. Always remove DisableSmartNameResolution so Wi-Fi/Bluetooth tethering DNS never gets locked out
-    Shield-SmartDns @()
-    # 5. Safely manage Wi-Fi / Secondary Uplink DNS: try DHCP first, and if DNS still fails on non-campus hotspot, set resilient public DNS (8.8.8.8, 1.1.1.1)
-    $otherUps = @(Get-OtherUplinkAdapters)
-    if ($otherUps.Count -gt 0) {
-        foreach ($ou in $otherUps) {
-            $ouGuid = [string]$ou.InterfaceGuid
-            $ouStatic = Get-StaticDnsString $ouGuid
-            $ouDns = @((Get-DnsClientServerAddress -InterfaceIndex $ou.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses)
-            $ouDhcp = @(Get-DhcpDnsServers $ouGuid)
-            $stuckCampus = ($ouStatic -and ($ouDns -contains $script:Cfg.CampusDns -or $ouDns -contains $script:Cfg.PortalIp) -and ($ouDhcp -notcontains $script:Cfg.CampusDns))
-            $ouSrc = Get-ValidIPv4 $ou
-            $ouDead = $false
-            if ($ouSrc) {
-                $ouAns = @(Get-ScopedDnsAnswers 'accounts.google.com' $ouSrc 1500)
-                if ($ouAns.Count -eq 0) { $ouDead = $true }
-            }
-            if ($stuckCampus -or $ouDead) {
-                [void](Set-AdapterDnsAutomatic $ou)
-                Clear-DnsClientCache -ErrorAction SilentlyContinue
-                if (-not $script:IsDry -and $ouSrc) {
-                    $recheck = @(Get-ScopedDnsAnswers 'accounts.google.com' $ouSrc 1500)
-                    if ($recheck.Count -eq 0) {
-                        $ouEnv = (Get-AdapterEnvironment $ou).Env
-                        if ($ouEnv -ne 'Campus') {
-                            $fallbackDns = @()
-                            $dhcpDns = @(Get-DhcpDnsServers $ouGuid | Where-Object { $_ -ne $script:Cfg.CampusDns -and $_ -ne $script:Cfg.PortalIp })
-                            if ($dhcpDns.Count -gt 0) { $fallbackDns = $dhcpDns }
-                            elseif ($ou.IPv4DefaultGateway) { $fallbackDns = @($ou.IPv4DefaultGateway) }
-                            else { $fallbackDns = @('8.8.8.8','1.1.1.1') }
-                            [void](Set-AdapterDns $ou $fallbackDns)
-                        }
-                        Clear-DnsClientCache -ErrorAction SilentlyContinue
-                    }
-                }
-            }
-        }
-    }
-}
-
-function Invoke-SupremeOmnifix {
-    if (-not (Assert-Admin)) { return }
-    $swOmni = [System.Diagnostics.Stopwatch]::StartNew()
-    Write-Section 'FULL NET RESET (5-STAGE DEEP RECOVERY)'
-    $r = Pick-Hash (Invoke-WithLock {
-        Write-Log 'STEP' 'STAGE 1/5  Cycling PnP hardware transceiver, rescanning bus & neutralizing WFP DNS interceptors / proxies'
-        if (-not $script:IsDry) {
-            foreach ($oa in @(Get-EthernetAdapters)) { Reset-PhysicalAdapterHardware $oa }
-            [void](Invoke-Native (Get-SysExe 'pnputil.exe') @('/scan-devices') 5000)
-        }
-        $script:ConnCache = $null
-        $script:EnvCache = @{}
-        if (-not $script:IsDry) {
-            $script:State.Misc['RouteProfile'] = 'Adaptive'
-            $script:State.Misc['DnsProfile'] = 'Adaptive'
-            $script:State.Misc['FailStreak'] = 0
-            $script:State.Misc.Remove('MtuCandidate')
-            $script:State.Misc.Remove('DiscoveredDomain')
-            $script:State.Misc.Remove('DiscoveredPortalIp')
-            $script:State.Misc.Remove('DiscoveredPortalUrl')
-        }
-        Shield-SystemStack -Aggressive
-        if (-not $script:IsDry) { [void](Invoke-Native (Get-SysExe 'netsh.exe') @('winhttp', 'reset', 'proxy') 5000) }
-        Remove-CampusNrpt
-        Remove-LegacyHostsEntries
-        Remove-CampusHostRoutes
-        foreach ($ea in @(Get-EthernetAdapters)) { Release-ArpLocks $ea; Shield-DnsIntegrity $ea }
-        Write-Log 'STEP' 'STAGE 2/5  Restoring clean routing metrics & MTU across physical Ethernet uplinks'
-        Shield-Aspm
-        foreach ($oa in @(Get-EthernetAdapters)) { [void](Shield-TcpOffloads $oa); [void](Shield-Dot3Svc $oa) }
-        Restore-InterfaceMetrics 'Full Net Reset metrics restore'
-        if (-not $script:IsDry) {
-            foreach ($a in @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' -and $_.MediaType -eq '802.3' })) {
-                Set-NetIPInterface -InterfaceIndex $a.ifIndex -AddressFamily IPv4 -NlMtuBytes 1500 -ErrorAction SilentlyContinue
-            }
-        }
-        Write-Log 'STEP' 'STAGE 3/5  Running 7-Layer Ethernet & Multi-Homed Heal Pipeline'
-        $resHeal = Pick-Hash (Invoke-HealPipeline -SkipSystemStack)
-        Write-Log 'STEP' 'STAGE 4/5  Flushing DNS, ARP, NetBIOS & refreshing network state services'
-        if (-not $script:IsDry) {
-            Clear-DnsClientCache -ErrorAction SilentlyContinue
-            [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/flushdns') 5000)
-            Get-NetNeighbor -AddressFamily IPv4 -ErrorAction SilentlyContinue | Remove-NetNeighbor -Confirm:$false -ErrorAction SilentlyContinue
-            Get-NetNeighbor -AddressFamily IPv6 -ErrorAction SilentlyContinue | Remove-NetNeighbor -Confirm:$false -ErrorAction SilentlyContinue
-            [void](Invoke-Native (Get-SysExe 'nbtstat.exe') @('-R') 5000)
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('winsock', 'reset') 5000)
-            Restart-Service -Name Dhcp -Force -ErrorAction SilentlyContinue
-            Restart-Service -Name NlaSvc -Force -ErrorAction SilentlyContinue
-            Start-Service -Name netprofm -ErrorAction SilentlyContinue
-            Start-Service -Name iphlpsvc -ErrorAction SilentlyContinue
-            Start-Service -Name Wcmsvc -ErrorAction SilentlyContinue
-            Start-Service -Name WlanSvc -ErrorAction SilentlyContinue
-        }
-        Write-Log 'STEP' 'STAGE 5/5  Verifying live IPv4 A-record & HTTPS reachability (GitHub & Google Auth)'
-        $anyVerifyFail = $false
-        $upEths = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })
-        $primarySrc = if ($upEths.Count -gt 0) { Get-ValidIPv4 $upEths[0] } else { '' }
-        foreach ($testHost in @('github.com', 'accounts.google.com')) {
-            $ip = Resolve-HostBounded $testHost 3000 $primarySrc
-            if ($ip) {
-                $tcpOk = Test-TcpPort $ip 443 2500 $primarySrc
-                Write-Log ($(if ($tcpOk) { 'OK' } else { 'WARN' })) ("Verified {0} -> {1} (TCP/443: {2})" -f $testHost, $ip, $(if ($tcpOk) { 'OPEN' } else { 'BLOCKED' }))
-            } else {
-                $anyVerifyFail = $true
-                Write-Log 'FAIL' ("DNS resolution still failed for {0}" -f $testHost)
-            }
-        }
-        if ($anyVerifyFail -and -not $script:IsDry -and ($resHeal.Conn -ne 'Captive')) {
-            Write-Log 'WARN' 'DNS resolution failed for public endpoints. Deploying adaptive public DNS rescue...'
-            foreach ($ea in @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })) {
-                $rescueDns = @(Get-BestDnsOrder ([string]$ea.InterfaceGuid) @())
-                if ($rescueDns.Count -gt 0) {
-                    Write-Log 'INFO' "Applying active public DNS rescue on $($ea.Name): $($rescueDns -join ', ')..."
-                    [void](Set-AdapterDns $ea $rescueDns)
-                }
-            }
-            Clear-DnsClientCache -ErrorAction SilentlyContinue
-            [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/flushdns') 5000)
-            [void](Invoke-Change 'Zero-reboot live network stack cycling (NDIS, DHCP & TCPIP state unfreeze)' {
-                Restart-Service -Name Dhcp -Force -ErrorAction SilentlyContinue
-                Restart-Service -Name NlaSvc -Force -ErrorAction SilentlyContinue
-                Start-Service -Name netprofm -ErrorAction SilentlyContinue
-                Start-Service -Name iphlpsvc -ErrorAction SilentlyContinue
-                Start-Service -Name Wcmsvc -ErrorAction SilentlyContinue
-                Start-Service -Name WlanSvc -ErrorAction SilentlyContinue
-                foreach ($ea in @(Get-EthernetAdapters)) { Reset-PhysicalAdapterHardware $ea }
-            })
-            foreach ($testHost in @('github.com', 'accounts.google.com')) {
-                $ip = Resolve-HostBounded $testHost 3000 $primarySrc
-                if ($ip) {
-                    $tcpOk = Test-TcpPort $ip 443 2500 $primarySrc
-                    Write-Log ($(if ($tcpOk) { 'OK' } else { 'WARN' })) ("Re-verified {0} -> {1} (TCP/443: {2})" -f $testHost, $ip, $(if ($tcpOk) { 'OPEN' } else { 'BLOCKED' }))
-                }
-            }
-        }
-        Save-State
-        $resHeal
-    })
-    $swOmni.Stop()
-    Write-HealSummary $r $swOmni
-    # Lock is now released before the 180s human browser wait so background watchdog passes never block!

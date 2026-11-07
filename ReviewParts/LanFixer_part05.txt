@@ -58,7 +58,7 @@ function Test-GatewayAlive($Ad, [string]$Gw) {
         $homeAd = $true
         try { $eh = Get-AdapterEnvironment $Ad -UseCache; if ($null -ne $eh.Home) { $homeAd = [bool]$eh.Home } } catch {}
         $gwSrc = [string](Get-ValidIPv4 $Ad)
-        if ((Test-TcpPort $Gw 80 400 $gwSrc) -or (Test-TcpPort $Gw 443 400 $gwSrc) -or (Test-TcpPort $Gw 53 400 $gwSrc)) {
+        if ((Test-TcpPort $Gw 80 400 $gwSrc) -or (Test-TcpPort $Gw 443 400 $gwSrc) -or (Test-TcpPort $Gw 53 400 $gwSrc) -or (Test-TcpPort $Gw 8003 400 $gwSrc)) {
             return @{ Alive = $true; Rtt = $null; Via = 'arp' }
         }
         $freshArp = @(Get-GatewayMacs $Ad $Gw 1)
@@ -68,7 +68,7 @@ function Test-GatewayAlive($Ad, [string]$Gw) {
         return @{ Alive = $false; Rtt = $null; Via = '' }
     }
     $gwSrc = [string](Get-ValidIPv4 $Ad)
-    if ($gwSrc -and ((Test-TcpPort $Gw 80 350 $gwSrc) -or (Test-TcpPort $Gw 443 350 $gwSrc) -or (Test-TcpPort $Gw 53 350 $gwSrc))) {
+    if ($gwSrc -and ((Test-TcpPort $Gw 80 350 $gwSrc) -or (Test-TcpPort $Gw 443 350 $gwSrc) -or (Test-TcpPort $Gw 53 350 $gwSrc) -or (Test-TcpPort $Gw 8003 350 $gwSrc))) {
         return @{ Alive = $true; Rtt = $null; Via = 'tcp' }
     }
     if ($script:IsAdmin -and -not $script:IsDry -and $ex -and @('Unreachable','Incomplete') -contains [string]$ex.State) {
@@ -334,11 +334,11 @@ function Get-AdapterHealth($Ad) {
 function Wait-LinkSettling([int]$MaxMs = 12000) {
     if ($script:IsDry) { return }
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    $minWait = if ($MaxMs -gt 12000) { 3000 } else { 1000 }
+    $minWait = if ($MaxMs -gt 12000) { 2000 } else { 500 }
     while ($sw.ElapsedMilliseconds -lt $MaxMs) {
-        $ups = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })
+        $ups = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' -and $_.LinkSpeed -and $_.LinkSpeed -notmatch '^(0\s*bps)?$' })
         if ($ups.Count -gt 0 -and $sw.ElapsedMilliseconds -ge $minWait) { break }
-        Start-Sleep -Milliseconds 250
+        Start-Sleep -Milliseconds 150
     }
     Write-Log 'INFO' ("Link settling finished after {0} ms" -f $sw.ElapsedMilliseconds)
 }
@@ -500,7 +500,51 @@ function Optimize-PhySiliconBuffers($Ad) {
             if ($ok) { $modified = $true; $script:PendingRestart[$guid] = $Ad.Name }
         }
     }
+    $imProp = $props | Where-Object { $_.RegistryKeyword -eq '*InterruptModeration' } | Select-Object -First 1
+    if ($imProp) {
+        $imVal = [string](@($imProp.RegistryValue) | Select-Object -First 1)
+        if ($imVal -eq '0') {
+            Save-Original $guid 'Adv:*InterruptModeration' $imVal
+            $ok = Invoke-Change ("Enabled *InterruptModeration on {0} to prevent DPC CPU spikes" -f $Ad.Name) {
+                Set-NetAdapterAdvancedProperty -Name $Ad.Name -RegistryKeyword '*InterruptModeration' -RegistryValue @('1') -NoRestart -ErrorAction Stop
+            }
+            if ($ok) { $modified = $true; $script:PendingRestart[$guid] = $Ad.Name }
+        }
+    }
     return $modified
+}
+
+function Shield-TransceiverBus($Ad) {
+    if (-not $Ad -or $script:IsDry) {
+        if ($script:IsDry -and $Ad) { Write-Log 'DRY' ("Would verify transceiver bus and PnP controller status on {0}" -f $Ad.Name) }
+        return $false
+    }
+    $recovered = $false
+    try {
+        if ($Ad.PnPDeviceID) {
+            $pnp = Get-CimInstance Win32_PnPEntity -Filter ("DeviceID = '{0}'" -f ($Ad.PnPDeviceID -replace "\\", "\\\\")) -ErrorAction SilentlyContinue
+            if ($pnp -and $pnp.ConfigManagerErrorCode -ne 0) {
+                $code = [int]$pnp.ConfigManagerErrorCode
+                Write-Log 'WARN' ("Ethernet controller {0} reports PnP ConfigManagerErrorCode {1} ({2})" -f $Ad.Name, $code, $pnp.Status)
+                if (@(10, 22, 43, 14, 31) -contains $code) {
+                    $ok = Invoke-Change ("PnP hardware controller reset cycle on {0} (clearing error code {1})" -f $Ad.Name, $code) {
+                        $pnputil = Get-SysExe 'pnputil.exe'
+                        if (Test-Path -LiteralPath $pnputil) {
+                            [void](Invoke-Native $pnputil @('/restart-device', ('"{0}"' -f $Ad.PnPDeviceID)) 10000)
+                        } else {
+                            Disable-PnpDevice -InstanceId $Ad.PnPDeviceID -Confirm:$false -ErrorAction SilentlyContinue
+                            Start-Sleep -Milliseconds 500
+                            Enable-PnpDevice -InstanceId $Ad.PnPDeviceID -Confirm:$false -ErrorAction Stop
+                        }
+                    }
+                    if ($ok) { $recovered = $true }
+                }
+            }
+        }
+    } catch {
+        Write-Log 'INFO' ("PnP transceiver bus evaluation skipped on {0}: {1}" -f $Ad.Name, $_.Exception.Message)
+    }
+    return $recovered
 }
 
 function Shield-Aspm {
@@ -538,6 +582,7 @@ function Resolve-DisabledValue($Prop) {
 }
 function Shield-Hardware($Ad) {
     $guid = [string]$Ad.InterfaceGuid
+    [void](Shield-TransceiverBus $Ad)
     $touched = $false
     $props = @(Get-NetAdapterAdvancedProperty -Name $Ad.Name -AllProperties -ErrorAction SilentlyContinue)
     foreach ($kw in $script:PowerKeywords) {
@@ -627,6 +672,7 @@ function Shield-Dot3Svc($Ad) {
                 Start-Sleep -Milliseconds 600
                 $netsh = Get-SysExe 'netsh.exe'
                 if (Test-Path -LiteralPath $netsh) {
+                    [void](Invoke-Native $netsh @('lan', 'set', 'autoconfig', 'enabled=yes', ("interface={0}" -f $Ad.Name)) 5000)
                     [void](Invoke-Native $netsh @('lan', 'reconnect', ("interface={0}" -f $Ad.Name)) 5000)
                 }
             }
@@ -695,6 +741,7 @@ function Repair-Dhcp($Ad, [switch]$ForceRelease) {
                 }
             } catch {}
         }
+        Remove-NetNeighbor -InterfaceIndex $Ad.ifIndex -AddressFamily IPv4 -Confirm:$false -ErrorAction SilentlyContinue
         [void](Invoke-Native $ipconfig @('/release', $Ad.Name) 10000)
     }
     Write-Log 'INFO' "DHCP renew attempted on $($Ad.Name)..."
@@ -751,50 +798,3 @@ function Repair-Dhcp($Ad, [switch]$ForceRelease) {
         if (Get-ValidIPv4 $Ad) { Write-Log 'OK' 'Lease acquired after release/renew.'; return $true }
         Start-Sleep -Milliseconds 500
     }
-    Write-Log 'ALERT' 'DHCP still not answering.'
-    Write-Log 'INFO' (Get-DhcpFailureDiagnosis $Ad)
-    return $false
-}
-
-# Duplicate-address probes protect you from a REAL duplicate IP. They only hurt when the switch/ARP proxy
-# answers every probe (false conflict -> address marked Duplicate -> 169.254.x.x). So 'Auto' turns them off
-# only after evidence of that, instead of unconditionally trading away conflict detection.
-function Test-DadConflictEvidence($Ad) {
-    $dup = @(Get-NetIPAddress -InterfaceIndex $Ad.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { [string]$_.AddressState -eq 'Duplicate' })
-    if ($dup.Count -gt 0) { return 'an address is in Duplicate state right now' }
-    $c = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Tcpip'; Id = 4199; StartTime = (Get-Date).AddDays(-7) } -ErrorAction SilentlyContinue).Count
-    if ($c -gt 0) { return "$c address-conflict events in the last 7 days" }
-    return ''
-}
-function Shield-DataLink($Ctx) {
-    $ad = $Ctx.Ad
-    $guid = [string]$ad.InterfaceGuid
-    $ipif = Get-IPv4Interface $ad
-    if ($ipif) {
-        $cur = [int]$ipif.DadTransmits
-        if ($Ctx.Env.Env -eq 'Campus') {
-            $want = [int]$script:Cfg.CampusDad
-            $policy = [string]$script:Cfg.DadPolicy
-            if ($cur -ne $want) {
-                $why = ''
-                if ($policy -eq 'Always') { $why = 'policy Always' }
-                elseif ($policy -ne 'Never') { $why = Test-DadConflictEvidence $ad }
-                if ($why) {
-                    Save-Original $guid 'Dad4' $cur
-                    [void](Invoke-Change "IPv4 duplicate-address probes $cur -> $want on $($ad.Name) ($why)" {
-                        Set-NetIPInterface -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -DadTransmits $want -ErrorAction Stop
-                    })
-                } else { Write-Log 'INFO' "No address-conflict evidence on $($ad.Name): duplicate-address probes stay at $cur (DadPolicy $policy)." }
-            } else { Write-Log 'INFO' "Duplicate-address probes already $want on $($ad.Name)." }
-        } elseif ($Ctx.Env.Env -eq 'Other') {
-            $dupNow = @(Get-NetIPAddress -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { [string]$_.AddressState -eq 'Duplicate' }).Count -gt 0
-            if ($dupNow -and $cur -ne 0 -and ([string]$script:Cfg.DadPolicy -ne 'Never')) {
-                Save-Original $guid 'Dad4' $cur
-                [void](Invoke-Change "Active Duplicate IPv4 conflict on $($ad.Name): duplicate-address probes $cur -> 0" {
-                    Set-NetIPInterface -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -DadTransmits 0 -ErrorAction Stop
-                })
-            } else {
-                $snap = Get-SubTable 'Snapshot' $guid
-                $orig = if ($snap.ContainsKey('Dad4')) { [int]$snap['Dad4'] } else { [int]$script:Cfg.DefaultDad }
-                if (-not $dupNow -and $cur -eq [int]$script:Cfg.CampusDad -and $orig -ne $cur) {
-                    [void](Invoke-Change "Non-campus network: duplicate-address probes restored to $orig on $($ad.Name)" {

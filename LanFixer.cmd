@@ -3258,7 +3258,7 @@ function Test-GatewayAlive($Ad, [string]$Gw) {
         $homeAd = $true
         try { $eh = Get-AdapterEnvironment $Ad -UseCache; if ($null -ne $eh.Home) { $homeAd = [bool]$eh.Home } } catch {}
         $gwSrc = [string](Get-ValidIPv4 $Ad)
-        if ((Test-TcpPort $Gw 80 400 $gwSrc) -or (Test-TcpPort $Gw 443 400 $gwSrc) -or (Test-TcpPort $Gw 53 400 $gwSrc)) {
+        if ((Test-TcpPort $Gw 80 400 $gwSrc) -or (Test-TcpPort $Gw 443 400 $gwSrc) -or (Test-TcpPort $Gw 53 400 $gwSrc) -or (Test-TcpPort $Gw 8003 400 $gwSrc)) {
             return @{ Alive = $true; Rtt = $null; Via = 'arp' }
         }
         $freshArp = @(Get-GatewayMacs $Ad $Gw 1)
@@ -3268,7 +3268,7 @@ function Test-GatewayAlive($Ad, [string]$Gw) {
         return @{ Alive = $false; Rtt = $null; Via = '' }
     }
     $gwSrc = [string](Get-ValidIPv4 $Ad)
-    if ($gwSrc -and ((Test-TcpPort $Gw 80 350 $gwSrc) -or (Test-TcpPort $Gw 443 350 $gwSrc) -or (Test-TcpPort $Gw 53 350 $gwSrc))) {
+    if ($gwSrc -and ((Test-TcpPort $Gw 80 350 $gwSrc) -or (Test-TcpPort $Gw 443 350 $gwSrc) -or (Test-TcpPort $Gw 53 350 $gwSrc) -or (Test-TcpPort $Gw 8003 350 $gwSrc))) {
         return @{ Alive = $true; Rtt = $null; Via = 'tcp' }
     }
     if ($script:IsAdmin -and -not $script:IsDry -and $ex -and @('Unreachable','Incomplete') -contains [string]$ex.State) {
@@ -3534,11 +3534,11 @@ function Get-AdapterHealth($Ad) {
 function Wait-LinkSettling([int]$MaxMs = 12000) {
     if ($script:IsDry) { return }
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    $minWait = if ($MaxMs -gt 12000) { 3000 } else { 1000 }
+    $minWait = if ($MaxMs -gt 12000) { 2000 } else { 500 }
     while ($sw.ElapsedMilliseconds -lt $MaxMs) {
-        $ups = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })
+        $ups = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' -and $_.LinkSpeed -and $_.LinkSpeed -notmatch '^(0\s*bps)?$' })
         if ($ups.Count -gt 0 -and $sw.ElapsedMilliseconds -ge $minWait) { break }
-        Start-Sleep -Milliseconds 250
+        Start-Sleep -Milliseconds 150
     }
     Write-Log 'INFO' ("Link settling finished after {0} ms" -f $sw.ElapsedMilliseconds)
 }
@@ -3700,7 +3700,51 @@ function Optimize-PhySiliconBuffers($Ad) {
             if ($ok) { $modified = $true; $script:PendingRestart[$guid] = $Ad.Name }
         }
     }
+    $imProp = $props | Where-Object { $_.RegistryKeyword -eq '*InterruptModeration' } | Select-Object -First 1
+    if ($imProp) {
+        $imVal = [string](@($imProp.RegistryValue) | Select-Object -First 1)
+        if ($imVal -eq '0') {
+            Save-Original $guid 'Adv:*InterruptModeration' $imVal
+            $ok = Invoke-Change ("Enabled *InterruptModeration on {0} to prevent DPC CPU spikes" -f $Ad.Name) {
+                Set-NetAdapterAdvancedProperty -Name $Ad.Name -RegistryKeyword '*InterruptModeration' -RegistryValue @('1') -NoRestart -ErrorAction Stop
+            }
+            if ($ok) { $modified = $true; $script:PendingRestart[$guid] = $Ad.Name }
+        }
+    }
     return $modified
+}
+
+function Shield-TransceiverBus($Ad) {
+    if (-not $Ad -or $script:IsDry) {
+        if ($script:IsDry -and $Ad) { Write-Log 'DRY' ("Would verify transceiver bus and PnP controller status on {0}" -f $Ad.Name) }
+        return $false
+    }
+    $recovered = $false
+    try {
+        if ($Ad.PnPDeviceID) {
+            $pnp = Get-CimInstance Win32_PnPEntity -Filter ("DeviceID = '{0}'" -f ($Ad.PnPDeviceID -replace "\\", "\\\\")) -ErrorAction SilentlyContinue
+            if ($pnp -and $pnp.ConfigManagerErrorCode -ne 0) {
+                $code = [int]$pnp.ConfigManagerErrorCode
+                Write-Log 'WARN' ("Ethernet controller {0} reports PnP ConfigManagerErrorCode {1} ({2})" -f $Ad.Name, $code, $pnp.Status)
+                if (@(10, 22, 43, 14, 31) -contains $code) {
+                    $ok = Invoke-Change ("PnP hardware controller reset cycle on {0} (clearing error code {1})" -f $Ad.Name, $code) {
+                        $pnputil = Get-SysExe 'pnputil.exe'
+                        if (Test-Path -LiteralPath $pnputil) {
+                            [void](Invoke-Native $pnputil @('/restart-device', ('"{0}"' -f $Ad.PnPDeviceID)) 10000)
+                        } else {
+                            Disable-PnpDevice -InstanceId $Ad.PnPDeviceID -Confirm:$false -ErrorAction SilentlyContinue
+                            Start-Sleep -Milliseconds 500
+                            Enable-PnpDevice -InstanceId $Ad.PnPDeviceID -Confirm:$false -ErrorAction Stop
+                        }
+                    }
+                    if ($ok) { $recovered = $true }
+                }
+            }
+        }
+    } catch {
+        Write-Log 'INFO' ("PnP transceiver bus evaluation skipped on {0}: {1}" -f $Ad.Name, $_.Exception.Message)
+    }
+    return $recovered
 }
 
 function Shield-Aspm {
@@ -3738,6 +3782,7 @@ function Resolve-DisabledValue($Prop) {
 }
 function Shield-Hardware($Ad) {
     $guid = [string]$Ad.InterfaceGuid
+    [void](Shield-TransceiverBus $Ad)
     $touched = $false
     $props = @(Get-NetAdapterAdvancedProperty -Name $Ad.Name -AllProperties -ErrorAction SilentlyContinue)
     foreach ($kw in $script:PowerKeywords) {
@@ -3827,6 +3872,7 @@ function Shield-Dot3Svc($Ad) {
                 Start-Sleep -Milliseconds 600
                 $netsh = Get-SysExe 'netsh.exe'
                 if (Test-Path -LiteralPath $netsh) {
+                    [void](Invoke-Native $netsh @('lan', 'set', 'autoconfig', 'enabled=yes', ("interface={0}" -f $Ad.Name)) 5000)
                     [void](Invoke-Native $netsh @('lan', 'reconnect', ("interface={0}" -f $Ad.Name)) 5000)
                 }
             }
@@ -3895,6 +3941,7 @@ function Repair-Dhcp($Ad, [switch]$ForceRelease) {
                 }
             } catch {}
         }
+        Remove-NetNeighbor -InterfaceIndex $Ad.ifIndex -AddressFamily IPv4 -Confirm:$false -ErrorAction SilentlyContinue
         [void](Invoke-Native $ipconfig @('/release', $Ad.Name) 10000)
     }
     Write-Log 'INFO' "DHCP renew attempted on $($Ad.Name)..."
@@ -4065,6 +4112,10 @@ function Shield-DataLink($Ctx) {
         }
     }
     $validIp = Get-ValidIPv4 $ad
+    if ($validIp -and -not $script:IsDry) {
+        $subCalc = Get-SubnetInfoFromLease $ad
+        if ($subCalc -and $subCalc.Broadcast) { [void](Test-Ping $subCalc.Broadcast 150) }
+    }
     if ($validIp -and $Ctx.Env.Env -eq 'Campus' -and -not $script:IsDry) {
         $gw = @(Get-GatewaysV4 $ad) | Select-Object -First 1
         if ($gw) { $script:State.Misc['LastCampusLease'] = @{ Ip = [string]$validIp; Gateway = [string]$gw; Time = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss') } }
@@ -4127,7 +4178,19 @@ function Shield-GatewayArp($Ctx, [string]$ConnState) {
     if ($Ctx.Env.Env -eq 'Other') { Release-ArpLocks $ad; return }
     if ($Ctx.Env.Env -ne 'Campus') { return }
     if ($script:IsDry) { Write-Log 'DRY' 'Would verify gateway ARP stability (3 samples), compare it with the MAC seen before, and lock it if consistent.'; return }
+    $subInfo = Get-SubnetInfoFromLease $ad
     foreach ($gw in @(Get-GatewaysV4 $ad)) {
+        if ($subInfo -and -not (Test-SubnetContainsIp $subInfo.NetworkAddress $subInfo.SubnetMask $gw)) {
+            Write-Log 'WARN' ("Gateway {0} is outside subnet {1}/{2} on {3}; injecting on-link host route" -f $gw, $subInfo.NetworkAddress, $subInfo.PrefixLength, $ad.Name)
+            try {
+                $existingHostRoute = Get-NetRoute -InterfaceIndex $ad.ifIndex -DestinationPrefix ("{0}/32" -f $gw) -AddressFamily IPv4 -ErrorAction SilentlyContinue
+                if (-not $existingHostRoute) {
+                    [void](Invoke-Change ("Injected on-link host route for off-subnet gateway {0} on {1}" -f $gw, $ad.Name) {
+                        New-NetRoute -InterfaceIndex $ad.ifIndex -DestinationPrefix ("{0}/32" -f $gw) -NextHop '0.0.0.0' -RouteMetric 1 -AddressFamily IPv4 -PolicyStore ActiveStore -ErrorAction Stop | Out-Null
+                    })
+                }
+            } catch {}
+        }
         $existing = Get-NetNeighbor -InterfaceIndex $ad.ifIndex -IPAddress $gw -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($existing -and $existing.State -eq 'Permanent') {
             $gwTest = Test-GatewayAlive $ad $gw
@@ -4151,7 +4214,7 @@ function Shield-GatewayArp($Ctx, [string]$ConnState) {
         $dec = Get-ArpDecision ([string]$mem[$gw]) $mac $script:State.Misc['ArpCand'][$gw] (Get-Date)
         if ($dec -eq 'candidate') {
             $script:State.Misc['ArpCand'][$gw] = @{ Mac = $mac; Since = (Get-Date).ToString('o') }
-            $isVrrp = ($mac -match '^(?:00-00-5E-00-01|00-00-5E-00-02|00-00-0C-07-AC|00-05-73-A0)')
+            $isVrrp = ($mac -match '^(?:00-00-5E-00-01|00-00-5E-00-02|00-00-0C-07-AC|00-00-0C-9F-F|00-07-B4|00-05-73-A0)')
             if ($isVrrp) {
                 Write-Log 'INFO' ("High-availability redundancy transition (VRRP/HSRP) detected for gateway {0}: {1} -> {2}." -f $gw, [string]$mem[$gw], $mac)
             } else {
@@ -4179,6 +4242,19 @@ function Shield-GatewayArp($Ctx, [string]$ConnState) {
     }
 }
 # Layer 3 Subnet Calculus & Adaptive PMTUD (Universal Zero-Hardcode Standard)
+function Test-SubnetContainsIp([string]$NetworkAddress, [string]$SubnetMask, [string]$TargetIp) {
+    try {
+        if (-not $NetworkAddress -or -not $SubnetMask -or -not $TargetIp) { return $false }
+        $net = [System.Net.IPAddress]::Parse($NetworkAddress).GetAddressBytes()
+        $mask = [System.Net.IPAddress]::Parse($SubnetMask).GetAddressBytes()
+        $target = [System.Net.IPAddress]::Parse($TargetIp).GetAddressBytes()
+        for ($i = 0; $i -lt 4; $i++) {
+            if (($target[$i] -band $mask[$i]) -ne $net[$i]) { return $false }
+        }
+        return $true
+    } catch { return $false }
+}
+
 function Get-SubnetInfoFromLease($Ad) {
     if (-not $Ad) { return $null }
     $ipObj = Get-NetIPAddress -InterfaceIndex $Ad.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -notlike '169.254*' } | Select-Object -First 1
@@ -4214,6 +4290,7 @@ function Get-SubnetInfoFromLease($Ad) {
         IPAddress      = $ipStr
         PrefixLength   = $prefix
         SubnetMask     = ($maskBytes -join '.')
+        WildcardMask   = ($wildcard -join '.')
         NetworkAddress = ($netBytes -join '.')
         Broadcast      = ($bcastBytes -join '.')
         MinHost        = ($minHostBytes -join '.')
@@ -4529,7 +4606,10 @@ function Get-BestDnsOrder([string]$Guid, [string[]]$Campus) {
         if ($null -ne $ms) { $scored += [pscustomobject]@{ Server = $s; Ms = $ms }; Write-Log 'INFO' ("  {0,-15} {1} ms" -f $s, $ms) }
         else { Write-Log 'INFO' ("  {0,-15} no answer (blocked or down)" -f $s) }
     }
-    if ($scored.Count -eq 0) { return @($Campus) }
+    if ($scored.Count -eq 0) {
+        if ($Campus.Count -gt 0) { return @($Campus) }
+        return @($script:Cfg.PublicDns)
+    }
     $ordered = @($scored | Sort-Object Ms | ForEach-Object { [string]$_.Server })
     foreach ($c in $Campus) { if ($ordered -notcontains $c) { $ordered += $c } }
     $final = @($ordered | Select-Object -First 3)
@@ -4642,6 +4722,12 @@ function Set-CampusNrpt([string[]]$Servers, [bool]$HomeNet = $true) {
     if ($HomeNet) { $domains = @($script:Cfg.CampusDomain) }
     $discDom = [string]$script:State.Misc['DiscoveredDomain']
     if ($discDom -and $domains -notcontains $discDom) { $domains += $discDom }
+    try {
+        $suffixes = @(Get-DnsClientGlobalSetting -ErrorAction SilentlyContinue).SuffixSearchList
+        foreach ($sfx in $suffixes) {
+            if ($sfx -and $sfx -notmatch 'local|internal' -and $domains -notcontains $sfx) { $domains += $sfx }
+        }
+    } catch {}
     $wantNs = @()
     foreach ($dm in @($domains | Where-Object { $_ } | Select-Object -Unique)) {
         $wantNs += ('.' + $dm)
@@ -4853,6 +4939,16 @@ function Shield-Portal($Ctxs) {
 # LAYER 6 - EXPOSURE: treat the hostel LAN as untrusted (Public firewall profile)
 # ==============================================================================
 function Shield-Profile($Ctx) {
+    try {
+        foreach ($fSvc in @('BFE','mpssvc')) {
+            $sc = Get-Service -Name $fSvc -ErrorAction SilentlyContinue
+            if ($sc -and $sc.Status -ne 'Running') {
+                [void](Invoke-Change ("Started firewall service {0} ({1})" -f $fSvc, $sc.DisplayName) {
+                    Start-Service -Name $fSvc -ErrorAction SilentlyContinue
+                })
+            }
+        }
+    } catch {}
     if (-not $script:Cfg.ForcePublic) { return }
     $ad = $Ctx.Ad
     $np = Get-NetConnectionProfile -InterfaceIndex $ad.ifIndex -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -5241,6 +5337,54 @@ function Shield-Proxies {
     }
 
     return $changed
+}
+
+function Shield-TransportProtocols {
+    if ($script:IsDry) { Write-Log 'DRY' 'Would calibrate TCP transport stack & congestion provider'; return }
+    try {
+        Shield-TcpAutoTuning
+        $tcpSetting = Get-NetTCPSetting -SettingName Internet -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($tcpSetting) {
+            if ($tcpSetting.CongestionProvider -and [string]$tcpSetting.CongestionProvider -match '^(Default|None)$') {
+                $avail = @(Get-NetTCPSetting -ErrorAction SilentlyContinue | Select-Object -ExpandProperty CongestionProvider -Unique)
+                $targetProvider = if ($avail -contains 'CUBIC') { 'CUBIC' } elseif ($avail -contains 'CTCP') { 'CTCP' } else { '' }
+                if ($targetProvider) {
+                    Save-Original 'Global' 'TcpCongestionProvider' ([string]$tcpSetting.CongestionProvider)
+                    [void](Invoke-Change ("TCP Congestion Provider upgraded to {0} (was {1})" -f $targetProvider, [string]$tcpSetting.CongestionProvider) {
+                        Set-NetTCPSetting -SettingName Internet -CongestionProvider $targetProvider -ErrorAction Stop
+                    })
+                }
+            }
+            if ($tcpSetting.InitialRtoMs -and [int]$tcpSetting.InitialRtoMs -gt 3000) {
+                Save-Original 'Global' 'TcpInitialRtoMs' ([int]$tcpSetting.InitialRtoMs)
+                [void](Invoke-Change ("TCP Initial RTO calibrated from {0}ms to 2000ms" -f [int]$tcpSetting.InitialRtoMs) {
+                    Set-NetTCPSetting -SettingName Internet -InitialRtoMs 2000 -ErrorAction Stop
+                })
+            }
+            try {
+                $tcpParamKey = 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters'
+                if (Test-Path -LiteralPath $tcpParamKey) {
+                    $curRetries = (Get-ItemProperty -LiteralPath $tcpParamKey -Name TcpMaxConnectRetransmissions -ErrorAction SilentlyContinue).TcpMaxConnectRetransmissions
+                    if ($null -ne $curRetries -and [int]$curRetries -lt 3) {
+                        Save-Original 'Global' 'TcpMaxConnectRetransmissions' [int]$curRetries
+                        [void](Invoke-Change ("Calibrated TcpMaxConnectRetransmissions to 3 (was {0})" -f [int]$curRetries) {
+                            Set-ItemProperty -LiteralPath $tcpParamKey -Name TcpMaxConnectRetransmissions -Value 3 -Type DWord -Force -ErrorAction Stop
+                        })
+                    }
+                }
+            } catch {}
+            try {
+                $netsh = Get-SysExe 'netsh.exe'
+                if (Test-Path -LiteralPath $netsh) {
+                    $tcpGlobal = Invoke-Native $netsh @('int', 'tcp', 'show', 'global') 4000
+                    if ($tcpGlobal.Output -match 'hystart\s*:\s*disabled') {
+                        [void](Invoke-Native $netsh @('int', 'tcp', 'set', 'global', 'hystart=enabled') 4000)
+                        Write-Log 'INFO' 'TCP HyStart enabled for high-bandwidth throughput.'
+                    }
+                }
+            } catch {}
+        }
+    } catch {}
 }
 
 function Shield-SystemStack([switch]$Aggressive) {
@@ -6607,6 +6751,18 @@ function Invoke-ArmageddonReset([switch]$RebootNow) {
 }
 
 function Shield-Services($Ctxs, [string]$ConnState) {
+    try {
+        $ncsiKey = 'HKLM:\SYSTEM\CurrentControlSet\Services\NlaSvc\Parameters\Internet'
+        if (Test-Path -LiteralPath $ncsiKey) {
+            $curProbe = (Get-ItemProperty -LiteralPath $ncsiKey -Name EnableActiveProbing -ErrorAction SilentlyContinue).EnableActiveProbing
+            if ($null -eq $curProbe -or [int]$curProbe -ne 1) {
+                Save-Original 'Global' 'EnableActiveProbing' $curProbe
+                [void](Invoke-Change 'Enabled NCSI Active Probing (EnableActiveProbing=1) for instant connectivity detection' {
+                    Set-ItemProperty -LiteralPath $ncsiKey -Name EnableActiveProbing -Value 1 -Type DWord -Force -ErrorAction Stop
+                })
+            }
+        }
+    } catch {}
     if ((@($Ctxs | Where-Object { $_.Env.Env -eq 'Campus' })).Count -eq 0 -and (@($Ctxs | Where-Object { $_.Env.Env -eq 'Other' })).Count -gt 0) {
         Restore-NeutralizedInterceptors 'Non-campus Ethernet network'
     }
@@ -6823,6 +6979,9 @@ function Invoke-HealPipeline([switch]$SkipSystemStack) {
     Write-Log 'STEP' 'LAYER 7/7  Network stack & service synchronization'
     foreach ($c in $ctxs) { [void](Refresh-ContextAdapter $c) }
     try { Shield-Services $ctxs $conn } catch { Write-Log 'WARN' ("Layer 7 services remediation encountered error: {0}" -f $_.Exception.Message) }
+    if ($conn -eq 'Online' -and -not $script:IsDry) {
+        [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/registerdns') 3000)
+    }
 
     foreach ($c in $ctxs) {
         $h = Get-SubTable 'Env' ([string]$c.Ad.InterfaceGuid)
@@ -7032,6 +7191,8 @@ function Invoke-HeadlessPortalLogin {
     $jar = @{}
     $cur = $uri
     $page = $null
+    $visitedHops = [System.Collections.Generic.HashSet[string]]::new()
+    [void]$visitedHops.Add($cur.AbsoluteUri)
     for ($hop = 0; $hop -lt 4; $hop++) {
         $page = Invoke-TlsHttp -Uri $cur -SourceIp $src -Pin $pin -Jar $jar
         if ($page.Error) { break }
@@ -7039,6 +7200,8 @@ function Invoke-HeadlessPortalLogin {
             $next = $null
             try { $next = New-Object System.Uri($cur, $page.Location) } catch { $page = @{ Error = 'BadRedirect' }; break }
             if ($next.Scheme -ne 'https' -or -not (Test-CredentialPortalHost $next.Host)) { $page = @{ Error = 'UntrustedRedirect' }; break }
+            if ($visitedHops.Contains($next.AbsoluteUri)) { Write-Log 'WARN' 'Circular portal redirection loop detected; breaking out.'; break }
+            [void]$visitedHops.Add($next.AbsoluteUri)
             $cur = $next
             continue
         }

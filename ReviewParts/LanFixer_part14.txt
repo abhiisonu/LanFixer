@@ -1,3 +1,166 @@
+                Write-SentinelLog 'TIER5' ("Executing Tier 5: NDIS packet drops or duplex issue ({0}). Calibrating PHY buffers and disabling power glitches..." -f $linkHealth.Reason)
+                [void](Invoke-WithLock -WaitMs 5000 {
+                    Resolve-DuplexFlap $ad
+                    Optimize-PhySiliconBuffers $ad
+                    Shield-Hardware $ad
+                    Shield-TcpOffloads $ad
+                    Save-State
+                })
+                $curIp = Get-ValidIPv4 $ad
+                $st5 = if ($curIp) { (Get-InternetState -NoCache -SourceIp $curIp).State } else { 'Offline' }
+                if ($st5 -eq 'Online') {
+                    $recovered = $true; $remedTier = 'Tier 5 (NDIS/PHY)'
+                    $script:SentinelStats.T5_Ndis++
+                } else {
+                    Write-SentinelLog 'TIER5' "NDIS recalibration insufficient. Initiating physical silicon PnP adapter restart..."
+                    [void](Invoke-WithLock -WaitMs 10000 {
+                        Reset-PhysicalAdapterHardware $ad
+                        Wait-StpConvergence $ad ([int]$script:Cfg.StpMaxSec)
+                        Save-State
+                    })
+                    $curIp = Get-ValidIPv4 $ad
+                    $st5b = if ($curIp) { (Get-InternetState -NoCache -SourceIp $curIp).State } else { 'Offline' }
+                    if ($st5b -eq 'Online') {
+                        $recovered = $true; $remedTier = 'Tier 5 (PnP Restart)'
+                        $script:SentinelStats.T5_Ndis++
+                    }
+                }
+            }
+
+            # Tier 6: Deep Stack Resuscitation (ACID Omnifix)
+            if (-not $recovered -and $state.State -ne 'Captive') {
+                Write-SentinelLog 'TIER6' "Executing Tier 6: Deep stack degradation. Resuscitating TCP/IP heuristics, Winsock catalog and core services..."
+                [void](Invoke-WithLock -WaitMs 10000 {
+                    Shield-SystemStack
+                    Save-State
+                })
+                $curIp = Get-ValidIPv4 $ad
+                $st6 = if ($curIp) { (Get-InternetState -NoCache -SourceIp $curIp).State } else { 'Offline' }
+                if ($st6 -eq 'Online') {
+                    $recovered = $true; $remedTier = 'Tier 6 (Deep Stack)'
+                    $script:SentinelStats.T6_Stack++
+                }
+            }
+
+            if ($recovered) {
+                $script:SentinelStats.LastRemediation = $remedTier
+                $script:SentinelStats.LastRemTime = Get-Date
+                Write-SentinelLog 'OK' ("Autonomous remediation SUCCEEDED via {0}. Network restored to Online!" -f $remedTier)
+                $script:DaemonConsecutiveFails = 0
+                $currentCadence = 3
+            } else {
+                Write-SentinelLog 'FAIL' "All 6 autonomous escalation tiers exhausted without full online recovery."
+                $currentCadence = [Math]::Min(30, $IntervalSec * 2)
+            }
+
+            if ($isConsole) {
+                Show-SentinelHud $ad $linkHealth $(if ($recovered) { 'Recovered' } else { 'Degraded' }) $currentCadence
+                $lastHudRender = Get-Date
+            }
+
+            Wait-SentinelCadence $currentCadence $isConsole $ad
+        } catch {
+            Write-SentinelLog 'FAIL' ("Unexpected daemon iteration error: {0}" -f $_.Exception.Message)
+            Wait-SentinelCadence 3 $isConsole $ad
+        }
+    }
+} finally {
+    Write-SentinelLog 'INFO' "Autonomous Sentinel Daemon shutdown cleanly."
+}
+}
+
+function Start-Interactive {
+    if (Test-InputRedirected) {
+        Write-Host 'The control center needs an interactive console. Use -Mode Heal, Diagnose, QuickProbe, SelfTest ... for scripted runs.' -ForegroundColor Yellow
+        if (-not $NoPause -and $Host.Name -eq 'ConsoleHost') {
+            Write-Host ''
+            Write-Host 'Press any key to close...' -ForegroundColor Gray
+            try { [void][Console]::ReadKey($true) } catch { Start-Sleep -Seconds 4 }
+        }
+        return
+    }
+    if ($script:IsAdmin) {
+        $script:WatchdogOn = Test-WatchdogInstalled
+        try { Update-WatchdogIfStale } catch {}
+    }
+    try {
+        $intFile = Join-Path $script:StoreDir 'interactive.json'
+        $self = [System.Diagnostics.Process]::GetCurrentProcess()
+        $meta = @{ Pid = $PID; StartTime = $self.StartTime.ToUniversalTime().ToString('o'); User = [string]$env:USERNAME }
+        [System.IO.File]::WriteAllText($intFile, (ConvertTo-Json -InputObject $meta -Compress))
+    } catch {}
+    try { [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = [System.Diagnostics.ProcessPriorityClass]::AboveNormal } catch {}
+    Enter-Screen
+    try {
+        $t = New-Telemetry
+        $adv = Get-Advice $t
+        Show-Dashboard $t $adv          # instant skeleton, then the real reading
+        $t = Get-Telemetry; $adv = Get-Advice $t
+        if ($script:IsAdmin -and -not $script:IsDry -and ($t.Problem -eq 'Healthy' -or $t.Problem -eq 'Online')) {
+            if (($t.RouteProfile -eq 'Adaptive' -and $t.Routing -eq 'Wi-Fi Protected' -and -not $t.UplinkActive) -or ($t.RouteProfile -eq 'Ethernet' -and $t.Routing -ne 'Ethernet First') -or ($t.RouteProfile -eq 'Wifi' -and ($t.Routing -ne 'Wi-Fi First' -and $t.UplinkActive))) {
+                [void](Invoke-WithLock -WaitMs 2000 -Block { Complete-Authentication })
+                $t = Get-Telemetry; $adv = Get-Advice $t
+            }
+        }
+        $draw = $true
+        $lastTel = Get-Date
+        $lastW = Get-UiWidth
+        $lastH = Get-UiHeight
+        $autoLoginTried = $false
+        $script:InDashboard = $true
+        while ($true) {
+            if ($draw) { Show-Dashboard $t $adv; $draw = $false; $lastW = Get-UiWidth; $lastH = Get-UiHeight; $script:InDashboard = $true }
+            $key = $null
+            while ($null -eq $key) {
+                if (Test-KeyAvailable) { $key = Read-KeyNow; break }
+                if ($t.GwIp -and (Update-Pulse $t.GwIp)) {
+                    if ($null -ne $script:LiveGwRtt) { $t.GwRtt = $script:LiveGwRtt }
+                    if ($script:Ui.Vt) { [void](Update-PulseRow $t) }
+                }   # ping a silent gateway too: the lost replies ARE the picture
+                if ((Get-UiWidth) -ne $lastW -or (Get-UiHeight) -ne $lastH) { $draw = $true; break }
+                $ivl = 2; if ($t.Problem -ne 'Healthy' -and $t.Problem -ne 'Online') { $ivl = 4 }   # quickest refresh: 2s healthy, 4s offline/degraded
+                if (((Get-Date) - $lastTel).TotalSeconds -ge $ivl) {
+                    $t2 = Get-Telemetry; $lastTel = Get-Date
+                    if ($script:IsAdmin -and -not $script:IsDry) {
+                        $needsPrioritySync = ((Test-Elapsed 'DashPrioritySync' 30) -and ($t2.Problem -eq 'Healthy' -or $t2.Problem -eq 'Online') -and (
+                            ($t.Problem -eq 'Captive') -or
+                            ($t2.RouteProfile -eq 'Adaptive' -and $t2.Routing -eq 'Wi-Fi Protected' -and -not $t2.UplinkActive) -or
+                            ($t2.RouteProfile -eq 'Ethernet' -and $t2.Routing -ne 'Ethernet First') -or
+                            ($t2.RouteProfile -eq 'Wifi' -and ($t2.Routing -ne 'Wi-Fi First' -and $t2.UplinkActive))
+                        ))
+                        if ($needsPrioritySync) {
+                            Set-StateTime 'DashPrioritySync'
+                            [void](Invoke-WithLock -WaitMs 2000 -Block { Complete-Authentication })
+                            $t2 = Get-Telemetry
+                        } elseif ($t2.Problem -eq 'Captive' -and ($t.Problem -ne 'Captive' -or -not $autoLoginTried) -and $t2.Vault -and -not $t2.Paused -and $script:Cfg.AutoPortalLogin) {
+                            $autoLoginTried = $true
+                            [void](Invoke-WithLock -WaitMs 2000 -Block {
+                                if (Invoke-HeadlessPortalLogin (Get-InternetState -NoCache)) { Save-State }
+                            })
+                            $t2 = Get-Telemetry
+                        }
+                    }
+                    if ($null -ne $script:LiveGwRtt) { $t2.GwRtt = $script:LiveGwRtt }
+                    if ((Get-Sig $t2) -ne (Get-Sig $t)) { $t = $t2; $adv = Get-Advice $t; $draw = $true; break }
+                    $t = $t2
+                }
+                Start-Sleep -Milliseconds 15
+            }
+            if ($draw -and $null -eq $key) { continue }
+            if ($null -eq $key) { continue }
+            $ch = ([string]$key.KeyChar).ToLowerInvariant()
+            if ($key.Key -eq 'Enter') { $ch = [string]$adv.Key }
+            if ($key.Key -eq 'Spacebar' -or $key.KeyChar -eq ' ' -or $key.Key -eq 'F5') { $ch = '' }
+            if ($key.Key -eq 'Escape') { $ch = '' }
+            if ($ch -eq 'q') { break }
+            Clear-InputBuffer
+            if (-not $ch) {
+                $script:ConnCache = $null
+                $t = Get-Telemetry
+                if ($null -ne $script:LiveGwRtt) { $t.GwRtt = $script:LiveGwRtt }
+                $adv = Get-Advice $t
+                $lastTel = Get-Date
+                $draw = $true
                 continue
             }
             $script:InDashboard = $false
