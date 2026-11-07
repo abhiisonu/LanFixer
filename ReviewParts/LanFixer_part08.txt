@@ -1,3 +1,9 @@
+                [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'ip', 'reset', $ipLog) 10000)
+            } finally {
+                if (Test-Path -LiteralPath $ipLog) { Remove-Item -LiteralPath $ipLog -Force -ErrorAction SilentlyContinue }
+            }
+            try {
+                [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'ipv6', 'reset', $ipv6Log) 10000)
             } finally {
                 if (Test-Path -LiteralPath $ipv6Log) { Remove-Item -LiteralPath $ipv6Log -Force -ErrorAction SilentlyContinue }
             }
@@ -792,9 +798,3 @@ function Invoke-DoomsdayReset {
         $resHeal = Pick-Hash (Invoke-HealPipeline -SkipSystemStack)
         $anyVerifyFail = $false
         $upAdapters = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' })
-        $primarySrc = ''
-        foreach ($ua in $upAdapters) {
-            $candidateIp = Get-ValidIPv4 $ua
-            if ($candidateIp) { $primarySrc = $candidateIp; break }
-        }
-

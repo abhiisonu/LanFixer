@@ -679,10 +679,20 @@ function Repair-Dhcp($Ad, [switch]$ForceRelease) {
     $guid = [string]$Ad.InterfaceGuid
     $ipconfig = Get-SysExe 'ipconfig.exe'
     Write-Log 'WARN' ("Starting DHCP recovery ladder on {0} ({1})." -f $Ad.Name, $(if ($ForceRelease) { 'gateway unreachable / stale lease' } else { 'APIPA / no valid IPv4' }))
-    # Step 1: renew (or release+renew if recovering a stale lease with dead gateway)
+    # Step 1: release APIPA/stale state and renew with broadcast flag
     if ($script:IsDry) { Write-Log 'DRY' "Would: DHCP renew on $($Ad.Name)"; return $false }
-    if ($ForceRelease) {
-        Write-Log 'INFO' "Releasing stale DHCP lease on $($Ad.Name) before renew..."
+    $curIp = Get-ValidIPv4 $Ad
+    if ($ForceRelease -or -not $curIp -or $curIp -like '169.254*') {
+        Write-Log 'INFO' "Releasing stale/APIPA lease on $($Ad.Name) before renew..."
+        if ($guid) {
+            try {
+                $ifKey = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$guid"
+                if (Test-Path -LiteralPath $ifKey) {
+                    Set-ItemProperty -LiteralPath $ifKey -Name 'DhcpConnForceBroadcastFlag' -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
+                    Set-ItemProperty -LiteralPath $ifKey -Name 'DhcpIPAddress' -Value '0.0.0.0' -ErrorAction SilentlyContinue
+                }
+            } catch {}
+        }
         [void](Invoke-Native $ipconfig @('/release', $Ad.Name) 10000)
     }
     Write-Log 'INFO' "DHCP renew attempted on $($Ad.Name)..."
@@ -692,16 +702,12 @@ function Repair-Dhcp($Ad, [switch]$ForceRelease) {
         if ($(if ($ForceRelease) { Test-DhcpLeaseUsable $Ad } else { [bool](Get-ValidIPv4 $Ad) })) { Write-Log 'OK' 'Lease acquired.'; return $true }
         Start-Sleep -Milliseconds 500
     }
-    # Step 2: link reset (rate-limited so a dead port cannot cause a loop)
-    if (Test-Elapsed ("Restart:" + $guid) 300) {
-        Set-StateTime ("Restart:" + $guid)
-        [void](Invoke-Change "Zero-reboot hardware/link reset on $($Ad.Name)" { Reset-PhysicalAdapterHardware $Ad })
-        $script:PendingRestart.Remove($guid)
-        # Adaptive STP convergence window (up to 45s, instant early-exit on lease acquisition)
-        for ($i = 0; $i -lt 90; $i++) { if (Get-ValidIPv4 $Ad) { Write-Log 'OK' 'Lease acquired after link reset.'; return $true }; Start-Sleep -Milliseconds 500 }
-    } else {
-        Write-Log 'INFO' 'Link reset skipped (done less than 5 minutes ago).'
-    }
+    # Step 2: link reset with STP convergence
+    Set-StateTime ("Restart:" + $guid)
+    [void](Invoke-Change "Zero-reboot hardware/link reset on $($Ad.Name)" { Reset-PhysicalAdapterHardware $Ad })
+    $script:PendingRestart.Remove($guid)
+    # Adaptive STP convergence window (up to 45s, instant early-exit on lease acquisition)
+    for ($i = 0; $i -lt 90; $i++) { if (Get-ValidIPv4 $Ad) { Write-Log 'OK' 'Lease acquired after link reset.'; return $true }; Start-Sleep -Milliseconds 500 }
     # Step 3: DHCP stack unfreeze and release/renew
     [void](Invoke-Change "DHCP stack unfreeze and release/renew on $($Ad.Name)" {
         Stop-Service -Name Dhcp -Force -ErrorAction SilentlyContinue
@@ -792,9 +798,3 @@ function Shield-DataLink($Ctx) {
         }
         if (-not $stAlive) {
             $origIpInfo = $null
-            $stIps = @(Get-NetIPAddress -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -notmatch '^(169\.254\.|127\.)' })
-            if ($stIps.Count -gt 0) {
-                $origIpInfo = @{ IPAddress = [string]$stIps[0].IPAddress; PrefixLength = [int]$stIps[0].PrefixLength; DefaultGateway = $(if ($stGw) { [string]$stGw } else { '' }) }
-                Save-Original $guid 'StaticIp4' $origIpInfo
-            }
-            $gwLabel = if ($stGw) { "gateway $stGw unreachable" } else { "no default gateway configured" }

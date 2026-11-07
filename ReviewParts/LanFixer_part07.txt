@@ -1,3 +1,9 @@
+    $snap = Get-SubTable 'Snapshot' 'Global'
+    $orig = $null
+    if ($snap.ContainsKey('Llmnr')) { $orig = $snap['Llmnr'] }
+    $ok = Invoke-Change $Why { Restore-Llmnr $orig }
+    if ($ok -and -not $script:IsDry) { $script:State.Misc['LlmnrManaged'] = $false }
+}
 # The hostel-only rules (campus-domain DNS rule, LLMNR off) are machine-wide, so they must not follow the laptop home.
 # Called whenever NO Ethernet link is up (the normal repair path only runs with a cable in). If the campus resolver
 # still answers over another link (campus Wi-Fi) the rules are useful there and stay.
@@ -792,9 +798,3 @@ function Invoke-UltraSystemReset {
             $ipLog = Join-Path $env:TEMP ('netsh_ip_reset_' + [Guid]::NewGuid().ToString('N').Substring(0,8) + '.log')
             $ipv6Log = Join-Path $env:TEMP ('netsh_ipv6_reset_' + [Guid]::NewGuid().ToString('N').Substring(0,8) + '.log')
             try {
-                [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'ip', 'reset', $ipLog) 10000)
-            } finally {
-                if (Test-Path -LiteralPath $ipLog) { Remove-Item -LiteralPath $ipLog -Force -ErrorAction SilentlyContinue }
-            }
-            try {
-                [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'ipv6', 'reset', $ipv6Log) 10000)

@@ -1,3 +1,14 @@
+function New-WatchdogXml([string]$CmdArgs, [string]$Start) {
+    $hb = "PT$($script:Cfg.HeartbeatMin)M"
+    return @"
+<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>Lan Fixer autonomous Ethernet watchdog (link up, resume from sleep, address conflicts, boot, logon, heartbeat)</Description>
+    <Author>Lan Fixer</Author>
+  </RegistrationInfo>
+  <Triggers>
+    <EventTrigger>
       <Enabled>true</Enabled>
       <Subscription>&lt;QueryList&gt;&lt;Query Id="0" Path="Microsoft-Windows-NetworkProfile/Operational"&gt;&lt;Select Path="Microsoft-Windows-NetworkProfile/Operational"&gt;*[System[(EventID=10000 or EventID=10001)]]&lt;/Select&gt;&lt;/Query&gt;&lt;/QueryList&gt;</Subscription>
       <Delay>PT10S</Delay>
@@ -627,6 +638,7 @@ function Restore-Everything {
     }
 
     Write-Log 'OK' 'Sovereign Factory Reset Complete. All settings reverted to pristine Windows defaults; zero tasks, zero rules, zero background hooks remain.'
+    Write-Log 'INFO' 'Notice: System is now on standard Windows defaults without LanFixer background tasks or persistent portal routes. On restrictive campus networks, Windows native networking requires LanFixer Autonomous Daemon [B] or Watchdog Guard [2] for zero-touch captive portal sign-in and STP handling.'
 }
 
 function Apply-DnsNow {
@@ -786,15 +798,3 @@ function Show-Diagnostics {
         $col = $(if ($a.Status -eq 'Up') { 'Green' } else { 'Red' })
         Write-KV 'Adapter' ("{0} [{1}]" -f $a.Name, $a.Status) $col
         Write-KV '  Controller' ([string]$a.InterfaceDescription)
-        Write-KV '  MAC Address' ([string]$a.MacAddress)
-        Write-KV '  Link speed' ([string]$a.LinkSpeed)
-        Write-KV '  Driver version' ([string]$a.DriverVersionString)
-        $lh = Test-NdisLinkHealth $a
-        Write-KV '  NDIS link health' $lh.Reason $(if ($lh.Healthy) { 'Green' } else { 'Yellow' })
-        $sd = Get-NetAdapterAdvancedProperty -Name $a.Name -RegistryKeyword '*SpeedDuplex' -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($sd) {
-            $dv = [string]$sd.DisplayValue
-            $c = 'White'
-            if ($dv -notmatch 'Auto') { $c = 'Yellow'; [void]$issues.Add("Speed/duplex is forced to '$dv' - a mismatch with the switch causes drops; set it to Auto Negotiation") }
-            Write-KV '  Speed/duplex setting' $dv $c
-        }

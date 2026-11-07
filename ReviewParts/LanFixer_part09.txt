@@ -1,3 +1,9 @@
+        $primarySrc = ''
+        foreach ($ua in $upAdapters) {
+            $candidateIp = Get-ValidIPv4 $ua
+            if ($candidateIp) { $primarySrc = $candidateIp; break }
+        }
+
         foreach ($testHost in @('github.com', 'accounts.google.com')) {
             $ip = Resolve-HostBounded $testHost 3000 $primarySrc
             if ($ip) {
@@ -616,14 +622,19 @@ function Open-Portal {
         if (-not $u) { Write-Log 'INFO' 'Nobody is signed in; portal not opened.'; return $false }
         $known = [string]$script:State.Misc['PortalTaskUrl']
         if (-not $known) { $known = [string]$script:Cfg.PortalUrl }
-        if ($url -ne $known) {
-            # The helper task opens a fixed URL: point it at the verified live one first.
+        $taskExists = [bool](Get-ScheduledTask -TaskName $script:Cfg.TaskPortal -ErrorAction SilentlyContinue)
+        if ($url -ne $known -or -not $taskExists) {
             $reg = Register-LfTask $script:Cfg.TaskPortal (New-PortalTaskXml $url) 'LanFixer_Portal.xml'
             if ($reg -and -not $script:IsDry) { $script:State.Misc['PortalTaskUrl'] = $url }
         }
         $ok = Invoke-Change 'Asking the signed-in user session to open the campus login page' {
+            if (-not (Get-ScheduledTask -TaskName $script:Cfg.TaskPortal -ErrorAction SilentlyContinue)) {
+                [void](Register-LfTask $script:Cfg.TaskPortal (New-PortalTaskXml $url) 'LanFixer_Portal.xml')
+            }
             $r = Invoke-Native (Get-SysExe 'schtasks.exe') @('/run', '/tn', $script:Cfg.TaskPortal) 8000
-            if ($r.ExitCode -ne 0) { throw 'portal task missing (run Install Watchdog again)' }
+            if ($r.ExitCode -ne 0) {
+                Start-Process -FilePath (Join-Path $script:Sys32 'rundll32.exe') -ArgumentList ('url.dll,FileProtocolHandler "' + $url + '"') -ErrorAction SilentlyContinue
+            }
         }
     } else {
         $ok = Invoke-Change "Opening campus login page: $url" { Start-Process -FilePath (Join-Path $script:Sys32 'rundll32.exe') -ArgumentList ('url.dll,FileProtocolHandler "' + $url + '"') -ErrorAction Stop }
@@ -787,14 +798,3 @@ function Invoke-AutoHeal {
 # ==============================================================================
 # WATCHDOG (SYSTEM task, runs ONLY the ACL-locked copy) + portal helper task (user session)
 # ==============================================================================
-function New-WatchdogXml([string]$CmdArgs, [string]$Start) {
-    $hb = "PT$($script:Cfg.HeartbeatMin)M"
-    return @"
-<?xml version="1.0" encoding="UTF-16"?>
-<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
-  <RegistrationInfo>
-    <Description>Lan Fixer autonomous Ethernet watchdog (link up, resume from sleep, address conflicts, boot, logon, heartbeat)</Description>
-    <Author>Lan Fixer</Author>
-  </RegistrationInfo>
-  <Triggers>
-    <EventTrigger>

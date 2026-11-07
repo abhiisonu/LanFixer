@@ -1,3 +1,15 @@
+    $hvF = (-not (Get-HomeCampusVerdict @() '' $false @{ Home = $false }))
+    $hvG = (-not (Get-HomeCampusVerdict @('10.9.8.7') 'nitjsr.ac.in.evil.com' $false $null))
+    Write-Check 'Logic: Get-HomeCampusVerdict recognises the configured campus and refuses foreign leases' ($hvA -and $hvB -and $hvC -and $hvD -and $hvE -and $hvF -and $hvG)
+    $script:State.Misc['DiscoveredDomain'] = 'evil.example'
+    $ctA = ((Test-CredentialPortalHost 'gateway.nitjsr.ac.in') -and (Test-CredentialPortalHost 'login.nitjsr.ac.in') -and (Test-CredentialPortalHost '10.114.0.5') -and (Test-CredentialPortalHost '10.55.1.1'))
+    $ctB = ((-not (Test-CredentialPortalHost 'login.evil.example')) -and (-not (Test-CredentialPortalHost 'nitjsr.ac.in.evil.com')) -and (-not (Test-CredentialPortalHost '')))
+    $ctC = (Test-TrustedPortalHost 'login.evil.example')
+    $ctD = (((Get-CredentialPortalUrl 'https://login.evil.example/') -eq '') -and ((Get-CredentialPortalUrl 'https://gateway.nitjsr.ac.in:8003/index.php') -ne '') -and ((Get-CredentialPortalUrl 'https://u:p@gateway.nitjsr.ac.in/') -eq '') -and ((Get-CredentialPortalUrl 'ftp://gateway.nitjsr.ac.in/') -eq ''))
+    $script:Cfg = $cfgKeepHome
+    Write-Check 'Logic: the saved password is never sent to a host that only the network itself vouches for (DHCP suffix)' ($ctA -and $ctB -and $ctD)
+    Write-Check 'Logic: browser navigation trust is unchanged (discovered domain still opens the login page)' $ctC
+    $hlDef = [string](Get-Command Invoke-HeadlessPortalLogin -ErrorAction SilentlyContinue).Definition
     Write-Check 'Logic: every credential-bearing step of headless login uses the strict trust check' (($hlDef.IndexOf('Get-CredentialPortalUrl') -ge 0) -and ($hlDef.IndexOf('Test-CredentialPortalHost') -ge 0) -and ($hlDef.IndexOf('Test-TrustedPortalHost') -lt 0))
     $tlDef = [string](Get-Command Invoke-TlsHttp -ErrorAction SilentlyContinue).Definition
     Write-Check 'Logic: Invoke-TlsHttp resolves host names from the Ethernet source address' ($tlDef.IndexOf('Resolve-HostBounded $hostName 2500 $SourceIp') -ge 0)
@@ -786,15 +798,3 @@ function New-SentinelTaskXml([string]$CmdArgs) {
   <Settings>
     <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
     <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
-    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
-    <AllowHardTerminate>true</AllowHardTerminate>
-    <StartWhenAvailable>true</StartWhenAvailable>
-    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
-    <IdleSettings>
-      <StopOnIdleEnd>false</StopOnIdleEnd>
-      <RestartOnIdle>false</RestartOnIdle>
-    </IdleSettings>
-    <AllowStartOnDemand>true</AllowStartOnDemand>
-    <Enabled>true</Enabled>
-    <Hidden>false</Hidden>
-    <RunOnlyIfIdle>false</RunOnlyIfIdle>
