@@ -282,7 +282,8 @@ function Invoke-HealPipeline([switch]$SkipSystemStack) {
 
     Write-Log 'STEP' 'LAYER 2/7  Data link & DHCP lease renewal'
     foreach ($c in $ctxs) { [void](Shield-Dot3Svc $c.Ad); Shield-DataLink $c }
-    $conn = (Get-InternetState -NoCache).State
+    $primaryIp = Get-PrimarySourceIp
+    $conn = if ($primaryIp) { (Get-InternetState -NoCache -SourceIp $primaryIp).State } else { (Get-InternetState -NoCache).State }
 
     Write-Log 'STEP' 'LAYER 3/7  Gateway ARP integrity & route metrics'
     foreach ($c in $ctxs) { Shield-GatewayArp $c $conn; Shield-RouteMetrics $c $conn; Shield-PathMtu $c $conn; Shield-DefaultRoutes $c }
@@ -290,7 +291,7 @@ function Invoke-HealPipeline([switch]$SkipSystemStack) {
     Write-Log 'STEP' 'LAYER 4/7  Adaptive DNS configuration & resolver health'
     foreach ($c in $ctxs) { [void](Shield-TcpOffloads $c.Ad); Shield-Dns $c $conn }
 
-    $connAfterDns = (Get-InternetState -NoCache).State
+    $connAfterDns = if ($primaryIp) { (Get-InternetState -NoCache -SourceIp $primaryIp).State } else { (Get-InternetState -NoCache).State }
     if ($connAfterDns -eq 'Online' -and $conn -ne 'Online') {
         $conn = 'Online'
         foreach ($c in $ctxs) { Shield-RouteMetrics $c $conn; Shield-PathMtu $c $conn }
@@ -463,7 +464,7 @@ function Remove-PortalCredentials {
 }
 # Zero-touch login. Every guard below exists because a rogue device on a hostel LAN can answer for the portal.
 function Invoke-HeadlessPortalLogin {
-    param($Inet, [switch]$Manual, [int]$Attempt = 1)
+    param($Inet, [switch]$Manual, [int]$Attempt = 1, [string]$SourceIp = '')
     if ($script:IsDry) { return $false }
     if (-not $script:Cfg.AutoPortalLogin -and -not $Manual) { return $false }
     $creds = Get-PortalCredentials
@@ -473,13 +474,14 @@ function Invoke-HeadlessPortalLogin {
         if (-not (Test-Elapsed 'LastPortalLogin' 45)) { return $false }
     }
     Ensure-CampusPortalPath
-    if ($null -eq $Inet) { $Inet = Get-InternetState -NoCache }
+    if (-not $SourceIp -and $script:Cfg.ProbeSourceBind) { $SourceIp = Get-PrimarySourceIp }
+    if ($null -eq $Inet) { $Inet = if ($SourceIp) { Get-InternetState -NoCache -SourceIp $SourceIp } else { Get-InternetState -NoCache } }
     if ($Manual -and $Inet.State -eq 'NoDns' -and $script:IsAdmin) {
         foreach ($a in @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })) {
             $e = Get-AdapterEnvironment $a -UseCache
             if ($e.Env -eq 'Campus' -and (Get-DnsProfileName) -eq 'Adaptive') { Shield-Dns @{ Ad = $a; Env = $e } 'Captive' }
         }
-        $Inet = Get-InternetState -NoCache
+        $Inet = if ($SourceIp) { Get-InternetState -NoCache -SourceIp $SourceIp } else { Get-InternetState -NoCache }
     }
     if ($Manual -and $Inet.State -eq 'Offline' -and (Test-PortalOnlineSmart $script:Cfg.PortalIp ([int]$script:Cfg.PortalPort))) {
         $Inet = @{ State = 'Captive'; Location = $script:Cfg.PortalUrl; Via = 'link' }
@@ -498,7 +500,7 @@ function Invoke-HeadlessPortalLogin {
     # The URI is validated now: route exactly THIS destination over the campus cable, even if Wi-Fi holds metric 15.
     Ensure-CampusPortalPath $uri
     [void](Invoke-WithLock { Set-StateTime 'LastPortalLogin'; Save-State })   # the throttle must survive a crash mid-sign-in
-    $src = ''; if ($script:Cfg.ProbeSourceBind) { $src = Get-PrimarySourceIp }
+    $src = if ($SourceIp) { $SourceIp } elseif ($script:Cfg.ProbeSourceBind) { Get-PrimarySourceIp } else { '' }
     $pin = [string]$script:State.Misc['PortalPin']
     $jar = @{}
     $cur = $uri
@@ -610,12 +612,13 @@ function Invoke-HeadlessPortalLogin {
     return $false
 }
 function Open-Portal {
-    param([switch]$Force)
-    $inet = Get-InternetState -NoCache
+    param([switch]$Force, [string]$SourceIp = '')
+    if (-not $SourceIp -and $script:Cfg.ProbeSourceBind) { $SourceIp = Get-PrimarySourceIp }
+    $inet = if ($SourceIp) { Get-InternetState -NoCache -SourceIp $SourceIp } else { Get-InternetState -NoCache }
     $st = $inet.State
     $url = Resolve-PortalUrl $inet
     if (-not $Force -and $st -eq 'Online') { Write-Log 'OK' 'Internet is already authenticated; no login needed.'; return $false }
-    if (-not $Force -and (Invoke-HeadlessPortalLogin $inet)) { return $true }
+    if (-not $Force -and (Invoke-HeadlessPortalLogin $inet -SourceIp $SourceIp)) { return $true }
     if (Test-IsSystem) {
         $u = $null
         try { $u = (Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).UserName } catch {}
@@ -795,6 +798,3 @@ function Invoke-AutoHeal {
     return 0
 }
 
-# ==============================================================================
-# WATCHDOG (SYSTEM task, runs ONLY the ACL-locked copy) + portal helper task (user session)
-# ==============================================================================

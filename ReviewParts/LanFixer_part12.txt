@@ -1,3 +1,6 @@
+    $hvC = (-not (Get-HomeCampusVerdict @('10.9.8.7') 'univ.edu' $false $null))
+    $hvD = (Get-HomeCampusVerdict @('10.9.8.7') 'univ.edu' $true $null)
+    $hvE = (Get-HomeCampusVerdict @() '' $false $null)
     $hvF = (-not (Get-HomeCampusVerdict @() '' $false @{ Home = $false }))
     $hvG = (-not (Get-HomeCampusVerdict @('10.9.8.7') 'nitjsr.ac.in.evil.com' $false $null))
     Write-Check 'Logic: Get-HomeCampusVerdict recognises the configured campus and refuses foreign leases' ($hvA -and $hvB -and $hvC -and $hvD -and $hvE -and $hvF -and $hvG)
@@ -795,6 +798,3 @@ function New-SentinelTaskXml([string]$CmdArgs) {
       <RunLevel>HighestAvailable</RunLevel>
     </Principal>
   </Principals>
-  <Settings>
-    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
-    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>

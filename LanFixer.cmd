@@ -6682,7 +6682,8 @@ function Invoke-HealPipeline([switch]$SkipSystemStack) {
 
     Write-Log 'STEP' 'LAYER 2/7  Data link & DHCP lease renewal'
     foreach ($c in $ctxs) { [void](Shield-Dot3Svc $c.Ad); Shield-DataLink $c }
-    $conn = (Get-InternetState -NoCache).State
+    $primaryIp = Get-PrimarySourceIp
+    $conn = if ($primaryIp) { (Get-InternetState -NoCache -SourceIp $primaryIp).State } else { (Get-InternetState -NoCache).State }
 
     Write-Log 'STEP' 'LAYER 3/7  Gateway ARP integrity & route metrics'
     foreach ($c in $ctxs) { Shield-GatewayArp $c $conn; Shield-RouteMetrics $c $conn; Shield-PathMtu $c $conn; Shield-DefaultRoutes $c }
@@ -6690,7 +6691,7 @@ function Invoke-HealPipeline([switch]$SkipSystemStack) {
     Write-Log 'STEP' 'LAYER 4/7  Adaptive DNS configuration & resolver health'
     foreach ($c in $ctxs) { [void](Shield-TcpOffloads $c.Ad); Shield-Dns $c $conn }
 
-    $connAfterDns = (Get-InternetState -NoCache).State
+    $connAfterDns = if ($primaryIp) { (Get-InternetState -NoCache -SourceIp $primaryIp).State } else { (Get-InternetState -NoCache).State }
     if ($connAfterDns -eq 'Online' -and $conn -ne 'Online') {
         $conn = 'Online'
         foreach ($c in $ctxs) { Shield-RouteMetrics $c $conn; Shield-PathMtu $c $conn }
@@ -6863,7 +6864,7 @@ function Remove-PortalCredentials {
 }
 # Zero-touch login. Every guard below exists because a rogue device on a hostel LAN can answer for the portal.
 function Invoke-HeadlessPortalLogin {
-    param($Inet, [switch]$Manual, [int]$Attempt = 1)
+    param($Inet, [switch]$Manual, [int]$Attempt = 1, [string]$SourceIp = '')
     if ($script:IsDry) { return $false }
     if (-not $script:Cfg.AutoPortalLogin -and -not $Manual) { return $false }
     $creds = Get-PortalCredentials
@@ -6873,13 +6874,14 @@ function Invoke-HeadlessPortalLogin {
         if (-not (Test-Elapsed 'LastPortalLogin' 45)) { return $false }
     }
     Ensure-CampusPortalPath
-    if ($null -eq $Inet) { $Inet = Get-InternetState -NoCache }
+    if (-not $SourceIp -and $script:Cfg.ProbeSourceBind) { $SourceIp = Get-PrimarySourceIp }
+    if ($null -eq $Inet) { $Inet = if ($SourceIp) { Get-InternetState -NoCache -SourceIp $SourceIp } else { Get-InternetState -NoCache } }
     if ($Manual -and $Inet.State -eq 'NoDns' -and $script:IsAdmin) {
         foreach ($a in @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })) {
             $e = Get-AdapterEnvironment $a -UseCache
             if ($e.Env -eq 'Campus' -and (Get-DnsProfileName) -eq 'Adaptive') { Shield-Dns @{ Ad = $a; Env = $e } 'Captive' }
         }
-        $Inet = Get-InternetState -NoCache
+        $Inet = if ($SourceIp) { Get-InternetState -NoCache -SourceIp $SourceIp } else { Get-InternetState -NoCache }
     }
     if ($Manual -and $Inet.State -eq 'Offline' -and (Test-PortalOnlineSmart $script:Cfg.PortalIp ([int]$script:Cfg.PortalPort))) {
         $Inet = @{ State = 'Captive'; Location = $script:Cfg.PortalUrl; Via = 'link' }
@@ -6898,7 +6900,7 @@ function Invoke-HeadlessPortalLogin {
     # The URI is validated now: route exactly THIS destination over the campus cable, even if Wi-Fi holds metric 15.
     Ensure-CampusPortalPath $uri
     [void](Invoke-WithLock { Set-StateTime 'LastPortalLogin'; Save-State })   # the throttle must survive a crash mid-sign-in
-    $src = ''; if ($script:Cfg.ProbeSourceBind) { $src = Get-PrimarySourceIp }
+    $src = if ($SourceIp) { $SourceIp } elseif ($script:Cfg.ProbeSourceBind) { Get-PrimarySourceIp } else { '' }
     $pin = [string]$script:State.Misc['PortalPin']
     $jar = @{}
     $cur = $uri
@@ -7010,12 +7012,13 @@ function Invoke-HeadlessPortalLogin {
     return $false
 }
 function Open-Portal {
-    param([switch]$Force)
-    $inet = Get-InternetState -NoCache
+    param([switch]$Force, [string]$SourceIp = '')
+    if (-not $SourceIp -and $script:Cfg.ProbeSourceBind) { $SourceIp = Get-PrimarySourceIp }
+    $inet = if ($SourceIp) { Get-InternetState -NoCache -SourceIp $SourceIp } else { Get-InternetState -NoCache }
     $st = $inet.State
     $url = Resolve-PortalUrl $inet
     if (-not $Force -and $st -eq 'Online') { Write-Log 'OK' 'Internet is already authenticated; no login needed.'; return $false }
-    if (-not $Force -and (Invoke-HeadlessPortalLogin $inet)) { return $true }
+    if (-not $Force -and (Invoke-HeadlessPortalLogin $inet -SourceIp $SourceIp)) { return $true }
     if (Test-IsSystem) {
         $u = $null
         try { $u = (Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).UserName } catch {}
@@ -9891,23 +9894,32 @@ function Start-AutonomousDaemon([int]$IntervalSec = 10, [switch]$Headless) {
 
             $ad = $ads[0]
 
-            # Phase 2: Non-mutating Health Probe (OUTSIDE lock to eliminate contention)
+            # Phase 2: Per-Adapter Non-mutating Health Probe (Strictly bound to Ethernet)
             $linkHealth = Test-NdisLinkHealth $ad
-            $state = Get-InternetState -NoCache
-            $gw = Get-DefaultGateway $ad
-            $gwOk = $true
+            $ethIp = Get-ValidIPv4 $ad
+            $gw = if ($ethIp) { Get-DefaultGateway $ad } else { $null }
+            $gwOk = $false
             if ($gw) {
                 $gwRtt = Test-LatencySample $gw 800
-                if ($gwRtt -lt 0) { $gwOk = $false }
+                if ($gwRtt -ge 0) { $gwOk = $true }
+            }
+            $state = if ($ethIp) {
+                Get-InternetState -NoCache -SourceIp $ethIp
+            } else {
+                @{ State = 'Offline'; DnsOk = $false; Code = 0; Location = '' }
             }
 
             # Phase 3: Condition Evaluation & Self-Healing Ladder
-            if ($state.State -eq 'Online' -and $linkHealth.Healthy -and $gwOk) {
+            if ($ethIp -and $state.State -eq 'Online' -and $linkHealth.Healthy -and $gwOk) {
                 $script:SentinelStats.HealthyCycles++
                 if ($script:DaemonConsecutiveFails -gt 0) {
-                    Write-SentinelLog 'OK' ("Link recovered! All health checks passed. Resetting circuit breaker (was {0} fails)." -f $script:DaemonConsecutiveFails)
+                    Write-SentinelLog 'OK' ("Link recovered! All health checks passed on {0} ({1}, Gateway {2}). Resetting circuit breaker (was {3} fails)." -f $ad.Name, $ethIp, $gw, $script:DaemonConsecutiveFails)
                     $script:DaemonConsecutiveFails = 0
                 }
+                # Ensure routing metrics prioritize Ethernet over Wi-Fi when Ethernet is confirmed Online
+                $ctxOnline = @{ Ad = $ad; Env = (Get-AdapterEnvironment $ad) }
+                Shield-RouteMetrics $ctxOnline 'Online'
+
                 $currentCadence = $IntervalSec
                 if ($isConsole -and ((Get-Date) - $lastHudRender).TotalMilliseconds -ge 800) {
                     Show-SentinelHud $ad $linkHealth $state.State $currentCadence
@@ -9918,15 +9930,19 @@ function Start-AutonomousDaemon([int]$IntervalSec = 10, [switch]$Headless) {
             }
 
             # Captive State Handling: Captive is normal on campus, NOT a failure!
-            if ($state.State -eq 'Captive') {
+            if ($ethIp -and $state.State -eq 'Captive') {
+                $cCtx = @{ Ad = $ad; Env = (Get-AdapterEnvironment $ad) }
+                Ensure-CampusPortalPath $ad
+                Shield-RouteMetrics $cCtx 'Captive'
+                Shield-Dns $cCtx 'Captive'
+
                 $creds = Get-PortalCredentials
                 if ($creds) {
-                    Write-SentinelLog 'TIER2' ("Captive portal detected! Stored credentials found for '{0}'. Executing autonomous headless login..." -f $creds.User)
-                    $loginOk = [bool](Invoke-WithLock -WaitMs 5000 {
-                        $auth = Invoke-HeadlessPortalLogin $state -Manual
+                    Write-SentinelLog 'TIER2' ("Captive portal detected! Stored credentials found for '{0}'. Executing autonomous headless login on {1}..." -f $creds.User, $ethIp)
+                    $loginOk = [bool](Invoke-WithLock -WaitMs 8000 {
+                        $auth = Invoke-HeadlessPortalLogin $state -Manual -SourceIp $ethIp
                         if ($auth) {
                             Complete-Authentication
-                            Shield-Dns @{ Ad = $ad; Env = (Get-AdapterEnvironment $ad) } 'Online'
                             Save-State
                         }
                         $auth
@@ -9942,26 +9958,26 @@ function Start-AutonomousDaemon([int]$IntervalSec = 10, [switch]$Headless) {
                     }
                 }
                 
-                # If no credentials or headless login didn't complete, ensure campus routing & DNS are active, and open portal
-                Write-SentinelLog 'INFO' "Captive portal detected. Ensuring campus host routes & opening portal for sign-in..."
-                [void](Invoke-WithLock -WaitMs 3000 {
-                    $cCtx = @{ Ad = $ad; Env = (Get-AdapterEnvironment $ad) }
-                    Ensure-CampusPortalPath $ad
-                    Shield-RouteMetrics $cCtx 'Captive'
-                    Shield-Dns $cCtx 'Captive'
-                    Open-Portal -Force
-                    Save-State
-                })
+                # If no credentials or headless login didn't complete, ensure campus routing & DNS are active, and open portal (throttled)
+                if (Test-Elapsed 'LastPortal' 60) {
+                    Write-SentinelLog 'INFO' "Captive portal active. Opening campus login page in default browser..."
+                    [void](Invoke-WithLock -WaitMs 3000 {
+                        Open-Portal -Force -SourceIp $ethIp
+                        Set-StateTime 'LastPortal'
+                        Save-State
+                    })
+                }
                 $script:DaemonConsecutiveFails = 0
                 $currentCadence = [Math]::Min(15, $IntervalSec)
-                if ($isConsole) { Show-SentinelHud $ad $linkHealth 'Captive (Login Open)' $currentCadence }
+                if ($isConsole) { Show-SentinelHud $ad $linkHealth 'Captive (Login Ready)' $currentCadence }
                 Wait-SentinelCadence $currentCadence $isConsole
                 continue
             }
 
             # Degradation Detected
             $script:DaemonConsecutiveFails++
-            Write-SentinelLog 'WARN' ("Degradation detected (Fail #{0}): State={1}, Ndis={2}, Gateway={3}" -f $script:DaemonConsecutiveFails, $state.State, $linkHealth.Reason, $(if ($gwOk) { 'OK' } else { 'Timeout' }))
+            $ipDesc = if ($ethIp) { $ethIp } else { 'No IPv4 / APIPA' }
+            Write-SentinelLog 'WARN' ("Degradation detected on {0} (Fail #{1}): IP={2}, State={3}, Ndis={4}, Gateway={5}" -f $ad.Name, $script:DaemonConsecutiveFails, $ipDesc, $state.State, $linkHealth.Reason, $(if ($gwOk) { 'OK' } else { 'Timeout' }))
 
             # Circuit Breaker Check (Smart Cadence Back-Off without surrendering)
             if ($script:DaemonConsecutiveFails -ge $script:Cfg.BreakerFails) {
@@ -9976,94 +9992,113 @@ function Start-AutonomousDaemon([int]$IntervalSec = 10, [switch]$Headless) {
             $remedTier = ''
 
             # Tier 1: IP & DHCP Lease Re-acquisition (Layer 1-3 Foundational Prerequisite)
-            $ip = Get-ValidIPv4 $ad
-            if (-not $recovered -and (-not $ip -or $ip -like '169.254*')) {
-                Write-SentinelLog 'TIER1' ("Executing Tier 1: Invalid IP or APIPA detected ({0}). Unfreezing DHCP and recovering valid lease..." -f $(if ($ip) { $ip } else { 'None' }))
-                [void](Invoke-WithLock -WaitMs 15000 {
-                    $guid = [string]$ad.InterfaceGuid
-                    if ($guid) {
-                        $ifKey = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$guid"
-                        if (Test-Path -LiteralPath $ifKey) {
-                            Set-ItemProperty -LiteralPath $ifKey -Name 'DhcpConnForceBroadcastFlag' -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
-                            Set-ItemProperty -LiteralPath $ifKey -Name 'DhcpIPAddress' -Value '0.0.0.0' -ErrorAction SilentlyContinue
-                        }
-                    }
-                    Set-NetIPInterface -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -Dhcp Enabled -ErrorAction SilentlyContinue
-                    Write-SentinelLog 'TIER1' "Cycling adapter miniport on $($ad.Name) to trigger clean DHCPDISCOVER..."
-                    Restart-NetAdapter -Name $ad.Name -Confirm:$false -ErrorAction SilentlyContinue
-                    Wait-StpConvergence $ad ([int]$script:Cfg.StpMaxSec)
-                    Save-State
+            $curIp = Get-ValidIPv4 $ad
+            if (-not $recovered -and (-not $curIp -or $curIp -like '169.254*')) {
+                Write-SentinelLog 'TIER1' ("Executing Tier 1: Invalid IP or APIPA detected ({0}). Unfreezing DHCP and recovering valid lease..." -f $(if ($curIp) { $curIp } else { 'None' }))
+                [void](Invoke-WithLock -WaitMs 25000 {
+                    Repair-Dhcp $ad -ForceRelease
                 })
                 $newIp = Get-ValidIPv4 $ad
                 if ($newIp -and $newIp -notlike '169.254*') {
                     Write-SentinelLog 'OK' "Tier 1 SUCCESS: Acquired valid DHCP lease: $newIp"
-                    $recovered = $true; $remedTier = 'Tier 1 (DHCP Lease)'
                     $script:SentinelStats.T4_Dhcp++
-                    $state = Get-InternetState -NoCache
+                    $ethIp = $newIp
                     $gw = Get-DefaultGateway $ad
+                    $gwOk = if ($gw) { (Test-LatencySample $gw 800) -ge 0 } else { $false }
+                    $state = Get-InternetState -NoCache -SourceIp $newIp
+                    
+                    # Immediately enforce routing and DNS for the newly acquired IP!
+                    $ctxT1 = @{ Ad = $ad; Env = (Get-AdapterEnvironment $ad) }
+                    Ensure-CampusPortalPath $ad
+                    Shield-RouteMetrics $ctxT1 $state.State
+                    Shield-Dns $ctxT1 $state.State
+                    Save-State
+
+                    if ($state.State -eq 'Online') {
+                        $recovered = $true; $remedTier = 'Tier 1 (DHCP Lease -> Online)'
+                    } elseif ($state.State -eq 'Captive') {
+                        Write-SentinelLog 'INFO' "DHCP lease acquired; captive portal detected. Passing directly to portal authentication..."
+                    }
+                } else {
+                    Write-SentinelLog 'WARN' "Tier 1: DHCP lease re-acquisition did not yield a valid IP. Proceeding to lower-layer diagnostics..."
                 }
             }
 
             # Tier 2: Gateway ARP & Routing Priority Enforcement (Layer 3-4)
-            if ($ad -and (Get-ValidIPv4 $ad)) {
+            $curIp = Get-ValidIPv4 $ad
+            if (-not $recovered -and $curIp) {
                 $gw = Get-DefaultGateway $ad
                 $gwOk = if ($gw) { (Test-LatencySample $gw 800) -ge 0 } else { $false }
                 if (-not $gwOk -or (-not $script:State.Misc['RouteProfile'] -or $script:State.Misc['RouteProfile'] -eq 'Adaptive')) {
                     Write-SentinelLog 'TIER2' "Executing Tier 2: Asserting Ethernet routing priority & locking gateway ARP..."
                     $ctxT2 = @{ Ad = $ad; Env = (Get-AdapterEnvironment $ad) }
-                    [void](Invoke-WithLock -WaitMs 3000 {
+                    [void](Invoke-WithLock -WaitMs 5000 {
                         if ($script:Cfg.ArpLock -and $gw) { Shield-GatewayArp $ctxT2 $state.State }
                         Shield-RouteMetrics $ctxT2 $state.State
                         Ensure-CampusPortalPath $ad
                         Save-State
                     })
-                    $st2 = (Get-InternetState -NoCache).State
-                    if ($st2 -eq 'Online' -or $st2 -eq 'Captive') {
+                    $st2 = (Get-InternetState -NoCache -SourceIp $curIp).State
+                    if ($st2 -eq 'Online') {
                         $recovered = $true; $remedTier = 'Tier 2 (Gateway/Route)'
                         $script:SentinelStats.T1_ArpRoute++
+                    } elseif ($st2 -eq 'Captive') {
+                        $state = @{ State = 'Captive'; Location = $script:Cfg.PortalUrl }
                     }
                 }
             }
 
             # Tier 3: DNS Cache Purge & NRPT Cleansing (Layer 4-5)
-            if (-not $recovered -and ($state.State -eq 'NoDns' -or -not $state.DnsOk)) {
+            $curIp = Get-ValidIPv4 $ad
+            if (-not $recovered -and $curIp -and ($state.State -eq 'NoDns' -or -not $state.DnsOk)) {
                 Write-SentinelLog 'TIER3' "Executing Tier 3: DNS failure detected. Purging resolver cache & configuring resolvers..."
                 [void](Invoke-WithLock -WaitMs 3000 {
                     Flush-NetworkCache
                     Shield-Dns @{ Ad = $ad; Env = (Get-AdapterEnvironment $ad) } $state.State
                     Save-State
                 })
-                $st3 = (Get-InternetState -NoCache).State
-                if ($st3 -eq 'Online' -or $st3 -eq 'Captive') {
+                $st3 = (Get-InternetState -NoCache -SourceIp $curIp).State
+                if ($st3 -eq 'Online') {
                     $recovered = $true; $remedTier = 'Tier 3 (DNS/NRPT)'
                     $script:SentinelStats.T3_Dns++
+                } elseif ($st3 -eq 'Captive') {
+                    $state = @{ State = 'Captive'; Location = $script:Cfg.PortalUrl }
                 }
             }
 
             # Tier 4: Autonomous Captive Portal Authentication (Layer 7)
-            if (-not $recovered -and ($state.State -eq 'Captive' -or ((Get-InternetState -NoCache).State -eq 'Captive'))) {
-                Write-SentinelLog 'TIER4' "Executing Tier 4: Captive portal detected! Checking DPAPI vault for credentials..."
-                $creds = Get-PortalCredentials
-                if ($creds) {
-                    Write-SentinelLog 'TIER4' ("Stored credentials found for '{0}'. Executing headless login..." -f $creds.User)
-                    $loginOk = [bool](Invoke-WithLock -WaitMs 5000 {
-                        $auth = Invoke-HeadlessPortalLogin (Get-InternetState -NoCache) -Manual
-                        if ($auth) {
-                            Complete-Authentication
-                            Shield-Dns @{ Ad = $ad; Env = (Get-AdapterEnvironment $ad) } 'Online'
-                            Save-State
+            $curIp = Get-ValidIPv4 $ad
+            if (-not $recovered -and $curIp) {
+                $curProbe = Get-InternetState -NoCache -SourceIp $curIp
+                if ($state.State -eq 'Captive' -or $curProbe.State -eq 'Captive') {
+                    Write-SentinelLog 'TIER4' "Executing Tier 4: Captive portal detected! Checking DPAPI vault for credentials..."
+                    $creds = Get-PortalCredentials
+                    if ($creds) {
+                        Write-SentinelLog 'TIER4' ("Stored credentials found for '{0}'. Executing headless login on {1}..." -f $creds.User, $curIp)
+                        $loginOk = [bool](Invoke-WithLock -WaitMs 8000 {
+                            $auth = Invoke-HeadlessPortalLogin $curProbe -Manual -SourceIp $curIp
+                            if ($auth) {
+                                Complete-Authentication
+                                Save-State
+                            }
+                            $auth
+                        })
+                        if ($loginOk) {
+                            Write-SentinelLog 'OK' "Autonomous captive portal sign-in SUCCESSFUL! Restored high-speed path."
+                            $recovered = $true; $remedTier = 'Tier 4 (Captive Sign-In)'
+                            $script:SentinelStats.T2_Captive++
                         }
-                        $auth
-                    })
-                    if ($loginOk) {
-                        Write-SentinelLog 'OK' "Autonomous captive portal sign-in SUCCESSFUL! Restored high-speed path."
-                        $recovered = $true; $remedTier = 'Tier 4 (Captive Sign-In)'
-                        $script:SentinelStats.T2_Captive++
+                    } else {
+                        Write-SentinelLog 'INFO' "No credentials in vault. Ensuring routes and triggering browser to open portal..."
+                        [void](Invoke-WithLock -WaitMs 2000 {
+                            Ensure-CampusPortalPath $ad
+                            Shield-RouteMetrics @{ Ad = $ad; Env = (Get-AdapterEnvironment $ad) } 'Captive'
+                            Open-Portal -Force -SourceIp $curIp
+                            Set-StateTime 'LastPortal'
+                            Save-State
+                        })
+                        $recovered = $true; $remedTier = 'Tier 4 (Portal Opened)'
                     }
-                } else {
-                    Write-SentinelLog 'INFO' "No credentials in vault. Triggering browser to open portal..."
-                    [void](Invoke-WithLock -WaitMs 2000 { Open-Portal -Force; Save-State })
-                    $recovered = $true; $remedTier = 'Tier 4 (Portal Opened)'
                 }
             }
 
@@ -10077,7 +10112,8 @@ function Start-AutonomousDaemon([int]$IntervalSec = 10, [switch]$Headless) {
                     Shield-TcpOffloads $ad
                     Save-State
                 })
-                $st5 = (Get-InternetState -NoCache).State
+                $curIp = Get-ValidIPv4 $ad
+                $st5 = if ($curIp) { (Get-InternetState -NoCache -SourceIp $curIp).State } else { 'Offline' }
                 if ($st5 -eq 'Online') {
                     $recovered = $true; $remedTier = 'Tier 5 (NDIS/PHY)'
                     $script:SentinelStats.T5_Ndis++
@@ -10088,7 +10124,8 @@ function Start-AutonomousDaemon([int]$IntervalSec = 10, [switch]$Headless) {
                         Wait-StpConvergence $ad ([int]$script:Cfg.StpMaxSec)
                         Save-State
                     })
-                    $st5b = (Get-InternetState -NoCache).State
+                    $curIp = Get-ValidIPv4 $ad
+                    $st5b = if ($curIp) { (Get-InternetState -NoCache -SourceIp $curIp).State } else { 'Offline' }
                     if ($st5b -eq 'Online') {
                         $recovered = $true; $remedTier = 'Tier 5 (PnP Restart)'
                         $script:SentinelStats.T5_Ndis++
@@ -10103,7 +10140,8 @@ function Start-AutonomousDaemon([int]$IntervalSec = 10, [switch]$Headless) {
                     Shield-SystemStack
                     Save-State
                 })
-                $st6 = (Get-InternetState -NoCache).State
+                $curIp = Get-ValidIPv4 $ad
+                $st6 = if ($curIp) { (Get-InternetState -NoCache -SourceIp $curIp).State } else { 'Offline' }
                 if ($st6 -eq 'Online') {
                     $recovered = $true; $remedTier = 'Tier 6 (Deep Stack)'
                     $script:SentinelStats.T6_Stack++

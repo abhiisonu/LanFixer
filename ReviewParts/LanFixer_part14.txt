@@ -1,3 +1,41 @@
+        'QuickProbe'        { Run-QuickProbe }
+        'Probe'             { Run-QuickProbe }
+        'FlushCache'        { [void](Invoke-WithLock { Flush-NetworkCache }) }
+        'Flush'             { [void](Invoke-WithLock { Flush-NetworkCache }) }
+        'InstallWatchdog'   { [void](Invoke-WithLock { Install-Watchdog }) }
+        'InstallShield'     { [void](Invoke-WithLock { Install-Watchdog }) }
+        'UninstallWatchdog' { [void](Invoke-WithLock { Uninstall-Watchdog }) }
+        'UninstallShield'   { [void](Invoke-WithLock { Uninstall-Watchdog }) }
+        'ResetFactory'      { [void](Invoke-WithLock { Restore-Everything }) }
+        'Reset'             { [void](Invoke-WithLock { Restore-Everything }) }
+        'LaunchPortal'      { [void](Invoke-WithLock { Open-Portal -Force }) }
+        'Login'             { [void](Invoke-WithLock { Open-Portal -Force }) }
+        'SetDnsProfile'     { Set-DnsProfileMode $DnsProfile }
+        'Dns'               { Show-DnsMenu }
+        'DnsMenu'           { Show-DnsMenu }
+        'SelfTest'          { Invoke-SelfTest; if ($script:TestFail -gt 0) { $exitCode = 1 } }
+        'Verify'            { Invoke-SelfTest; if ($script:TestFail -gt 0) { $exitCode = 1 } }
+        'Daemon'            { Start-AutonomousDaemon -Headless:$Headless }
+        'Sentinel'          { Start-AutonomousDaemon -Headless:$Headless }
+        'InstallSentinel'   { [void](Invoke-WithLock { Install-SentinelTask }) }
+        'UninstallSentinel' { [void](Invoke-WithLock { Uninstall-SentinelTask }) }
+        'Vault'             { Show-VaultMenu }
+        'Guide'             { Show-Advisory }
+        'Help'              { Show-Advisory }
+        'Interactive'       { Start-Interactive }
+    }
+} catch {
+    Write-Log 'FAIL' ("Unhandled error: " + $_.Exception.Message)
+    Write-Log 'FAIL' ([string]$_.ScriptStackTrace)
+    $exitCode = 1
+} finally {
+    try {
+        $intFile = Join-Path $script:StoreDir 'interactive.json'
+        if (Test-Path -LiteralPath $intFile) {
+            $meta = ConvertFrom-Json (Get-Content -LiteralPath $intFile -Raw -ErrorAction SilentlyContinue)
+            if ($meta -and $meta.Pid -eq $PID) { Remove-Item -LiteralPath $intFile -Force -ErrorAction SilentlyContinue }
+        }
+    } catch {}
     Save-State
     Exit-Lock
     if ($script:UiOn) { Exit-Screen }

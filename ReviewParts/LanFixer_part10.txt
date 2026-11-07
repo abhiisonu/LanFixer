@@ -1,3 +1,6 @@
+# ==============================================================================
+# WATCHDOG (SYSTEM task, runs ONLY the ACL-locked copy) + portal helper task (user session)
+# ==============================================================================
 function New-WatchdogXml([string]$CmdArgs, [string]$Start) {
     $hb = "PT$($script:Cfg.HeartbeatMin)M"
     return @"
@@ -795,6 +798,3 @@ function Show-Diagnostics {
     Write-Section 'NETWORK ADAPTER HARDWARE'
     if ($ads.Count -eq 0) { Write-KV 'Ethernet' 'none found' 'Red'; [void]$issues.Add('No physical Ethernet adapter found (disabled? USB dongle unplugged?)') }
     foreach ($a in $ads) {
-        $col = $(if ($a.Status -eq 'Up') { 'Green' } else { 'Red' })
-        Write-KV 'Adapter' ("{0} [{1}]" -f $a.Name, $a.Status) $col
-        Write-KV '  Controller' ([string]$a.InterfaceDescription)

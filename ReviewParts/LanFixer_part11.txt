@@ -1,3 +1,6 @@
+        $col = $(if ($a.Status -eq 'Up') { 'Green' } else { 'Red' })
+        Write-KV 'Adapter' ("{0} [{1}]" -f $a.Name, $a.Status) $col
+        Write-KV '  Controller' ([string]$a.InterfaceDescription)
         Write-KV '  MAC Address' ([string]$a.MacAddress)
         Write-KV '  Link speed' ([string]$a.LinkSpeed)
         Write-KV '  Driver version' ([string]$a.DriverVersionString)
@@ -795,6 +798,3 @@ function Invoke-LogicTests {
     $script:Cfg = @{ CampusDns = '172.16.1.2'; PortalIp = '10.114.0.5'; CampusDomain = 'nitjsr.ac.in'; PortalHost = 'gateway.nitjsr.ac.in' }
     $hvA = (Get-HomeCampusVerdict @('172.16.1.2', '8.8.8.8') '' $false $null)
     $hvB = (Get-HomeCampusVerdict @() 'hostel.nitjsr.ac.in' $false $null)
-    $hvC = (-not (Get-HomeCampusVerdict @('10.9.8.7') 'univ.edu' $false $null))
-    $hvD = (Get-HomeCampusVerdict @('10.9.8.7') 'univ.edu' $true $null)
-    $hvE = (Get-HomeCampusVerdict @() '' $false $null)
