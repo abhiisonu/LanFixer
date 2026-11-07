@@ -61,6 +61,17 @@ function Test-GatewayAlive($Ad, [string]$Gw) {
         if ((Test-TcpPort $Gw 80 400 $gwSrc) -or (Test-TcpPort $Gw 443 400 $gwSrc) -or (Test-TcpPort $Gw 53 400 $gwSrc) -or (Test-TcpPort $Gw 8003 400 $gwSrc)) {
             return @{ Alive = $true; Rtt = $null; Via = 'arp' }
         }
+        $dynamicGwPorts = @()
+        if ($script:State.Misc -and $script:State.Misc['DiscoveredPortalPort']) {
+            $dp = [int]$script:State.Misc['DiscoveredPortalPort']
+            if ($dp -gt 0 -and @(80, 443, 53, 8003) -notcontains $dp) { $dynamicGwPorts += $dp }
+        }
+        if ($script:Cfg.PortalPort -and @(80, 443, 53, 8003) -notcontains [int]$script:Cfg.PortalPort) {
+            $dynamicGwPorts += [int]$script:Cfg.PortalPort
+        }
+        foreach ($gp in $dynamicGwPorts) {
+            if (Test-TcpPort $Gw $gp 400 $gwSrc) { return @{ Alive = $true; Rtt = $null; Via = 'arp' } }
+        }
         $freshArp = @(Get-GatewayMacs $Ad $Gw 1)
         if ($freshArp.Count -gt 0 -and $freshArp[0] -eq [string]$ex.LinkLayerAddress) {
             return @{ Alive = $true; Rtt = $null; Via = 'arp' }
@@ -68,7 +79,21 @@ function Test-GatewayAlive($Ad, [string]$Gw) {
         return @{ Alive = $false; Rtt = $null; Via = '' }
     }
     $gwSrc = [string](Get-ValidIPv4 $Ad)
-    if ($gwSrc -and ((Test-TcpPort $Gw 80 350 $gwSrc) -or (Test-TcpPort $Gw 443 350 $gwSrc) -or (Test-TcpPort $Gw 53 350 $gwSrc) -or (Test-TcpPort $Gw 8003 350 $gwSrc))) {
+    $dynamicGwPorts2 = @(80, 443, 53, 8003)
+    if ($script:State.Misc -and $script:State.Misc['DiscoveredPortalPort']) {
+        $dp2 = [int]$script:State.Misc['DiscoveredPortalPort']
+        if ($dp2 -gt 0 -and $dynamicGwPorts2 -notcontains $dp2) { $dynamicGwPorts2 += $dp2 }
+    }
+    if ($script:Cfg.PortalPort -and $dynamicGwPorts2 -notcontains [int]$script:Cfg.PortalPort) {
+        $dynamicGwPorts2 += [int]$script:Cfg.PortalPort
+    }
+    $tcpGwAlive2 = $false
+    if ($gwSrc) {
+        foreach ($gp in $dynamicGwPorts2) {
+            if (Test-TcpPort $Gw $gp 350 $gwSrc) { $tcpGwAlive2 = $true; break }
+        }
+    }
+    if ($tcpGwAlive2) {
         return @{ Alive = $true; Rtt = $null; Via = 'tcp' }
     }
     if ($script:IsAdmin -and -not $script:IsDry -and $ex -and @('Unreachable','Incomplete') -contains [string]$ex.State) {
@@ -456,7 +481,16 @@ function Resolve-DuplexFlap($Ad) {
     }
     $guid = [string]$Ad.InterfaceGuid
     $speed = [string]$Ad.LinkSpeed
-    if ($speed -match '^\s*10\s*M' -and $Ad.InterfaceDescription -match 'Gigabit|GbE|RTL81|I21|I22|1000') {
+    $isGigabitOrHigher = $false
+    try {
+        if ([int64]$Ad.LinkSpeed -ge 1000000000 -or [int64]$Ad.MaxSpeed -ge 1000000000 -or [int64]$Ad.TransmitLinkSpeed -ge 1000000000) { $isGigabitOrHigher = $true }
+        elseif ($Ad.InterfaceDescription -match 'Gigabit|GbE|1000|2\.5G|5G|10G|10000|RTL81|I21|I22') { $isGigabitOrHigher = $true }
+        else {
+            $sdProp = Get-NetAdapterAdvancedProperty -Name $Ad.Name -RegistryKeyword '*SpeedDuplex' -ErrorAction SilentlyContinue
+            if ($sdProp -and ($sdProp.ValidDisplayValues -match '1\.0 Gbps|1 Gbps|1000|2\.5|5 Gbps|10 Gbps')) { $isGigabitOrHigher = $true }
+        }
+    } catch {}
+    if ($speed -match '^\s*10\s*M' -and $isGigabitOrHigher) {
         $prop = Get-NetAdapterAdvancedProperty -Name $Ad.Name -RegistryKeyword '*SpeedDuplex' -ErrorAction SilentlyContinue
         if ($prop) {
             $curVal = [string](@($prop.RegistryValue) | Select-Object -First 1)
@@ -491,7 +525,22 @@ function Optimize-PhySiliconBuffers($Ad) {
         if ($null -eq $cur) { continue }
 
         if ($health.Discards -lt 500 -and $cur -ge 512) { continue }
-        $target = if ($cur -lt 512) { 512 } elseif ($cur -lt 1024) { 1024 } else { 2048 }
+        $validVals = @()
+        if ($p.ValidRegistryValues) {
+            foreach ($v in $p.ValidRegistryValues) {
+                $iv = 0
+                if ([int]::TryParse([string]$v, [ref]$iv) -and $iv -gt 0) { $validVals += $iv }
+            }
+        }
+        $validVals = @($validVals | Sort-Object)
+        $target = $null
+        if ($validVals.Count -gt 0) {
+            $higher = @($validVals | Where-Object { $_ -gt $cur })
+            if ($higher.Count -gt 0) { $target = $higher[-1] }
+        }
+        if ($null -eq $target) {
+            $target = if ($cur -lt 512) { 512 } elseif ($cur -lt 1024) { 1024 } else { 2048 }
+        }
         if ($target -gt $cur) {
             Save-Original $guid ("Adv:" + $kw) [string]$cur
             $ok = Invoke-Change ("Scaled ring buffer {0} from {1} to {2} on {3} (NDIS burst buffer optimization)" -f $kw, $cur, $target, $Ad.Name) {
@@ -620,6 +669,17 @@ function Shield-Hardware($Ad) {
             $enumKey = "HKLM:\SYSTEM\CurrentControlSet\Enum\$($Ad.PnPDeviceID)\Device Parameters"
             if (Test-Path -LiteralPath $enumKey) {
                 $paramNames = @('DeviceSelectiveSuspended','IdleInWorkingState','SelectiveSuspendEnabled','AutoPowerSave','IdlePowerSave','ReduceSpeedOnPowerDown','UltraLowPowerMode')
+                try {
+                    $item = Get-ItemProperty -LiteralPath $enumKey -ErrorAction SilentlyContinue
+                    if ($item) {
+                        foreach ($prop in $item.PSObject.Properties) {
+                            $pn = $prop.Name
+                            if ($pn -match '(?i)(selective|suspend|powersave|powerdown|idle|lowpower|energysave|green)' -and $paramNames -notcontains $pn) {
+                                $paramNames += $pn
+                            }
+                        }
+                    }
+                } catch {}
                 foreach ($pName in $paramNames) {
                     $cur = (Get-ItemProperty -LiteralPath $enumKey -Name $pName -ErrorAction SilentlyContinue).$pName
                     if ($null -ne $cur -and [int]$cur -eq 0) { continue }
@@ -738,63 +798,3 @@ function Repair-Dhcp($Ad, [switch]$ForceRelease) {
                 if (Test-Path -LiteralPath $ifKey) {
                     Set-ItemProperty -LiteralPath $ifKey -Name 'DhcpConnForceBroadcastFlag' -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
                     Set-ItemProperty -LiteralPath $ifKey -Name 'DhcpIPAddress' -Value '0.0.0.0' -ErrorAction SilentlyContinue
-                }
-            } catch {}
-        }
-        Remove-NetNeighbor -InterfaceIndex $Ad.ifIndex -AddressFamily IPv4 -Confirm:$false -ErrorAction SilentlyContinue
-        [void](Invoke-Native $ipconfig @('/release', $Ad.Name) 10000)
-    }
-    Write-Log 'INFO' "DHCP renew attempted on $($Ad.Name)..."
-    $r = Invoke-Native $ipconfig @('/renew', $Ad.Name) 15000
-    if ($r.ExitCode -eq 0) { Write-Log 'OK' "DHCP renew completed on $($Ad.Name)" }
-    for ($i = 0; $i -lt 12; $i++) {
-        if ($(if ($ForceRelease) { Test-DhcpLeaseUsable $Ad } else { [bool](Get-ValidIPv4 $Ad) })) { Write-Log 'OK' 'Lease acquired.'; return $true }
-        Start-Sleep -Milliseconds 500
-    }
-    # Step 2: link reset with STP convergence
-    Set-StateTime ("Restart:" + $guid)
-    [void](Invoke-Change "Zero-reboot hardware/link reset on $($Ad.Name)" { Reset-PhysicalAdapterHardware $Ad })
-    $script:PendingRestart.Remove($guid)
-    # Adaptive STP convergence window (up to 45s, instant early-exit on lease acquisition)
-    for ($i = 0; $i -lt 90; $i++) {
-        if ($i % 4 -eq 0) {
-            $freshAd = Get-NetAdapter -Name $Ad.Name -ErrorAction SilentlyContinue
-            if ($freshAd) { $Ad = $freshAd }
-        }
-        if (Get-ValidIPv4 $Ad) { Write-Log 'OK' 'Lease acquired after link reset.'; return $true }
-        Start-Sleep -Milliseconds 500
-    }
-    # Step 3: DHCP stack unfreeze and release/renew
-    [void](Invoke-Change "DHCP stack unfreeze and release/renew on $($Ad.Name)" {
-        try {
-            Stop-Service -Name Dhcp -Force -ErrorAction SilentlyContinue
-            if ($guid) {
-                try {
-                    $ifKey = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$guid"
-                    if (Test-Path -LiteralPath $ifKey) {
-                        Set-ItemProperty -LiteralPath $ifKey -Name 'DhcpIPAddress' -Value '0.0.0.0' -ErrorAction SilentlyContinue
-                        Set-ItemProperty -LiteralPath $ifKey -Name 'DhcpDefaultGateway' -Value @() -ErrorAction SilentlyContinue
-                    }
-                } catch {}
-            }
-        } finally {
-            Start-Service -Name Dhcp -ErrorAction SilentlyContinue
-            Start-Service -Name WlanSvc -ErrorAction SilentlyContinue
-            Start-Service -Name Wcmsvc -ErrorAction SilentlyContinue
-            Start-Service -Name iphlpsvc -ErrorAction SilentlyContinue
-            Start-Service -Name NlaSvc -ErrorAction SilentlyContinue
-            Start-Service -Name netprofm -ErrorAction SilentlyContinue
-        }
-        [void](Invoke-Native $ipconfig @('/release', $Ad.Name) 10000)
-        $r = Invoke-Native $ipconfig @('/renew', $Ad.Name) 25000
-        if ($r.TimedOut) { throw 'ipconfig /renew timed out' }
-        if ($r.ExitCode -ne 0) { Write-Log 'WARN' ('ipconfig /renew said: ' + (([string]$r.Output -replace '\s+', ' ').Trim())) }
-    })
-    for ($i = 0; $i -lt 16; $i++) {
-        if ($i % 4 -eq 0) {
-            $freshAd = Get-NetAdapter -Name $Ad.Name -ErrorAction SilentlyContinue
-            if ($freshAd) { $Ad = $freshAd }
-        }
-        if (Get-ValidIPv4 $Ad) { Write-Log 'OK' 'Lease acquired after release/renew.'; return $true }
-        Start-Sleep -Milliseconds 500
-    }

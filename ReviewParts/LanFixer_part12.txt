@@ -1,3 +1,90 @@
+    $testEntropy = Get-VaultEntropy
+    $testEnc = [System.Security.Cryptography.ProtectedData]::Protect($testBytes, $testEntropy, [System.Security.Cryptography.DataProtectionScope]::LocalMachine)
+    $testDec = [System.Security.Cryptography.ProtectedData]::Unprotect($testEnc, $testEntropy, [System.Security.Cryptography.DataProtectionScope]::LocalMachine)
+    $testMatch = ([System.Text.Encoding]::UTF8.GetString($testDec) -eq 'nitjsr_test_secret')
+    Write-Check 'Logic: DPAPI LocalMachine crypto round-trip' $testMatch
+    # ---- v4 behavioural tests: each one fails if the behaviour regresses
+    Write-Check 'Logic: private IPv4 ranges' ((Test-PrivateIPv4 '10.114.0.5') -and (Test-PrivateIPv4 '172.20.1.1') -and (Test-PrivateIPv4 '192.168.1.1') -and -not (Test-PrivateIPv4 '8.8.8.8') -and -not (Test-PrivateIPv4 '172.32.0.1') -and -not (Test-PrivateIPv4 'x'))
+    Write-Check 'Logic: allowed portal IP includes CGNAT' ((Test-AllowedPortalIp '100.64.0.1') -and (Test-AllowedPortalIp '10.114.0.5') -and -not (Test-AllowedPortalIp '8.8.8.8'))
+    Write-Check 'Logic: certificate accepted only if valid or pinned' (((Get-CertDecision 'None' 'AA' '') -eq 'valid') -and ((Get-CertDecision 'RemoteCertificateChainErrors' 'ab12' 'AB12') -eq 'pinned') -and ((Get-CertDecision 'RemoteCertificateChainErrors' 'ab12' 'FFFF') -eq 'reject') -and ((Get-CertDecision 'RemoteCertificateNameMismatch' 'ab12' '') -eq 'reject'))
+    $chunk = [System.Text.Encoding]::ASCII.GetBytes("5`r`nhello`r`n6`r`n world`r`n0`r`n`r`n")
+    Write-Check 'Logic: chunked transfer decoded' (([System.Text.Encoding]::ASCII.GetString((ConvertFrom-ChunkedBytes $chunk))) -ceq 'hello world')
+    $pr = ConvertFrom-HttpBytes ([System.Text.Encoding]::ASCII.GetBytes("HTTP/1.1 302 Found`r`nLocation: https://gw/x`r`nSet-Cookie: PHPSESSID=abc; path=/`r`nTransfer-Encoding: chunked`r`n`r`n2`r`nhi`r`n0`r`n`r`n"))
+    Write-Check 'Logic: HTTP response parsed (status, location, cookie, chunked body)' (($pr.Code -eq 302) -and ($pr.Location -ceq 'https://gw/x') -and ($pr.Cookies.Count -eq 1) -and ($pr.Body -ceq 'hi'))
+    $html = '<html><form method="post" action="/login?z=1"><input type="hidden" name="__csrf" value="a&amp;b"><input type=hidden name=zone value=nitjsr><input name="auth_user" type="text"><input name="auth_pass" type="password"><input name="accept" type="submit" value="Sign In"></form></html>'
+    $fm = ConvertFrom-LoginForm $html ([uri]'https://gateway.nitjsr.ac.in:8003/index.php')
+    Write-Check 'Logic: login form parsed (hidden fields, names, action)' ($fm -and ($fm.UserField -ceq 'auth_user') -and ($fm.PassField -ceq 'auth_pass') -and ($fm.Fields['__csrf'] -ceq 'a&b') -and ($fm.Fields['zone'] -ceq 'nitjsr') -and ($fm.Fields['accept'] -ceq 'Sign In') -and ($fm.Action.AbsoluteUri -ceq 'https://gateway.nitjsr.ac.in:8003/login?z=1'))
+    $evil = ConvertFrom-LoginForm '<form action="https://evil.example/steal"><input type="password" name="p"></form>' ([uri]'https://gateway.nitjsr.ac.in/')
+    Write-Check 'Logic: a form that posts to another host is caught by the host check' ($evil -and -not (Test-TrustedPortalHost $evil.Action.Host))
+    Write-Check 'Logic: page without a password field is not a login form' ($null -eq (ConvertFrom-LoginForm '<form><input name="q"></form>' ([uri]'https://x/')))
+    $vp = ConvertFrom-VaultPlain ('2021ug01' + [string][char]9 + 'pa' + [string][char]9 + 'ss')
+    Write-Check 'Logic: vault text splits on the FIRST tab only' ($vp -and ($vp.User -ceq '2021ug01') -and ($vp.Pass -ceq ('pa' + [string][char]9 + 'ss')))
+    Write-Check 'Logic: malformed vault text rejected' (-not (ConvertFrom-VaultPlain 'nopass') -and -not (ConvertFrom-VaultPlain ([string][char]9 + 'x')))
+    $okR = @([pscustomobject]@{ IdentityReference = [pscustomobject]@{ Value = 'S-1-5-18' } }, [pscustomobject]@{ IdentityReference = [pscustomobject]@{ Value = 'S-1-5-32-544' } })
+    $badR = $okR + @([pscustomobject]@{ IdentityReference = [pscustomobject]@{ Value = 'S-1-5-32-545' } })
+    Write-Check 'Logic: vault ACL rule (SYSTEM + Administrators only)' ((Test-AclSidsOnly $okR @('S-1-5-18', 'S-1-5-32-544')) -and -not (Test-AclSidsOnly $badR @('S-1-5-18', 'S-1-5-32-544')))
+    Write-Check 'Logic: vault file ACL on this PC' (Test-VaultAcl $script:VaultFile) $true 'run menu A and re-save credentials'
+    Write-Check 'Logic: system fallback never speaks for one adapter or while Wi-Fi is up' ((-not (Test-AllowSystemFallback $true 'Offline' $false)) -and (-not (Test-AllowSystemFallback $false 'Offline' $true)) -and (Test-AllowSystemFallback $false 'Offline' $false) -and (-not (Test-AllowSystemFallback $false 'Online' $false)))
+    Write-Check 'Logic: MTU needs two matching measurements' (((Get-MtuDecision 1400 1500 $null).Action -eq 'candidate') -and ((Get-MtuDecision 1400 1500 1396).Action -eq 'clamp') -and ((Get-MtuDecision 1400 1500 1300).Action -eq 'candidate') -and ((Get-MtuDecision 1200 1500 1200).Action -eq 'skip') -and ((Get-MtuDecision 1400 1400 $null).Action -eq 'skip') -and ((Get-MtuDecision $null 1500 $null).Action -eq 'skip') -and ((Get-MtuDecision 1500 1500 $null).Action -eq 'skip'))
+    Write-Check 'Logic: prefer-IPv4 keeps existing DisabledComponents bits' (((Get-PreferIpv4Value $null) -eq 32) -and ((Get-PreferIpv4Value 1) -eq 33) -and ((Get-PreferIpv4Value 32) -eq 32) -and ((Get-PreferIpv4Value 17) -eq 49))
+    Write-Check 'Logic: DHCP wording states facts only' (((Get-DhcpFailureText 121 'AA') -like '*0x79*') -and ((Get-DhcpFailureText 5 'AA') -like '*0x5*') -and ((Get-DhcpFailureText $null 'AA-BB') -like '*AA-BB*'))
+    Write-Check 'Logic: PowerKeywords cover Realtek battery/adaptive/extra modes' (($script:PowerKeywords -contains 'BatteryModeLinkSpeed') -and ($script:PowerKeywords -contains 'EnableAdaptiveLinkCap') -and ($script:PowerKeywords -contains 'EnableExtraPowerSaving'))
+    try {
+        $tb = [System.Text.Encoding]::UTF8.GetBytes('nitjsr_test_secret')
+        $te = [System.Security.Cryptography.ProtectedData]::Protect($tb, (Get-VaultEntropy), [System.Security.Cryptography.DataProtectionScope]::LocalMachine)
+        $td = [System.Security.Cryptography.ProtectedData]::Unprotect($te, (Get-VaultEntropy), [System.Security.Cryptography.DataProtectionScope]::LocalMachine)
+        Write-Check 'Logic: DPAPI machine-scope round trip' (([System.Text.Encoding]::UTF8.GetString($td)) -ceq 'nitjsr_test_secret')
+    } catch { Write-Check 'Logic: DPAPI machine-scope round trip' $false }
+    $nowT = [datetime]'2026-10-12T12:00:00'
+    $candOld = @{ Mac = 'BB'; Since = $nowT.AddHours(-25).ToString('o') }
+    $candNew = @{ Mac = 'BB'; Since = $nowT.AddHours(-2).ToString('o') }
+    Write-Check 'Logic: ARP first sighting or unchanged MAC is locked' (((Get-ArpDecision '' 'AA' $null $nowT) -eq 'lock') -and ((Get-ArpDecision 'AA' 'AA' $null $nowT) -eq 'lock'))
+    Write-Check 'Logic: a CHANGED gateway MAC is not locked, only flagged' (((Get-ArpDecision 'AA' 'BB' $null $nowT) -eq 'candidate') -and ((Get-ArpDecision 'AA' 'CC' $candNew $nowT) -eq 'candidate'))
+    Write-Check 'Logic: a changed MAC is accepted only after 24 stable hours' (((Get-ArpDecision 'AA' 'BB' $candNew $nowT) -eq 'wait') -and ((Get-ArpDecision 'AA' 'BB' $candOld $nowT) -eq 'lock'))
+    Write-Check 'Logic: watchdog task is re-registered for old arguments or an unsafe restart policy' ((Test-WatchdogStale 'a' 'b' 'IgnoreNew') -and (Test-WatchdogStale 'a' 'a' 'StopExisting') -and (-not (Test-WatchdogStale 'a' 'a' 'IgnoreNew')))
+    Write-Check 'Logic: generated watchdog XML is valid and uses IgnoreNew' (($(try { $wx = [xml](New-WatchdogXml '/c test' '2026-01-01T00:00:00'); ([string]$wx.Task.Settings.MultipleInstancesPolicy) -eq 'IgnoreNew' } catch { $false })))
+    # ---- interface tests
+    Write-Check 'UI: every verdict maps to a headline and five hop states' ((@('Healthy', 'Captive', 'NoIp', 'GwUnreachable', 'NoDns', 'Offline', 'NoLink', 'NoAdapter', '') | Where-Object { $si = Get-StateInfo $_; -not ($si.Word -and @($si.Hops).Count -eq 5) }).Count -eq 0)
+    Write-Check 'UI: the chain breaks at the right hop' ((((Get-StateInfo 'GwUnreachable').Hops) -join ',') -ceq 'ok,ok,bad,unk,unk' -and (((Get-StateInfo 'Captive').Hops) -join ',') -ceq 'ok,ok,ok,ok,warn' -and (((Get-StateInfo 'NoIp').Hops) -join ',') -ceq 'ok,bad,unk,unk,unk')
+    $wr = @(Split-Words 'one two three four five six seven eight nine ten eleven twelve' 20 2)
+    Write-Check 'UI: word wrap keeps to the width and the line limit' (($wr.Count -le 2) -and (@($wr | Where-Object { $_.Length -gt 20 }).Count -eq 0))
+    $pm = Get-PulseModel @(2, 2, 3, -1, 48, 2) 10
+    Write-Check 'UI: pulse counts loss and flags the spike' (($pm.Loss -eq 17) -and ($pm.Valid -eq 5) -and (@($pm.Chars | Where-Object { $_.Role -eq 'warn' }).Count -eq 1) -and (@($pm.Chars | Where-Object { $_.Role -eq 'bad' }).Count -eq 1))
+    $okW = $true; $okA = $true
+    $saveUni = [bool]$script:Ui.Uni
+    foreach ($uni in @($true, $false)) {
+        Set-UiGlyphs $uni
+        foreach ($cw in 60, 76, 100) {
+            foreach ($pb in 'Healthy', 'Captive', 'NoIp', 'GwUnreachable', 'NoDns', 'Offline', 'NoLink', 'NoAdapter') {
+                $tt = New-Telemetry
+                $tt.Admin = $true; $tt.Problem = $pb; $tt.LinkUp = $true; $tt.Speed = '2.5 Gbps'; $tt.Nic = 'Realtek PCIe 2.5GbE Family Controller #2'; $tt.Mac = 'AA-BB-CC-DD-EE-FF'
+                $tt.Ip = '10.114.230.187'; $tt.GwIp = '10.114.230.1'; $tt.GwRtt = 12; $tt.DnsPrimary = '172.16.1.2'; $tt.DnsProfile = 'Adaptive'; $tt.Env = 'Campus'; $tt.EnvScore = 4; $tt.Mtu = '1500'; $tt.Watchdog = $true; $tt.Vault = $true
+                $mdl = Get-DashboardModel $tt (Get-Advice $tt) $cw
+                foreach ($ln in $mdl.Lines) {
+                    if ((Get-SegsLength $ln) -gt ($cw + 2)) { $okW = $false }
+                    if (-not $uni) { foreach ($sg in $ln) { if ([string]$sg.T -match '[^\x20-\x7E]') { $okA = $false } } }
+                }
+            }
+        }
+    }
+    Set-UiGlyphs $saveUni
+    Write-Check 'UI: no line is wider than the terminal (60/76/100 columns, Unicode and ASCII)' $okW
+    Write-Check 'UI: ASCII mode emits only ASCII characters' $okA
+    # v4.5.6: the TRANSIENT dashboard states must fit too - the pending-MAC row is injected dynamically, Limited Mode
+    # changes the advice line, and "Wi-Fi Protected" is a longer routing label than "Ethernet First".
+    $okTrans = $true
+    $saveUniT = [bool]$script:Ui.Uni
+    foreach ($uniT in @($true, $false)) {
+        Set-UiGlyphs $uniT
+        foreach ($cwT in 60, 76, 100) {
+            foreach ($variant in @('ArpPending', 'Limited', 'Protected')) {
+                $tv = New-Telemetry
+                $tv.Admin = $true; $tv.Problem = 'Healthy'; $tv.LinkUp = $true; $tv.Speed = '2.5 Gbps'
+                $tv.Nic = 'Realtek PCIe 2.5GbE Family Controller #2'; $tv.Mac = 'AA-BB-CC-DD-EE-FF'
+                $tv.Ip = '10.114.230.187'; $tv.GwIp = '10.114.230.1'; $tv.GwAlive = $true
+                $tv.DnsPrimary = '172.16.1.2'; $tv.DnsProfile = 'Adaptive'; $tv.Env = 'Campus'; $tv.EnvScore = 4
+                $tv.Watchdog = $true; $tv.Vault = $true; $tv.Paused = $true
+                switch ($variant) {
                     'ArpPending' { $tv.ArpPending = $true }
                     'Limited'    { $tv.Admin = $false; $tv.Problem = 'Captive' }
                     'Protected'  { $tv.Routing = 'Wi-Fi Protected' }
@@ -711,90 +798,3 @@ function Get-Advice($t) {
                 $r.Key = '2'; $r.KeyLabel = 'arm the watchdog'
             } else {
                 $r.Status = 'Connected to network with background watchdog active.'
-                if ($t.LastFull) { $r.Status += (' Last repair ' + ([datetime]$t.LastFull).ToString('ddd yyyy-MM-dd HH:mm') + '.') }
-                $r.Action = 'No action needed.'
-            }
-        }
-        'Captive' {
-            $r.Status = 'Connected to network, but captive portal sign-in is required.'
-            if ($t.Paused) {
-                $r.Action = 'Portal rejected saved password. Update credentials in vault (A).'
-                $r.Key = 'a'; $r.KeyLabel = 'open the vault'
-            } elseif ($t.Vault) {
-                $r.Action = 'Press [ENTER] to sign in automatically with saved vault login (or press G).'
-                $r.Key = 'g'; $r.KeyLabel = 'sign in with your saved login'
-            } else {
-                $r.Action = 'Press [ENTER] to open login page (or press 7), or press [A] to save login.'
-                $r.Key = '7'; $r.KeyLabel = 'open the login page'
-            }
-        }
-        'NoIp' {
-            $r.Status = ((Get-DhcpFailureText (Get-DhcpErrorCode) ([string]$t.Mac)))
-            $r.Action = 'Press [ENTER] to execute 7-layer heal and acquire DHCP lease (or press 1).'
-            $r.Key = '1'; $r.KeyLabel = 'repair now'
-        }
-        'GwUnreachable' {
-            if ($script:State.Misc['ArpCand'] -is [hashtable] -and $script:State.Misc['ArpCand'].Count -gt 0) {
-                $r.Status = 'Default gateway unreachable. New router MAC candidate pending approval.'
-                $r.Action = 'Press [ENTER] to approve new gateway MAC immediately (or press K).'
-                $r.Key = 'k'; $r.KeyLabel = 'review the gateway MAC change'
-            } else {
-                $r.Status = 'IPv4 address assigned, but default gateway is not responding.'
-                $r.Action = 'Press [ENTER] to refresh ARP table & restore route metrics (or press 1).'
-                $r.Key = '1'; $r.KeyLabel = 'repair now'
-            }
-        }
-        'NoDns' {
-            $r.Status = 'Local network reachable, but domain name resolution (DNS) is failing.'
-            $r.Action = 'Press [ENTER] to restore working DNS resolvers & flush cache (or press 1).'
-            $r.Key = '1'; $r.KeyLabel = 'repair now'
-        }
-        'Offline' {
-            $r.Status = 'Default gateway answers, but upstream internet access is blocked.'
-            $r.Action = 'Press [ENTER] to run 7-layer diagnostics & verify routing (or press 1).'
-            $r.Key = '1'; $r.KeyLabel = 'repair now'
-        }
-        'NoLink' {
-            $r.Status = 'Physical Ethernet link down. Cable unplugged or port inactive.'
-            if ($t.Watchdog) {
-                $r.Action = 'Connect Ethernet cable, or press [ENTER] / [X] to open Reset Options.'
-                $r.Key = 'x'; $r.KeyLabel = 'open Reset Options'
-            } else {
-                $r.Action = 'Connect Ethernet cable, then arm watchdog (or press 2).'
-                $r.Key = '2'; $r.KeyLabel = 'arm the watchdog'
-            }
-        }
-        'NoAdapter' {
-            $r.Status = 'No physical Ethernet network adapter found.'
-            $r.Action = 'Press [ENTER] or [X] to open Reset Options & rescan PnP hardware bus.'
-            $r.Key = 'x'; $r.KeyLabel = 'open Reset Options'
-        }
-        default {
-            $r.Status = 'Reading network state and adapters...'
-            $r.Action = 'Please wait while telemetry is collected.'
-        }
-    }
-    $r.Text = ($r.Status + ' ' + $r.Action).Trim()
-    return $r
-}
-function Get-Sig($t) { return ('{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}|{8}|{9}|{10}|{11}|{12}|{13}|{14}|{15}' -f $t.Problem, $t.Ip, $t.Conn, $t.Speed, $t.Watchdog, $t.DnsPrimary, $t.Admin, $t.Vault, $t.Paused, $t.Routing, $t.GwIp, $t.Env, $t.DnsProfile, $t.GwAlive, $t.ArpPending, $t.RouteProfile) }
-
-
-$script:Frame = $null
-function Show-Dashboard($t, $adv) {
-    $m = Get-DashboardModel $t $adv
-    Write-Frame $m.Lines
-    Out-Line @((Seg 'accent!' ('  ' + $script:G.prompt + ' '))) -NoNewline
-    Show-Cursor $true
-    $script:Frame = @{ Model = $m; Rows = $m.Lines.Count; WinW = (Get-UiWidth) }
-}
-function Show-DnsMenu {
-    $cur = Get-DnsProfileName
-    $items = @(
-        @('1', 'Adaptive',   'Adaptive',   'Automatic: Campus DNS before login, public DNS after (Recommended)'),
-        @('2', 'Campus',     'DHCP',       'Campus DHCP: Direct resolvers for campus ERP and intranet'),
-        @('3', 'Hybrid',     'Hybrid',     'Dual Resolver: Quad9 & Google primary, campus fallback'),
-        @('4', 'Cloudflare', 'Cloudflare', 'Public Secure: Cloudflare 1.1.1.1 primary, campus fallback'),
-        @('5', 'Reset DHCP', 'ResetDHCP',  'Restore Defaults: Clear custom DNS and restore automatic DHCP'))
-    foreach ($it in $items) {
-        $on = ($it[2] -eq $cur)

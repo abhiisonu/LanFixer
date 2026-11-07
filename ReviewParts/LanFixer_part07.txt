@@ -1,3 +1,89 @@
+        if ($Hist -is [hashtable] -and $Hist.ContainsKey('Home')) { return [bool]$Hist['Home'] }
+        return $true
+    }
+    return $false
+}
+function Set-CampusNrpt([string[]]$Servers, [bool]$HomeNet = $true) {
+    $domains = @()
+    if ($HomeNet) { $domains = @($script:Cfg.CampusDomain) }
+    $discDom = [string]$script:State.Misc['DiscoveredDomain']
+    if ($discDom -and $domains -notcontains $discDom) { $domains += $discDom }
+    try {
+        $suffixes = @(Get-DnsClientGlobalSetting -ErrorAction SilentlyContinue).SuffixSearchList
+        foreach ($sfx in $suffixes) {
+            if ($sfx -and $sfx -notmatch 'local|internal' -and $domains -notcontains $sfx) { $domains += $sfx }
+        }
+    } catch {}
+    $wantNs = @()
+    foreach ($dm in @($domains | Where-Object { $_ } | Select-Object -Unique)) {
+        $wantNs += ('.' + $dm)
+        $wantNs += $dm
+    }
+    if ($wantNs.Count -eq 0) { Remove-CampusNrpt; return }   # nothing to map (not the home campus, nothing discovered)
+    $rules = @(Get-OurNrptRules)
+    $allPresent = ($rules.Count -gt 0)
+    $serversMatch = $true
+    foreach ($r in $rules) {
+        $rNs = @($r.Namespace)
+        foreach ($wn in $wantNs) { if ($rNs -notcontains $wn) { $allPresent = $false } }
+        $currentNs = @($r.NameServers)
+        foreach ($s in $Servers) { if ($currentNs -notcontains $s) { $serversMatch = $false } }
+    }
+    if ($allPresent -and $serversMatch) { return }
+    Remove-CampusNrpt
+    [void](Invoke-Change "Split-horizon DNS rule: $($wantNs -join ', ') -> $($Servers -join ', ')" {
+        Add-DnsClientNrptRule -Namespace $wantNs -NameServers $Servers -DisplayName 'LanFixer-Campus' -Comment 'Managed by Lan Fixer' -ErrorAction Stop
+    })
+}
+# Pure decision (unit-tested) for a NON-campus adapter whose profile is Adaptive/DHCP.
+#   NoDns                                         -> Rescue     (network resolvers dead: substitute public ones)
+#   we already rescued and DHCP still not usable  -> KeepRescue (reverting now would just break DNS again)
+#   anything else                                 -> Restore    (leave DNS to the network)
+function Get-OtherDnsAction([string]$ConnState, [bool]$Managed, [string]$Phase, [bool]$DhcpUsable) {
+    if ($ConnState -eq 'NoDns') { return 'Rescue' }
+    if ($Managed -and $Phase -eq 'Public' -and -not $DhcpUsable) { return 'KeepRescue' }
+    return 'Restore'
+}
+# Do the network's own (DHCP-leased) resolvers answer right now? Probed from the adapter's own address so a second
+# uplink cannot answer for it. Empty list = no.
+function Test-DhcpDnsUsable([string]$Guid, [string]$SourceIp = '') {
+    $dhcp = @(Get-DhcpDnsServers $Guid)
+    if ($dhcp.Count -eq 0) { return $false }
+    try {
+        $m = Measure-ResolversFast $dhcp 600 53 $SourceIp
+        foreach ($s in $dhcp) { if ($null -ne $m[$s]) { return $true } }
+    } catch {}
+    return $false
+}
+function Restore-Ipv6IfNeutralized($Ad) {
+    $guid = [string]$Ad.InterfaceGuid
+    $d = Get-SubTable 'Dns' $guid
+    if ($d.Ipv6Neutralized -ne $true) { return }
+    $snap = Get-SubTable 'Snapshot' $guid
+    $rd = [string]$snap['Ipv6Rd']
+    if (-not $rd) { $rd = 'ControlledByDHCP' }
+    $ok = Invoke-Change "IPv6 re-enabled on $($Ad.Name)" {
+        Enable-NetAdapterBinding -Name $Ad.Name -ComponentId 'ms_tcpip6' -Confirm:$false -ErrorAction Stop
+        Set-NetIPInterface -InterfaceIndex $Ad.ifIndex -AddressFamily IPv6 -RouterDiscovery $rd -ErrorAction SilentlyContinue
+    }
+    if ($ok -and -not $script:IsDry) { $d.Ipv6Neutralized = $false }
+}
+function Shield-DnsIntegrity($Ad) {
+    if (-not $script:IsAdmin) { return }
+    if ($Ad.MediaType -and $Ad.MediaType -ne '802.3') { return }
+    $guid = [string]$Ad.InterfaceGuid
+    try {
+        $verdict = Get-AdapterDnsVerdict $Ad
+        if ($verdict.Action -ne 'Neutralize') { return }
+        $v6Binding = Get-NetAdapterBinding -Name $Ad.Name -ComponentId 'ms_tcpip6' -ErrorAction SilentlyContinue
+        if ($v6Binding -and $v6Binding.Enabled) {
+            Save-Original $guid 'MsTcpip6' 'True'
+            Save-Original $guid 'DnsStatic' (Get-StaticDnsString $guid)
+            $curRd = [string](Get-NetIPInterface -InterfaceIndex $Ad.ifIndex -AddressFamily IPv6 -ErrorAction SilentlyContinue).RouterDiscovery
+            if ($curRd) { Save-Original $guid 'Ipv6Rd' $curRd }
+            $why = if ($verdict.IsSinkhole) { "Neutralize rogue IPv6 DNS sinkhole on $($Ad.Name)" }
+                   else { "Neutralize unroutable IPv6 DNS forwarder on $($Ad.Name) (link lacks global IPv6 route)" }
+            $ok = Invoke-Change $why {
                 Set-NetIPInterface -InterfaceIndex $Ad.ifIndex -AddressFamily IPv6 -RouterDiscovery Disabled -ErrorAction SilentlyContinue
                 Disable-NetAdapterBinding -Name $Ad.Name -ComponentId 'ms_tcpip6' -Confirm:$false -ErrorAction Stop
             }
@@ -590,6 +676,7 @@ function Shield-TransportProtocols {
 function Shield-SystemStack([switch]$Aggressive) {
     if (-not $script:IsAdmin) { return }
     [void](Shield-Proxies)
+    [void](Shield-TransportProtocols)
     # Pre-Guard: If unauthenticated Ethernet is up alongside an active Wi-Fi/secondary uplink, demote Ethernet metric first
     # so system-wide DNS probes below do not route into an unauthenticated Ethernet cable before Layer 3 runs.
     $ethUps = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })
@@ -711,90 +798,3 @@ function Shield-SystemStack([switch]$Aggressive) {
                 ($_.ProcessName -match $matchRegex) -and
                 ($roguePids.Contains($_.Id) -or $Aggressive -or $hasPoison) -and
                 ($_.ProcessName -notmatch '^(svchost|System|Idle|services|lsass|csrss|smss|wininit)$')
-            })
-            $rogueSvcs = @(Get-Service -ErrorAction SilentlyContinue | Where-Object {
-                ($_.Status -eq 'Running') -and ($_.Name -match $matchRegex -or $_.DisplayName -match $matchRegex)
-            })
-            if ($rogueProcs.Count -gt 0 -or $rogueSvcs.Count -gt 0) {
-                [void](Invoke-Change ("Neutralized rogue/broken local DNS interceptor ($dnsEvidence)") {
-                    if ($script:State.Misc['NeutralizedServices'] -isnot [hashtable]) { $script:State.Misc['NeutralizedServices'] = @{} }
-                    foreach ($s in $rogueSvcs) {
-                        Write-Log 'INFO' ("Stopping rogue DNS interceptor service $($s.Name) (startup set to Manual)...")
-                        if (-not $script:State.Misc['NeutralizedServices'].ContainsKey($s.Name)) {
-                            $isDelayed = [bool]((Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\$($s.Name)" -ErrorAction SilentlyContinue).DelayedAutostart)
-                            $script:State.Misc['NeutralizedServices'][$s.Name] = @{
-                                StartType   = [string]$s.StartType
-                                DelayedAuto = $isDelayed
-                                WasRunning  = ($s.Status -eq 'Running')
-                            }
-                        }
-                        Stop-Service -Name $s.Name -Force -ErrorAction SilentlyContinue
-                        Set-Service -Name $s.Name -StartupType Manual -ErrorAction SilentlyContinue
-                    }
-                    foreach ($p in $rogueProcs) {
-                        Write-Log 'INFO' ("Stopping rogue DNS interceptor process $($p.ProcessName) (PID $($p.Id))...")
-                        Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
-                    }
-                    # Neutralize any auto-restart / updater scheduled tasks for these interceptors
-                    $allTasks = @(Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object {
-                        $_.State -ne 'Disabled' -and
-                        ($_.TaskName -match $matchRegex -or $_.TaskPath -match $matchRegex) -and
-                        $_.TaskName -notmatch 'LanFixer|A07'
-                    })
-                    if ($allTasks.Count -gt 0) {
-                        if ($script:State.Misc['NeutralizedTasks'] -isnot [hashtable]) { $script:State.Misc['NeutralizedTasks'] = @{} }
-                        foreach ($t in $allTasks) {
-                            Write-Log 'INFO' ("Disabling 3rd-party updater/respawn task $($t.TaskName)...")
-                            Disable-ScheduledTask -TaskName $t.TaskName -TaskPath $t.TaskPath -ErrorAction SilentlyContinue | Out-Null
-                            $script:State.Misc['NeutralizedTasks'][$t.TaskName] = [string]$t.TaskPath
-                        }
-                    }
-                    Clear-DnsClientCache -ErrorAction SilentlyContinue
-                })
-            }
-        }
-    }
-    # 3. Audit & strip dead loopback or rogue system/user proxies (supporting compound semicolon/equal proxies)
-    foreach ($rk in @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings', 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Internet Settings')) {
-        if (Test-Path -LiteralPath $rk) {
-            $pe = (Get-ItemProperty -LiteralPath $rk -Name ProxyEnable -ErrorAction SilentlyContinue).ProxyEnable
-            $ps = [string](Get-ItemProperty -LiteralPath $rk -Name ProxyServer -ErrorAction SilentlyContinue).ProxyServer
-            $ac = [string](Get-ItemProperty -LiteralPath $rk -Name AutoConfigURL -ErrorAction SilentlyContinue).AutoConfigURL
-            if ($pe -eq 1 -or ($Aggressive -and ($ps -or $ac))) {
-                $deadProxy = $Aggressive
-                if (-not $deadProxy -and $ps -match '(?:^|[;=])(?:https?://)?(127\.0\.0\.1|localhost):(\d+)') {
-                    if (-not (Test-TcpPort $Matches[1] ([int]$Matches[2]) 300)) { $deadProxy = $true }
-                }
-                if (-not $deadProxy -and $ac -match '(?:https?://)?(127\.0\.0\.1|localhost):(\d+)') {
-                    if (-not (Test-TcpPort $Matches[1] ([int]$Matches[2]) 300)) { $deadProxy = $true }
-                }
-                if ($deadProxy) {
-                    [void](Invoke-Change "Cleared dead/hijacked proxy in $rk" {
-                        Set-ItemProperty -LiteralPath $rk -Name ProxyEnable -Value 0 -Force -ErrorAction SilentlyContinue
-                        Remove-ItemProperty -LiteralPath $rk -Name ProxyServer, AutoConfigURL -Force -ErrorAction SilentlyContinue
-                    })
-                }
-            }
-        }
-    }
-    foreach ($envScope in @('Process', 'User', 'Machine')) {
-        foreach ($ev in @('HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy')) {
-            $val = [Environment]::GetEnvironmentVariable($ev, $envScope)
-            if ($val) {
-                $deadEnv = $Aggressive
-                if (-not $deadEnv -and $val -match '(?:^|[;=])(?:https?://)?(127\.0\.0\.1|localhost):(\d+)') {
-                    if (-not (Test-TcpPort $Matches[1] ([int]$Matches[2]) 300)) { $deadEnv = $true }
-                }
-                if ($deadEnv) {
-                    [void](Invoke-Change "Removed broken CLI proxy environment variable $ev ($envScope)" {
-                        [Environment]::SetEnvironmentVariable($ev, $null, $envScope)
-                    })
-                }
-            }
-        }
-    }
-    $wh = [string](Invoke-Native (Get-SysExe 'netsh.exe') @('winhttp', 'show', 'proxy') 4000).Output
-    if ($wh -match '(?:https?://)?(127\.0\.0\.1|localhost):(\d+)') {
-        if ($Aggressive -or -not (Test-TcpPort $Matches[1] ([int]$Matches[2]) 300)) {
-            [void](Invoke-Change 'Reset dead WinHTTP loopback proxy' {
-                [void](Invoke-Native (Get-SysExe 'netsh.exe') @('winhttp', 'reset', 'proxy') 5000)

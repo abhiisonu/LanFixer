@@ -3261,6 +3261,17 @@ function Test-GatewayAlive($Ad, [string]$Gw) {
         if ((Test-TcpPort $Gw 80 400 $gwSrc) -or (Test-TcpPort $Gw 443 400 $gwSrc) -or (Test-TcpPort $Gw 53 400 $gwSrc) -or (Test-TcpPort $Gw 8003 400 $gwSrc)) {
             return @{ Alive = $true; Rtt = $null; Via = 'arp' }
         }
+        $dynamicGwPorts = @()
+        if ($script:State.Misc -and $script:State.Misc['DiscoveredPortalPort']) {
+            $dp = [int]$script:State.Misc['DiscoveredPortalPort']
+            if ($dp -gt 0 -and @(80, 443, 53, 8003) -notcontains $dp) { $dynamicGwPorts += $dp }
+        }
+        if ($script:Cfg.PortalPort -and @(80, 443, 53, 8003) -notcontains [int]$script:Cfg.PortalPort) {
+            $dynamicGwPorts += [int]$script:Cfg.PortalPort
+        }
+        foreach ($gp in $dynamicGwPorts) {
+            if (Test-TcpPort $Gw $gp 400 $gwSrc) { return @{ Alive = $true; Rtt = $null; Via = 'arp' } }
+        }
         $freshArp = @(Get-GatewayMacs $Ad $Gw 1)
         if ($freshArp.Count -gt 0 -and $freshArp[0] -eq [string]$ex.LinkLayerAddress) {
             return @{ Alive = $true; Rtt = $null; Via = 'arp' }
@@ -3268,7 +3279,21 @@ function Test-GatewayAlive($Ad, [string]$Gw) {
         return @{ Alive = $false; Rtt = $null; Via = '' }
     }
     $gwSrc = [string](Get-ValidIPv4 $Ad)
-    if ($gwSrc -and ((Test-TcpPort $Gw 80 350 $gwSrc) -or (Test-TcpPort $Gw 443 350 $gwSrc) -or (Test-TcpPort $Gw 53 350 $gwSrc) -or (Test-TcpPort $Gw 8003 350 $gwSrc))) {
+    $dynamicGwPorts2 = @(80, 443, 53, 8003)
+    if ($script:State.Misc -and $script:State.Misc['DiscoveredPortalPort']) {
+        $dp2 = [int]$script:State.Misc['DiscoveredPortalPort']
+        if ($dp2 -gt 0 -and $dynamicGwPorts2 -notcontains $dp2) { $dynamicGwPorts2 += $dp2 }
+    }
+    if ($script:Cfg.PortalPort -and $dynamicGwPorts2 -notcontains [int]$script:Cfg.PortalPort) {
+        $dynamicGwPorts2 += [int]$script:Cfg.PortalPort
+    }
+    $tcpGwAlive2 = $false
+    if ($gwSrc) {
+        foreach ($gp in $dynamicGwPorts2) {
+            if (Test-TcpPort $Gw $gp 350 $gwSrc) { $tcpGwAlive2 = $true; break }
+        }
+    }
+    if ($tcpGwAlive2) {
         return @{ Alive = $true; Rtt = $null; Via = 'tcp' }
     }
     if ($script:IsAdmin -and -not $script:IsDry -and $ex -and @('Unreachable','Incomplete') -contains [string]$ex.State) {
@@ -3656,7 +3681,16 @@ function Resolve-DuplexFlap($Ad) {
     }
     $guid = [string]$Ad.InterfaceGuid
     $speed = [string]$Ad.LinkSpeed
-    if ($speed -match '^\s*10\s*M' -and $Ad.InterfaceDescription -match 'Gigabit|GbE|RTL81|I21|I22|1000') {
+    $isGigabitOrHigher = $false
+    try {
+        if ([int64]$Ad.LinkSpeed -ge 1000000000 -or [int64]$Ad.MaxSpeed -ge 1000000000 -or [int64]$Ad.TransmitLinkSpeed -ge 1000000000) { $isGigabitOrHigher = $true }
+        elseif ($Ad.InterfaceDescription -match 'Gigabit|GbE|1000|2\.5G|5G|10G|10000|RTL81|I21|I22') { $isGigabitOrHigher = $true }
+        else {
+            $sdProp = Get-NetAdapterAdvancedProperty -Name $Ad.Name -RegistryKeyword '*SpeedDuplex' -ErrorAction SilentlyContinue
+            if ($sdProp -and ($sdProp.ValidDisplayValues -match '1\.0 Gbps|1 Gbps|1000|2\.5|5 Gbps|10 Gbps')) { $isGigabitOrHigher = $true }
+        }
+    } catch {}
+    if ($speed -match '^\s*10\s*M' -and $isGigabitOrHigher) {
         $prop = Get-NetAdapterAdvancedProperty -Name $Ad.Name -RegistryKeyword '*SpeedDuplex' -ErrorAction SilentlyContinue
         if ($prop) {
             $curVal = [string](@($prop.RegistryValue) | Select-Object -First 1)
@@ -3691,7 +3725,22 @@ function Optimize-PhySiliconBuffers($Ad) {
         if ($null -eq $cur) { continue }
 
         if ($health.Discards -lt 500 -and $cur -ge 512) { continue }
-        $target = if ($cur -lt 512) { 512 } elseif ($cur -lt 1024) { 1024 } else { 2048 }
+        $validVals = @()
+        if ($p.ValidRegistryValues) {
+            foreach ($v in $p.ValidRegistryValues) {
+                $iv = 0
+                if ([int]::TryParse([string]$v, [ref]$iv) -and $iv -gt 0) { $validVals += $iv }
+            }
+        }
+        $validVals = @($validVals | Sort-Object)
+        $target = $null
+        if ($validVals.Count -gt 0) {
+            $higher = @($validVals | Where-Object { $_ -gt $cur })
+            if ($higher.Count -gt 0) { $target = $higher[-1] }
+        }
+        if ($null -eq $target) {
+            $target = if ($cur -lt 512) { 512 } elseif ($cur -lt 1024) { 1024 } else { 2048 }
+        }
         if ($target -gt $cur) {
             Save-Original $guid ("Adv:" + $kw) [string]$cur
             $ok = Invoke-Change ("Scaled ring buffer {0} from {1} to {2} on {3} (NDIS burst buffer optimization)" -f $kw, $cur, $target, $Ad.Name) {
@@ -3820,6 +3869,17 @@ function Shield-Hardware($Ad) {
             $enumKey = "HKLM:\SYSTEM\CurrentControlSet\Enum\$($Ad.PnPDeviceID)\Device Parameters"
             if (Test-Path -LiteralPath $enumKey) {
                 $paramNames = @('DeviceSelectiveSuspended','IdleInWorkingState','SelectiveSuspendEnabled','AutoPowerSave','IdlePowerSave','ReduceSpeedOnPowerDown','UltraLowPowerMode')
+                try {
+                    $item = Get-ItemProperty -LiteralPath $enumKey -ErrorAction SilentlyContinue
+                    if ($item) {
+                        foreach ($prop in $item.PSObject.Properties) {
+                            $pn = $prop.Name
+                            if ($pn -match '(?i)(selective|suspend|powersave|powerdown|idle|lowpower|energysave|green)' -and $paramNames -notcontains $pn) {
+                                $paramNames += $pn
+                            }
+                        }
+                    }
+                } catch {}
                 foreach ($pName in $paramNames) {
                     $cur = (Get-ItemProperty -LiteralPath $enumKey -Name $pName -ErrorAction SilentlyContinue).$pName
                     if ($null -ne $cur -and [int]$cur -eq 0) { continue }
@@ -4215,6 +4275,12 @@ function Shield-GatewayArp($Ctx, [string]$ConnState) {
         if ($dec -eq 'candidate') {
             $script:State.Misc['ArpCand'][$gw] = @{ Mac = $mac; Since = (Get-Date).ToString('o') }
             $isVrrp = ($mac -match '^(?:00-00-5E-00-01|00-00-5E-00-02|00-00-0C-07-AC|00-00-0C-9F-F|00-07-B4|00-05-73-A0)')
+            if (-not $isVrrp) {
+                try {
+                    $firstByte = [convert]::ToByte(($mac -split '[:-]')[0], 16)
+                    if (($firstByte -band 2) -ne 0) { $isVrrp = $true }
+                } catch {}
+            }
             if ($isVrrp) {
                 Write-Log 'INFO' ("High-availability redundancy transition (VRRP/HSRP) detected for gateway {0}: {1} -> {2}." -f $gw, [string]$mem[$gw], $mac)
             } else {
@@ -4261,7 +4327,25 @@ function Get-SubnetInfoFromLease($Ad) {
     if (-not $ipObj -or -not $ipObj.IPAddress) { return $null }
     $ipStr = [string]$ipObj.IPAddress
     $prefix = [int]$ipObj.PrefixLength
-    if ($prefix -lt 0 -or $prefix -gt 32) { $prefix = 24 }
+    if ($prefix -le 0 -or $prefix -gt 32) {
+        $reg = Get-IfaceReg ([string]$Ad.InterfaceGuid)
+        $maskStr = if ($reg -and $reg.DhcpSubnetMask) { [string]$reg.DhcpSubnetMask } elseif ($reg -and $reg.SubnetMask) { [string]$reg.SubnetMask } else { '' }
+        if ($maskStr) {
+            $parsedMask = $null
+            if ([System.Net.IPAddress]::TryParse($maskStr, [ref]$parsedMask)) {
+                $calcPrefix = 0
+                foreach ($b in $parsedMask.GetAddressBytes()) {
+                    for ($bit = 7; $bit -ge 0; $bit--) {
+                        if (($b -band [math]::Pow(2, $bit)) -ne 0) { $calcPrefix++ }
+                    }
+                }
+                if ($calcPrefix -gt 0 -and $calcPrefix -le 32) { $prefix = $calcPrefix }
+            }
+        }
+        if ($prefix -le 0 -or $prefix -gt 32) {
+            $prefix = if ($ipBytes[0] -lt 128) { 8 } elseif ($ipBytes[0] -lt 192) { 16 } else { 24 }
+        }
+    }
 
     $ip = [System.Net.IPAddress]::Parse($ipStr)
     $ipBytes = $ip.GetAddressBytes()
@@ -4303,7 +4387,8 @@ function Find-OptimalPathMtu($Ad, [string]$Target = '') {
     if (-not $Ad) { return 1500 }
     if (-not $Target) {
         $gws = @(Get-GatewaysV4 $Ad)
-        $Target = if ($gws.Count -gt 0) { $gws[0] } else { '9.9.9.9' }
+        $dhcpDnsList = @(Get-DhcpDnsServers ([string]$Ad.InterfaceGuid))
+        $Target = if ($gws.Count -gt 0) { $gws[0] } elseif ($dhcpDnsList.Count -gt 0) { $dhcpDnsList[0] } elseif ($script:Cfg.PublicDns.Count -gt 0) { $script:Cfg.PublicDns[0] } else { '9.9.9.9' }
     }
     $mtu = Get-PathMtuForAdapter $Ad $Target
     if ($null -ne $mtu -and $mtu -ge 1200 -and $mtu -le 1500) {
@@ -4599,7 +4684,8 @@ function Get-BestDnsOrder([string]$Guid, [string[]]$Campus) {
     }
     Write-Log 'INFO' 'Measuring resolver speed (campus + public)...'
     $scored = @()
-    $cands = @(@($script:Cfg.PublicDns) + @($Campus) | Select-Object -Unique)
+    $dhcpLeased = @(Get-DhcpDnsServers $Guid)
+    $cands = @(@($script:Cfg.PublicDns) + @($Campus) + @($dhcpLeased) | Where-Object { $_ } | Select-Object -Unique)
     $meas = Measure-ResolversFast $cands
     foreach ($s in $cands) {
         $ms = $meas[$s]
@@ -5390,6 +5476,7 @@ function Shield-TransportProtocols {
 function Shield-SystemStack([switch]$Aggressive) {
     if (-not $script:IsAdmin) { return }
     [void](Shield-Proxies)
+    [void](Shield-TransportProtocols)
     # Pre-Guard: If unauthenticated Ethernet is up alongside an active Wi-Fi/secondary uplink, demote Ethernet metric first
     # so system-wide DNS probes below do not route into an unauthenticated Ethernet cable before Layer 3 runs.
     $ethUps = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })

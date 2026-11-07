@@ -1,3 +1,90 @@
+                if ($t.LastFull) { $r.Status += (' Last repair ' + ([datetime]$t.LastFull).ToString('ddd yyyy-MM-dd HH:mm') + '.') }
+                $r.Action = 'No action needed.'
+            }
+        }
+        'Captive' {
+            $r.Status = 'Connected to network, but captive portal sign-in is required.'
+            if ($t.Paused) {
+                $r.Action = 'Portal rejected saved password. Update credentials in vault (A).'
+                $r.Key = 'a'; $r.KeyLabel = 'open the vault'
+            } elseif ($t.Vault) {
+                $r.Action = 'Press [ENTER] to sign in automatically with saved vault login (or press G).'
+                $r.Key = 'g'; $r.KeyLabel = 'sign in with your saved login'
+            } else {
+                $r.Action = 'Press [ENTER] to open login page (or press 7), or press [A] to save login.'
+                $r.Key = '7'; $r.KeyLabel = 'open the login page'
+            }
+        }
+        'NoIp' {
+            $r.Status = ((Get-DhcpFailureText (Get-DhcpErrorCode) ([string]$t.Mac)))
+            $r.Action = 'Press [ENTER] to execute 7-layer heal and acquire DHCP lease (or press 1).'
+            $r.Key = '1'; $r.KeyLabel = 'repair now'
+        }
+        'GwUnreachable' {
+            if ($script:State.Misc['ArpCand'] -is [hashtable] -and $script:State.Misc['ArpCand'].Count -gt 0) {
+                $r.Status = 'Default gateway unreachable. New router MAC candidate pending approval.'
+                $r.Action = 'Press [ENTER] to approve new gateway MAC immediately (or press K).'
+                $r.Key = 'k'; $r.KeyLabel = 'review the gateway MAC change'
+            } else {
+                $r.Status = 'IPv4 address assigned, but default gateway is not responding.'
+                $r.Action = 'Press [ENTER] to refresh ARP table & restore route metrics (or press 1).'
+                $r.Key = '1'; $r.KeyLabel = 'repair now'
+            }
+        }
+        'NoDns' {
+            $r.Status = 'Local network reachable, but domain name resolution (DNS) is failing.'
+            $r.Action = 'Press [ENTER] to restore working DNS resolvers & flush cache (or press 1).'
+            $r.Key = '1'; $r.KeyLabel = 'repair now'
+        }
+        'Offline' {
+            $r.Status = 'Default gateway answers, but upstream internet access is blocked.'
+            $r.Action = 'Press [ENTER] to run 7-layer diagnostics & verify routing (or press 1).'
+            $r.Key = '1'; $r.KeyLabel = 'repair now'
+        }
+        'NoLink' {
+            $r.Status = 'Physical Ethernet link down. Cable unplugged or port inactive.'
+            if ($t.Watchdog) {
+                $r.Action = 'Connect Ethernet cable, or press [ENTER] / [X] to open Reset Options.'
+                $r.Key = 'x'; $r.KeyLabel = 'open Reset Options'
+            } else {
+                $r.Action = 'Connect Ethernet cable, then arm watchdog (or press 2).'
+                $r.Key = '2'; $r.KeyLabel = 'arm the watchdog'
+            }
+        }
+        'NoAdapter' {
+            $r.Status = 'No physical Ethernet network adapter found.'
+            $r.Action = 'Press [ENTER] or [X] to open Reset Options & rescan PnP hardware bus.'
+            $r.Key = 'x'; $r.KeyLabel = 'open Reset Options'
+        }
+        default {
+            $r.Status = 'Reading network state and adapters...'
+            $r.Action = 'Please wait while telemetry is collected.'
+        }
+    }
+    $r.Text = ($r.Status + ' ' + $r.Action).Trim()
+    return $r
+}
+function Get-Sig($t) { return ('{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}|{8}|{9}|{10}|{11}|{12}|{13}|{14}|{15}' -f $t.Problem, $t.Ip, $t.Conn, $t.Speed, $t.Watchdog, $t.DnsPrimary, $t.Admin, $t.Vault, $t.Paused, $t.Routing, $t.GwIp, $t.Env, $t.DnsProfile, $t.GwAlive, $t.ArpPending, $t.RouteProfile) }
+
+
+$script:Frame = $null
+function Show-Dashboard($t, $adv) {
+    $m = Get-DashboardModel $t $adv
+    Write-Frame $m.Lines
+    Out-Line @((Seg 'accent!' ('  ' + $script:G.prompt + ' '))) -NoNewline
+    Show-Cursor $true
+    $script:Frame = @{ Model = $m; Rows = $m.Lines.Count; WinW = (Get-UiWidth) }
+}
+function Show-DnsMenu {
+    $cur = Get-DnsProfileName
+    $items = @(
+        @('1', 'Adaptive',   'Adaptive',   'Automatic: Campus DNS before login, public DNS after (Recommended)'),
+        @('2', 'Campus',     'DHCP',       'Campus DHCP: Direct resolvers for campus ERP and intranet'),
+        @('3', 'Hybrid',     'Hybrid',     'Dual Resolver: Quad9 & Google primary, campus fallback'),
+        @('4', 'Cloudflare', 'Cloudflare', 'Public Secure: Cloudflare 1.1.1.1 primary, campus fallback'),
+        @('5', 'Reset DHCP', 'ResetDHCP',  'Restore Defaults: Clear custom DNS and restore automatic DHCP'))
+    foreach ($it in $items) {
+        $on = ($it[2] -eq $cur)
         Out-Line @(
             (Seg $(if ($on) { 'ok!' } else { 'faint' }) ('  ' + $(if ($on) { $script:G.dot } else { $script:G.ring }) + ' ')),
             (Seg 'faint' '['),
@@ -711,90 +798,3 @@ function Start-AutonomousDaemon([int]$IntervalSec = 10, [switch]$Headless) {
                     if ($state.State -eq 'Online') {
                         $recovered = $true; $remedTier = 'Tier 1 (DHCP Lease -> Online)'
                     } elseif ($state.State -eq 'Captive') {
-                        Write-SentinelLog 'INFO' "DHCP lease acquired; captive portal detected. Passing directly to portal authentication..."
-                    }
-                } else {
-                    Write-SentinelLog 'WARN' "Tier 1: DHCP lease re-acquisition did not yield a valid IP. Proceeding to lower-layer diagnostics..."
-                }
-            }
-
-            # Tier 2: Gateway ARP & Routing Priority Enforcement (Layer 3-4)
-            $curIp = Get-ValidIPv4 $ad
-            if (-not $recovered -and $curIp) {
-                $gw = Get-DefaultGateway $ad
-                $gwOk = if ($gw) { (Test-LatencySample $gw 800) -ge 0 } else { $false }
-                if (-not $gwOk -or (-not $script:State.Misc['RouteProfile'] -or $script:State.Misc['RouteProfile'] -eq 'Adaptive')) {
-                    Write-SentinelLog 'TIER2' "Executing Tier 2: Asserting Ethernet routing priority & locking gateway ARP..."
-                    $ctxT2 = @{ Ad = $ad; Env = (Get-AdapterEnvironment $ad) }
-                    [void](Invoke-WithLock -WaitMs 5000 {
-                        if ($script:Cfg.ArpLock -and $gw) { Shield-GatewayArp $ctxT2 $state.State }
-                        Shield-RouteMetrics $ctxT2 $state.State
-                        Ensure-CampusPortalPath $ad
-                        Save-State
-                    })
-                    $st2 = (Get-InternetState -NoCache -SourceIp $curIp).State
-                    if ($st2 -eq 'Online') {
-                        $recovered = $true; $remedTier = 'Tier 2 (Gateway/Route)'
-                        $script:SentinelStats.T1_ArpRoute++
-                    } elseif ($st2 -eq 'Captive') {
-                        $state = @{ State = 'Captive'; Location = $script:Cfg.PortalUrl }
-                    }
-                }
-            }
-
-            # Tier 3: DNS Cache Purge & NRPT Cleansing (Layer 4-5)
-            $curIp = Get-ValidIPv4 $ad
-            if (-not $recovered -and $curIp -and ($state.State -eq 'NoDns' -or -not $state.DnsOk)) {
-                Write-SentinelLog 'TIER3' "Executing Tier 3: DNS failure detected. Purging resolver cache & configuring resolvers..."
-                [void](Invoke-WithLock -WaitMs 3000 {
-                    Flush-NetworkCache
-                    Shield-Dns @{ Ad = $ad; Env = (Get-AdapterEnvironment $ad) } $state.State
-                    Save-State
-                })
-                $st3 = (Get-InternetState -NoCache -SourceIp $curIp).State
-                if ($st3 -eq 'Online') {
-                    $recovered = $true; $remedTier = 'Tier 3 (DNS/NRPT)'
-                    $script:SentinelStats.T3_Dns++
-                } elseif ($st3 -eq 'Captive') {
-                    $state = @{ State = 'Captive'; Location = $script:Cfg.PortalUrl }
-                }
-            }
-
-            # Tier 4: Autonomous Captive Portal Authentication (Layer 7)
-            $curIp = Get-ValidIPv4 $ad
-            if (-not $recovered -and $curIp) {
-                $curProbe = Get-InternetState -NoCache -SourceIp $curIp
-                if ($state.State -eq 'Captive' -or $curProbe.State -eq 'Captive') {
-                    Write-SentinelLog 'TIER4' "Executing Tier 4: Captive portal detected! Checking DPAPI vault for credentials..."
-                    $creds = Get-PortalCredentials
-                    if ($creds) {
-                        Write-SentinelLog 'TIER4' ("Stored credentials found for '{0}'. Executing headless login on {1}..." -f $creds.User, $curIp)
-                        $loginOk = [bool](Invoke-WithLock -WaitMs 8000 {
-                            $auth = Invoke-HeadlessPortalLogin $curProbe -Manual -SourceIp $curIp
-                            if ($auth) {
-                                Complete-Authentication
-                                Save-State
-                            }
-                            $auth
-                        })
-                        if ($loginOk) {
-                            Write-SentinelLog 'OK' "Autonomous captive portal sign-in SUCCESSFUL! Restored high-speed path."
-                            $recovered = $true; $remedTier = 'Tier 4 (Captive Sign-In)'
-                            $script:SentinelStats.T2_Captive++
-                        }
-                    } else {
-                        Write-SentinelLog 'INFO' "No credentials in vault. Ensuring routes and triggering browser to open portal..."
-                        [void](Invoke-WithLock -WaitMs 2000 {
-                            Ensure-CampusPortalPath $ad
-                            Shield-RouteMetrics @{ Ad = $ad; Env = (Get-AdapterEnvironment $ad) } 'Captive'
-                            Open-Portal -Force -SourceIp $curIp
-                            Set-StateTime 'LastPortal'
-                            Save-State
-                        })
-                        $recovered = $true; $remedTier = 'Tier 4 (Portal Opened)'
-                    }
-                }
-            }
-
-            # Tier 5: Silicon NDIS Buffers & Physical PHY Power Shield
-            if (-not $recovered -and -not $linkHealth.Healthy) {

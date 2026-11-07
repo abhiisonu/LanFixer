@@ -1,4 +1,91 @@
             })
+            $rogueSvcs = @(Get-Service -ErrorAction SilentlyContinue | Where-Object {
+                ($_.Status -eq 'Running') -and ($_.Name -match $matchRegex -or $_.DisplayName -match $matchRegex)
+            })
+            if ($rogueProcs.Count -gt 0 -or $rogueSvcs.Count -gt 0) {
+                [void](Invoke-Change ("Neutralized rogue/broken local DNS interceptor ($dnsEvidence)") {
+                    if ($script:State.Misc['NeutralizedServices'] -isnot [hashtable]) { $script:State.Misc['NeutralizedServices'] = @{} }
+                    foreach ($s in $rogueSvcs) {
+                        Write-Log 'INFO' ("Stopping rogue DNS interceptor service $($s.Name) (startup set to Manual)...")
+                        if (-not $script:State.Misc['NeutralizedServices'].ContainsKey($s.Name)) {
+                            $isDelayed = [bool]((Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\$($s.Name)" -ErrorAction SilentlyContinue).DelayedAutostart)
+                            $script:State.Misc['NeutralizedServices'][$s.Name] = @{
+                                StartType   = [string]$s.StartType
+                                DelayedAuto = $isDelayed
+                                WasRunning  = ($s.Status -eq 'Running')
+                            }
+                        }
+                        Stop-Service -Name $s.Name -Force -ErrorAction SilentlyContinue
+                        Set-Service -Name $s.Name -StartupType Manual -ErrorAction SilentlyContinue
+                    }
+                    foreach ($p in $rogueProcs) {
+                        Write-Log 'INFO' ("Stopping rogue DNS interceptor process $($p.ProcessName) (PID $($p.Id))...")
+                        Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+                    }
+                    # Neutralize any auto-restart / updater scheduled tasks for these interceptors
+                    $allTasks = @(Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object {
+                        $_.State -ne 'Disabled' -and
+                        ($_.TaskName -match $matchRegex -or $_.TaskPath -match $matchRegex) -and
+                        $_.TaskName -notmatch 'LanFixer|A07'
+                    })
+                    if ($allTasks.Count -gt 0) {
+                        if ($script:State.Misc['NeutralizedTasks'] -isnot [hashtable]) { $script:State.Misc['NeutralizedTasks'] = @{} }
+                        foreach ($t in $allTasks) {
+                            Write-Log 'INFO' ("Disabling 3rd-party updater/respawn task $($t.TaskName)...")
+                            Disable-ScheduledTask -TaskName $t.TaskName -TaskPath $t.TaskPath -ErrorAction SilentlyContinue | Out-Null
+                            $script:State.Misc['NeutralizedTasks'][$t.TaskName] = [string]$t.TaskPath
+                        }
+                    }
+                    Clear-DnsClientCache -ErrorAction SilentlyContinue
+                })
+            }
+        }
+    }
+    # 3. Audit & strip dead loopback or rogue system/user proxies (supporting compound semicolon/equal proxies)
+    foreach ($rk in @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings', 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Internet Settings')) {
+        if (Test-Path -LiteralPath $rk) {
+            $pe = (Get-ItemProperty -LiteralPath $rk -Name ProxyEnable -ErrorAction SilentlyContinue).ProxyEnable
+            $ps = [string](Get-ItemProperty -LiteralPath $rk -Name ProxyServer -ErrorAction SilentlyContinue).ProxyServer
+            $ac = [string](Get-ItemProperty -LiteralPath $rk -Name AutoConfigURL -ErrorAction SilentlyContinue).AutoConfigURL
+            if ($pe -eq 1 -or ($Aggressive -and ($ps -or $ac))) {
+                $deadProxy = $Aggressive
+                if (-not $deadProxy -and $ps -match '(?:^|[;=])(?:https?://)?(127\.0\.0\.1|localhost):(\d+)') {
+                    if (-not (Test-TcpPort $Matches[1] ([int]$Matches[2]) 300)) { $deadProxy = $true }
+                }
+                if (-not $deadProxy -and $ac -match '(?:https?://)?(127\.0\.0\.1|localhost):(\d+)') {
+                    if (-not (Test-TcpPort $Matches[1] ([int]$Matches[2]) 300)) { $deadProxy = $true }
+                }
+                if ($deadProxy) {
+                    [void](Invoke-Change "Cleared dead/hijacked proxy in $rk" {
+                        Set-ItemProperty -LiteralPath $rk -Name ProxyEnable -Value 0 -Force -ErrorAction SilentlyContinue
+                        Remove-ItemProperty -LiteralPath $rk -Name ProxyServer, AutoConfigURL -Force -ErrorAction SilentlyContinue
+                    })
+                }
+            }
+        }
+    }
+    foreach ($envScope in @('Process', 'User', 'Machine')) {
+        foreach ($ev in @('HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy')) {
+            $val = [Environment]::GetEnvironmentVariable($ev, $envScope)
+            if ($val) {
+                $deadEnv = $Aggressive
+                if (-not $deadEnv -and $val -match '(?:^|[;=])(?:https?://)?(127\.0\.0\.1|localhost):(\d+)') {
+                    if (-not (Test-TcpPort $Matches[1] ([int]$Matches[2]) 300)) { $deadEnv = $true }
+                }
+                if ($deadEnv) {
+                    [void](Invoke-Change "Removed broken CLI proxy environment variable $ev ($envScope)" {
+                        [Environment]::SetEnvironmentVariable($ev, $null, $envScope)
+                    })
+                }
+            }
+        }
+    }
+    $wh = [string](Invoke-Native (Get-SysExe 'netsh.exe') @('winhttp', 'show', 'proxy') 4000).Output
+    if ($wh -match '(?:https?://)?(127\.0\.0\.1|localhost):(\d+)') {
+        if ($Aggressive -or -not (Test-TcpPort $Matches[1] ([int]$Matches[2]) 300)) {
+            [void](Invoke-Change 'Reset dead WinHTTP loopback proxy' {
+                [void](Invoke-Native (Get-SysExe 'netsh.exe') @('winhttp', 'reset', 'proxy') 5000)
+            })
         }
     }
     # 4. Always remove DisableSmartNameResolution so Wi-Fi/Bluetooth tethering DNS never gets locked out
@@ -711,90 +798,3 @@ function Invoke-DoomsdayReset {
                 [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'ipv6', 'reset', $ipv6Log) 10000)
             } finally {
                 if (Test-Path -LiteralPath $ipv6Log) { Remove-Item -LiteralPath $ipv6Log -Force -ErrorAction SilentlyContinue }
-            }
-
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'tcp', 'reset') 5000)
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'tcp', 'set', 'heuristics', 'disabled') 5000)
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'tcp', 'set', 'global', 'autotuninglevel=normal') 5000)
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'tcp', 'set', 'global', 'rss=enabled') 5000)
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'tcp', 'set', 'global', 'rsc=enabled') 5000)
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'tcp', 'set', 'global', 'ecncapability=disabled') 5000)
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'tcp', 'set', 'global', 'timestamps=disabled') 5000)
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'tcp', 'set', 'global', 'initialrto=3000') 5000)
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'tcp', 'set', 'global', 'nonsackrttresiliency=disabled') 5000)
-
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'teredo', 'set', 'state', 'disabled') 5000)
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'isatap', 'set', 'state', 'disabled') 5000)
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', '6to4', 'set', 'state', 'disabled') 5000)
-
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('http', 'flush', 'logbuffer') 5000)
-        }
-
-        # ----------------------------------------------------------------------
-        # STAGE 5/12: ROUTE PURGE, GHOST GUID SCRUB, PORTPROXY & PERMISSIVE FIREWALL
-        # ----------------------------------------------------------------------
-        Write-Log 'STEP' 'STAGE 5/12 Purging routing table (route -f), ghost registry GUIDs & setting firewall outbound allow'
-        if ($script:IsDry) {
-            Write-Log 'DRY' 'Would execute: route -f (purge all routes and gateways)'
-            Write-Log 'DRY' 'Would scrub ghost GUIDs in Tcpip\Parameters\Interfaces'
-            Write-Log 'DRY' 'Would delete IPv4 & IPv6 destination caches'
-            Write-Log 'DRY' 'Would execute: netsh interface portproxy reset & netsh interface httpstunnel reset'
-            Write-Log 'DRY' 'Would destroy accidental network bridges via netsh bridge'
-            Write-Log 'DRY' 'Would execute: netsh advfirewall reset & set firewallpolicy blockinbound,allowoutbound'
-        } else {
-            [void](Invoke-Native (Get-SysExe 'route.exe') @('-f') 5000)
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'ip', 'delete', 'destinationcache') 5000)
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'ipv6', 'delete', 'destinationcache') 5000)
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('interface', 'portproxy', 'reset') 5000)
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('interface', 'httpstunnel', 'reset') 5000)
-
-            # Scrub orphaned interface GUIDs under Tcpip\Parameters\Interfaces to eliminate routing blackholes
-            try {
-                $activeGuids = @(Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object { [string]$_.InterfaceGuid })
-                $tcpipIfKey = 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces'
-                if (Test-Path -LiteralPath $tcpipIfKey) {
-                    $subkeys = @(Get-ChildItem -LiteralPath $tcpipIfKey -ErrorAction SilentlyContinue)
-                    foreach ($sk in $subkeys) {
-                        if ($sk.PSChildName -notin $activeGuids) {
-                            try {
-                                Set-ItemProperty -LiteralPath $sk.PSPath -Name 'DefaultGateway' -Value @() -ErrorAction SilentlyContinue
-                                Set-ItemProperty -LiteralPath $sk.PSPath -Name 'IPAddress' -Value @() -ErrorAction SilentlyContinue
-                                Set-ItemProperty -LiteralPath $sk.PSPath -Name 'SubnetMask' -Value @() -ErrorAction SilentlyContinue
-                            } catch {}
-                        }
-                    }
-                }
-            } catch {}
-
-            try {
-                $brOut = Invoke-Native (Get-SysExe 'netsh.exe') @('bridge', 'list') 5000
-                if ($brOut.Output -match '([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})') {
-                    foreach ($brMatch in [regex]::Matches($brOut.Output, '([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})')) {
-                        $brGuid = $brMatch.Groups[1].Value
-                        Write-Log 'WARN' "Destroying orphaned network bridge $brGuid..."
-                        [void](Invoke-Native (Get-SysExe 'netsh.exe') @('bridge', 'destroy', $brGuid) 5000)
-                    }
-                }
-            } catch {}
-
-            # Backup custom firewall rules before reset for 100% reversible rollback
-            try {
-                $fwBackup = Join-Path $script:StoreDir 'firewall_pre_reset.wfw'
-                if (-not (Test-Path -LiteralPath $fwBackup)) {
-                    [void](Invoke-Native (Get-SysExe 'netsh.exe') @('advfirewall', 'export', $fwBackup) 5000)
-                }
-            } catch {}
-
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('advfirewall', 'reset') 8000)
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('advfirewall', 'set', 'allprofiles', 'firewallpolicy', 'blockinbound,allowoutbound') 5000)
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('advfirewall', 'set', 'allprofiles', 'state', 'on') 5000)
-        }
-
-        # ----------------------------------------------------------------------
-        # STAGE 6/12: ENCRYPTED DNS (DOH/DOT/DDR) WIPE, WPAD AUTOPROXY & BITS JOB PURGE
-        # ----------------------------------------------------------------------
-        Write-Log 'STEP' 'STAGE 6/12 Resetting encrypted DNS across ALL interfaces, WPAD autoproxy & BITS jobs'
-        if ($script:IsDry) {
-            Write-Log 'DRY' 'Would execute: netsh dnsclient delete global all'
-            Write-Log 'DRY' 'Would reset per-interface encrypted DNS across ALL adapters'
-            Write-Log 'DRY' 'Would reset WinHTTP proxy/autoproxy/tracing'
