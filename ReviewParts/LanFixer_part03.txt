@@ -1,3 +1,18 @@
+function ConvertFrom-HttpBytes([byte[]]$Raw) {
+    $r = @{ Code = 0; Headers = @{}; Cookies = @(); Body = ''; Location = '' }
+    if ($null -eq $Raw -or $Raw.Length -lt 12) { return $r }
+    $he = -1
+    $termLen = 4
+    for ($i = 0; $i -lt ($Raw.Length - 3); $i++) {
+        if ($Raw[$i] -eq 13 -and $Raw[$i + 1] -eq 10 -and $Raw[$i + 2] -eq 13 -and $Raw[$i + 3] -eq 10) {
+            $he = $i; $termLen = 4; break
+        }
+    }
+    if ($he -lt 0) {
+        for ($i = 0; $i -lt ($Raw.Length - 1); $i++) {
+            if ($Raw[$i] -eq 10 -and $Raw[$i + 1] -eq 10) {
+                $he = $i; $termLen = 2; break
+            }
         }
     }
     if ($he -lt 0) { return $r }
@@ -783,18 +798,3 @@ function Get-LegendRows($Items, [string]$Rec, [int]$Width) {
     $segs = @((Seg 'text' '  ')); $len = 2
     foreach ($it in $Items) {
         $keyTag = '[' + $it[0] + ']'
-        $cell = $keyTag.Length + 1 + $it[1].Length + 2
-        if ($len + $cell -gt ($Width + 2) -and $len -gt 2) { [void]$rows.Add($segs); $segs = @((Seg 'text' '  ')); $len = 2 }
-        $isRec = ($it[0].ToLower() -eq $Rec)
-        $segs += (Seg 'faint' '[')
-        $segs += (Seg $(if ($isRec) { 'ok!' } else { 'accent!' }) $it[0])
-        $segs += (Seg 'faint' ']')
-        $segs += (Seg $(if ($isRec) { 'text!' } else { 'dim' }) (' ' + $it[1] + '  '))
-        $len += $cell
-    }
-    if ($len -gt 2) { [void]$rows.Add($segs) }
-    return $rows.ToArray()
-}
-
-function Get-DashboardModel($t, $adv, [int]$Width = 0) {
-    $w = $Width

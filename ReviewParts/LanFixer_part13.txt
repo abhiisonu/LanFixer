@@ -1,3 +1,45 @@
+                    $t.SubnetPrefix = [int]$sub.Prefix
+                    $t.SubnetMask = [string]$sub.Mask
+                    $t.SubnetHosts = [int64]$sub.Total
+                }
+            } catch {}
+            try {
+                $v6 = @(Get-NetIPAddress -InterfaceIndex $ad.ifIndex -AddressFamily IPv6 -ErrorAction SilentlyContinue | Where-Object { [string]$_.AddressState -eq 'Preferred' -and [string]$_.IPAddress -notmatch '^(fe80|::1)' })
+                if ($v6.Count -gt 0) { $t.IpV6 = [string]$v6[0].IPAddress }
+            } catch {}
+            try {
+                $reg = Get-IfaceReg [string]$ad.InterfaceGuid
+                if ($reg -and $reg.DhcpServer) { $t.DhcpServer = [string]$reg.DhcpServer }
+            } catch {}
+            try {
+                $arpTable = Get-SubTable 'Arp' [string]$ad.InterfaceGuid
+                if ($t.GwIp -and $arpTable.ContainsKey($t.GwIp)) { $t.GwLocked = $true }
+            } catch {}
+        }
+    }
+    $t.RouteProfile = Get-RouteProfileName
+    if ($t.UplinkActive -and ($t.Routing -eq 'Wi-Fi Protected' -or ($t.Problem -ne 'Healthy' -and $t.Problem -ne 'Online') -or $t.RouteProfile -eq 'Wifi')) {
+        $t.UplinkIsPrimary = $true
+    }
+    if (-not $script:WdCache -or (((Get-Date) - $script:WdCache.Time).TotalSeconds -gt 30)) { $script:WdCache = @{ Time = (Get-Date); Val = (Test-WatchdogInstalled) } }
+    $t.Watchdog = [bool]$script:WdCache.Val
+    $t.Vault = [bool](Test-Path -LiteralPath $script:VaultFile)
+    $t.Pin = ([string]$script:State.Misc['PortalPin'] -ne '')
+    $t.Paused = ($script:State.Misc['PortalLoginSuspended'] -eq $true)
+    $t.ArpPending = (@(Get-PendingGatewayMacs).Count -gt 0)
+    if (-not $t.LinkUp -and (Test-MetricsManaged) -and (Test-OtherUplinkActive)) { $t.Routing = Get-RoutingLabel $true 0 $false }
+    $lf = Get-StateTime 'LastFull'
+    if ($lf -gt [datetime]'2001-01-01') { $t.LastFull = $lf }
+    return $t
+}
+# Headline, one plain sentence, and the single action Enter will run.
+function Get-Advice($t) {
+    $info = Get-StateInfo $t.Problem
+    $r = @{ Word = $info.Word; Role = $info.Role; Hops = $info.Hops; Status = ''; Action = ''; Text = ''; Key = ''; KeyLabel = '' }
+    if (-not $t.Admin -and $t.Problem) {
+        $r.Status = 'Running in read-only Limited Mode (without Administrator privileges).'
+        $r.Action = 'Press [ENTER] to relaunch as Administrator (or press E).'
+        $r.Key = 'e'; $r.KeyLabel = 'relaunch as Administrator'
         $r.Text = ($r.Status + ' ' + $r.Action)
         return $r
     }
@@ -756,45 +798,3 @@ function Start-AutonomousDaemon([int]$IntervalSec = 10, [switch]$Headless) {
                         $script:DaemonConsecutiveFails = 0
                         $script:SentinelStats.T2_Captive++
                         $currentCadence = 3
-                        if ($isConsole) { Show-SentinelHud $ad $linkHealth 'Online' $currentCadence }
-                        Wait-SentinelCadence $currentCadence $isConsole $ad
-                        continue
-                    }
-                }
-                
-                # If no credentials or headless login didn't complete, ensure campus routing & DNS are active, and open portal (throttled)
-                if (Test-Elapsed 'LastPortal' 60) {
-                    Write-SentinelLog 'INFO' "Captive portal active. Opening campus login page in default browser..."
-                    [void](Invoke-WithLock -WaitMs 3000 {
-                        Open-Portal -Force -SourceIp $ethIp
-                        Set-StateTime 'LastPortal'
-                        Save-State
-                    })
-                }
-                $script:DaemonConsecutiveFails = 0
-                $currentCadence = [Math]::Min(15, $IntervalSec)
-                if ($isConsole) { Show-SentinelHud $ad $linkHealth 'Captive (Login Ready)' $currentCadence }
-                Wait-SentinelCadence $currentCadence $isConsole $ad
-                continue
-            }
-
-            # Degradation Detected
-            $script:DaemonConsecutiveFails++
-            $ipDesc = if ($ethIp) { $ethIp } else { 'No IPv4 / APIPA' }
-            Write-SentinelLog 'WARN' ("Degradation detected on {0} (Fail #{1}): IP={2}, State={3}, Ndis={4}, Gateway={5}" -f $ad.Name, $script:DaemonConsecutiveFails, $ipDesc, $state.State, $linkHealth.Reason, $(if ($gwOk) { 'OK' } else { 'Timeout' }))
-
-            # Circuit Breaker Check (Smart Cadence Back-Off without surrendering)
-            if ($script:DaemonConsecutiveFails -ge $script:Cfg.BreakerFails) {
-                $currentCadence = [Math]::Min(60, 15 * [Math]::Pow(2, [Math]::Min(2, $script:DaemonConsecutiveFails - $script:Cfg.BreakerFails)))
-                Write-SentinelLog 'WARN' ("Circuit breaker active ({0} fails). Upstream network down. Throttling scan to {1}s to protect switch port security." -f $script:DaemonConsecutiveFails, $currentCadence)
-                if ($isConsole) { Show-SentinelHud $ad $linkHealth "Breaker ($($state.State))" $currentCadence }
-                # Do NOT continue - still execute remediation ladder below!
-            }
-
-            # Engaging 6-Tier Self-Healing Ladder (Strict OSI Layered Hierarchy)
-            $recovered = $false
-            $remedTier = ''
-
-            # Tier 1: IP & DHCP Lease Re-acquisition (Layer 1-3 Foundational Prerequisite)
-            $curIp = Get-ValidIPv4 $ad
-            if (-not $recovered -and (-not $curIp -or $curIp -like '169.254*')) {

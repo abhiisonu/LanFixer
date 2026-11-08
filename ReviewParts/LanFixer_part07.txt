@@ -1,3 +1,39 @@
+            [void](Invoke-Native $netsh @('interface', 'ipv4', 'set', 'dnsservers', ("name={0}" -f $Ad.Name), 'dhcp') 5000)
+        }
+    }
+    if ($ok -and -not $script:IsDry) { (Get-SubTable 'Dns' $guid).Managed = $false; Clear-DnsClientCache -ErrorAction SilentlyContinue }
+    return $ok
+}
+# Only undo what WE changed (never wipe a static DNS the user set themselves).
+function Restore-AdapterDns($Ad) {
+    $guid = [string]$Ad.InterfaceGuid
+    $d = Get-SubTable 'Dns' $guid
+    if (-not $d.Managed) { return }
+    $snap = Get-SubTable 'Snapshot' $guid
+    $orig = if ($snap.ContainsKey('DnsStatic')) { [string]$snap['DnsStatic'] } else { '' }
+    $ok = $false
+    if ($orig -eq '') {
+        $ok = Invoke-Change "DNS on $($Ad.Name) restored to automatic (DHCP)" { Set-DnsClientServerAddress -InterfaceIndex $Ad.ifIndex -ResetServerAddresses -ErrorAction Stop }
+    } else {
+        $list = @($orig -split '[,\s]+' | Where-Object { $_ })
+        $ok = Invoke-Change "DNS on $($Ad.Name) restored to your original: $orig" { Set-DnsClientServerAddress -InterfaceIndex $Ad.ifIndex -ServerAddresses $list -ErrorAction Stop }
+    }
+    if ($ok -and -not $script:IsDry) { $d.Managed = $false; $d.Phase = 'Auto'; Clear-DnsClientCache -ErrorAction SilentlyContinue }
+}
+# Sweep EVERY physical adapter this tool ever substituted a resolver on (Ethernet, Wi-Fi, USB tethering, Bluetooth PAN)
+# and put back the user's exact pre-Lan Fixer value. Restore-AdapterDns only touches adapters marked managed, so an
+# adapter the tool never touched is never altered; when no snapshot exists (state written by an older build) it falls
+# back to automatic DHCP, which is the only honest restore available. Returns how many adapters were restored.
+function Restore-ManagedAdapterDns([string]$Why = 'DNS restored') {
+    $n = 0
+    foreach ($a in @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue)) {
+        $g = [string]$a.InterfaceGuid
+        if (-not $g) { continue }
+        if ((Get-SubTable 'Dns' $g).Managed -eq $true) {
+            Restore-AdapterDns $a
+            $n++
+        }
+    }
     if ($n -gt 0) { Write-Log 'OK' ("{0}: {1} adapter(s) put back on the DNS they had before Lan Fixer touched them." -f $Why, $n) }
     return $n
 }
@@ -307,7 +343,12 @@ function Invoke-RoamingCleanup {
     foreach ($fl in $flags) { if ($script:State.Misc[$fl] -eq $true) { $any = $true } }
     if (-not $any) { return }
     if ($Mode -eq 'AutoHeal') {
-        if (-not $script:State.Misc['LinkDownSince']) { Set-StateTime 'LinkDownSince'; Write-Log 'INFO' 'Link down: debouncing roaming cleanup against momentary cable flap (45s grace period).'; return }
+        if (-not $script:State.Misc['LinkDownSince']) {
+            $script:State.Misc['LinkDownSince'] = (Get-Date).ToString('o')
+            Set-StateTime 'LinkDownSince'
+            Write-Log 'INFO' 'Link down: debouncing roaming cleanup against momentary cable flap (45s grace period).'
+            return
+        }
         if (-not (Test-Elapsed 'LinkDownSince' 45)) { Write-Log 'INFO' 'Link down under 45s: debouncing roaming cleanup against momentary cable flap.'; return }
     }
     if (Test-MetricsManaged) { Restore-InterfaceMetrics 'No active Ethernet link' }
@@ -481,6 +522,7 @@ function Shield-Mdns($Ctxs) {
 
 $script:DnsPolicyKey = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient'
 function Restore-SmartDnsIfManaged([string]$Why) {
+    if ($script:State.Misc['SmartDnsManaged'] -ne $true) { return }
     $ok = Invoke-Change $Why {
         Remove-ItemProperty -LiteralPath $script:DnsPolicyKey -Name DisableSmartNameResolution -ErrorAction SilentlyContinue
     }
@@ -756,45 +798,3 @@ function Shield-SystemStack([switch]$Aggressive) {
                 [void](Invoke-Change "Started critical Windows service $svcName" { Start-Service -Name $svcName -ErrorAction SilentlyContinue })
             }
         }
-    }
-    # 2. Dynamic Detection & Neutralization of Rogue DNS Interceptors, WFP Callouts & Loopback Stubs
-    $wfpDnsRegex = 'portmaster|nextdns|yogadns|dnscrypt|acrylic|adguard|stubby|warp-svc'
-    $dnsBroken = $false
-    $dnsEvidence = ''
-    $testRecs = @(Resolve-DnsName -Name 'accounts.google.com' -QuickTimeout -ErrorAction SilentlyContinue)
-    $hasA = [bool]($testRecs | Where-Object { $_.IPAddress -and [string]$_.Type -eq 'A' })
-    $hasPoison = @($testRecs | Where-Object { ([string]$_.Name -match 'inf\.portmaster|blocked\.|sinkhole|dns\.local') -or ([string]$_.Strings -match 'unsuccessful|expired|blocked|refused|failure') }).Count -gt 0
-    if ($hasPoison) {
-        $dnsBroken = $true
-        $dnsEvidence = 'synthetic interceptor error record detected'
-    } elseif (-not $hasA) {
-        $ethUps = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })
-        $stackSrc = if ($ethUps.Count -gt 0) { Get-ValidIPv4 $ethUps[0] } else { '' }
-        $rawDns = Measure-ResolversFast @('8.8.8.8','1.1.1.1') 400 53 $stackSrc
-        $rawNet = (Test-TcpPort '8.8.8.8' 53 600 $stackSrc) -or (Test-TcpPort '1.1.1.1' 443 600 $stackSrc)
-        if (@($rawDns.Values | Where-Object { $null -ne $_ }).Count -gt 0 -or $rawNet -or $Aggressive) {
-            $dnsBroken = $true
-            $dnsEvidence = if ($Aggressive) { 'system resolver failed during aggressive remediation' } else { 'system resolver failed while raw IPv4 internet (8.8.8.8 / 1.1.1.1) is alive' }
-        }
-    }
-    if ($dnsBroken) {
-        $roguePids = [System.Collections.Generic.HashSet[int]]::new()
-        foreach ($ep in @(Get-NetUDPEndpoint -LocalPort 53 -ErrorAction SilentlyContinue)) {
-            if ($ep.OwningProcess -gt 4) { [void]$roguePids.Add([int]$ep.OwningProcess) }
-        }
-        foreach ($ep in @(Get-NetTCPConnection -LocalPort 53 -ErrorAction SilentlyContinue)) {
-            if ($ep.OwningProcess -gt 4) { [void]$roguePids.Add([int]$ep.OwningProcess) }
-        }
-        # Step 1: Clean loopback DNS from physical adapters first to see if that resolves the issue without killing services.
-        # The ORIGINAL resolver string is snapshotted BEFORE the write and the adapter is marked managed, so this bypass is
-        # undone exactly (and only) when Lan Fixer is finished with the link: no adapter keeps a substituted resolver.
-        $loopbackCleared = $false
-        foreach ($na in @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' })) {
-            $naGuid = [string]$na.InterfaceGuid
-            $dnsAddrs = @(Get-DnsClientServerAddress -InterfaceIndex $na.ifIndex -ErrorAction SilentlyContinue).ServerAddresses
-            if (@($dnsAddrs | Where-Object { $_ -match '^(127\.|::1|0\.0\.0\.0|localhost)' }).Count -gt 0) {
-                Save-Original $naGuid 'DnsStatic' (Get-StaticDnsString $naGuid)
-                $okLoop = Invoke-Change "Bypassed local loopback DNS on adapter $($na.Name) -> DHCP automatic" {
-                    Set-DnsClientServerAddress -InterfaceIndex $na.ifIndex -ResetServerAddresses -ErrorAction SilentlyContinue
-                }
-                if ($okLoop -and -not $script:IsDry) { (Get-SubTable 'Dns' $naGuid).Managed = $true }

@@ -1,3 +1,45 @@
+                        if ($null -eq $dc) { Remove-ItemProperty -LiteralPath $script:Tcpip6Key -Name DisabledComponents -ErrorAction SilentlyContinue }
+                        else { New-ItemProperty -LiteralPath $script:Tcpip6Key -Name DisabledComponents -Value ([int]$dc) -PropertyType DWord -Force -ErrorAction Stop | Out-Null }
+                    })
+                }
+                if ($snap.ContainsKey('Ncsi')) {
+                    $nk = 'HKLM:\SYSTEM\CurrentControlSet\Services\NlaSvc\Parameters\Internet'
+                    $v = [int]$snap['Ncsi']
+                    [void](Invoke-Change "Connectivity probing setting restored to $v" { Set-ItemProperty -LiteralPath $nk -Name EnableActiveProbing -Value $v -Type DWord -ErrorAction Stop })
+                }
+                if ($snap.ContainsKey('MaxNegativeCacheTtl')) {
+                    $nct = $snap['MaxNegativeCacheTtl']
+                    [void](Invoke-Change 'Negative DNS cache TTL restored' {
+                        if ($null -eq $nct) { Remove-ItemProperty -LiteralPath $script:DnsParamKey -Name MaxNegativeCacheTtl -ErrorAction SilentlyContinue }
+                        else { Set-ItemProperty -LiteralPath $script:DnsParamKey -Name MaxNegativeCacheTtl -Value ([int]$nct) -Type DWord -ErrorAction Stop }
+                    })
+                }
+                if ($snap.ContainsKey('EnableMDNS')) {
+                    $md = $snap['EnableMDNS']
+                    [void](Invoke-Change 'mDNS setting restored' {
+                        if ($null -eq $md) { Remove-ItemProperty -LiteralPath $script:DnsParamKey -Name EnableMDNS -ErrorAction SilentlyContinue }
+                        else { Set-ItemProperty -LiteralPath $script:DnsParamKey -Name EnableMDNS -Value ([int]$md) -Type DWord -ErrorAction Stop }
+                    })
+                }
+                if ($snap.ContainsKey('DisableSmartNameResolution') -or (Test-Path -LiteralPath $script:DnsPolicyKey)) {
+                    [void](Invoke-Change 'Smart Name Resolution policy cleared' {
+                        Remove-ItemProperty -LiteralPath $script:DnsPolicyKey -Name DisableSmartNameResolution -ErrorAction SilentlyContinue
+                    })
+                }
+                if ($snap.ContainsKey('KeepAliveTime')) {
+                    $kat = $snap['KeepAliveTime']
+                    [void](Invoke-Change 'TCP KeepAliveTime restored' {
+                        if ($null -eq $kat) { Remove-ItemProperty -LiteralPath $script:TcpParamKey -Name KeepAliveTime -ErrorAction SilentlyContinue }
+                        else { Set-ItemProperty -LiteralPath $script:TcpParamKey -Name KeepAliveTime -Value ([int]$kat) -Type DWord -ErrorAction Stop }
+                    })
+                }
+                if ($snap.ContainsKey('KeepAliveInterval')) {
+                    $kai = $snap['KeepAliveInterval']
+                    [void](Invoke-Change 'TCP KeepAliveInterval restored' {
+                        if ($null -eq $kai) { Remove-ItemProperty -LiteralPath $script:TcpParamKey -Name KeepAliveInterval -ErrorAction SilentlyContinue }
+                        else { Set-ItemProperty -LiteralPath $script:TcpParamKey -Name KeepAliveInterval -Value ([int]$kai) -Type DWord -ErrorAction Stop }
+                    })
+                }
                 if ($snap.ContainsKey('TcpAutoTuning')) {
                     $tat = [string]$snap['TcpAutoTuning']
                     if ($tat -eq 'Disabled') {
@@ -756,45 +798,3 @@ $script:TestWarn = 0
 function Write-Check([string]$Label, [bool]$Ok, [bool]$WarnOnly = $false, [string]$Detail = '') {
     $gl = $script:G.ok; $role = 'ok'
     if (-not $Ok) { if ($WarnOnly) { $gl = $script:G.warn; $role = 'warn'; $script:TestWarn++ } else { $gl = $script:G.bad; $role = 'bad'; $script:TestFail++ } }
-    $segs = @((Seg $role ('  ' + $gl + ' ')), (Seg 'text' $Label))
-    if ($Detail) { $segs += (Seg 'dim' ('  ' + $script:G.mid + ' ' + $Detail)) }
-    Out-Line $segs
-}
-function Invoke-LogicTests {
-    Write-Check 'Logic: argument quoting, plain' ((ConvertTo-ArgString @('/renew', 'Ethernet')) -ceq '/renew Ethernet')
-    Write-Check 'Logic: argument quoting, space' ((ConvertTo-ArgString @('a b')) -ceq '"a b"')
-    Write-Check 'Logic: argument quoting, trailing backslash' ((ConvertTo-ArgString @('C:\x y\')) -ceq '"C:\x y\\"')
-    Write-Check 'Logic: argument quoting, embedded quote' ((ConvertTo-ArgString @('say "hi"')) -ceq '"say \"hi\""')
-    Write-Check 'Logic: argument quoting, empty' ((ConvertTo-ArgString @('')) -ceq '""')
-    $h = ConvertFrom-HttpResponse ("HTTP/1.1 302 Found`r`nLocation: https://gw.example:8003/login?z=1`r`nContent-Length: 0`r`n`r`n")
-    Write-Check 'Logic: HTTP 302 + Location parsed' (($h.Code -eq 302) -and ($h.Location -ceq 'https://gw.example:8003/login?z=1'))
-    $h = ConvertFrom-HttpResponse ("HTTP/1.0 200 OK`r`nContent-Type: text/plain`r`n`r`nMicrosoft Connect Test")
-    Write-Check 'Logic: HTTP 200 body parsed' (($h.Code -eq 200) -and ($h.Body -ceq 'Microsoft Connect Test'))
-    Write-Check 'Logic: garbage is not a response' ((ConvertFrom-HttpResponse 'not http').Code -eq 0)
-    $n = @{ Code = 0; Body = ''; Location = ''; Error = '' }
-    $ok204 = @{ Code = 204; Body = ''; Location = ''; Error = '' }
-    $okMs = @{ Code = 200; Body = 'Microsoft Connect Test'; Location = ''; Error = '' }
-    $r302 = @{ Code = 302; Body = ''; Location = 'http://x/'; Error = '' }
-    $r200x = @{ Code = 200; Body = '<html>login</html>'; Location = ''; Error = '' }
-    $r503 = @{ Code = 503; Body = ''; Location = ''; Error = '' }
-    $dns = @{ Code = 0; Body = ''; Location = ''; Error = 'DnsFail' }
-    $tmo = @{ Code = 0; Body = ''; Location = ''; Error = 'Timeout' }
-    Write-Check 'Logic: verdict 204 = Online' ((Get-ProbeVerdict $ok204 $n) -eq 'Online')
-    Write-Check 'Logic: verdict MS body = Online' ((Get-ProbeVerdict $r503 $okMs) -eq 'Online')
-    Write-Check 'Logic: verdict 302 = Captive' ((Get-ProbeVerdict $r302 $tmo) -eq 'Captive')
-    Write-Check 'Logic: verdict login page 200 = Captive' ((Get-ProbeVerdict $r200x $r200x) -eq 'Captive')
-    Write-Check 'Logic: verdict 503 = Offline (not Captive)' ((Get-ProbeVerdict $r503 $r503) -eq 'Offline')
-    Write-Check 'Logic: verdict timeouts = Offline' ((Get-ProbeVerdict $tmo $tmo) -eq 'Offline')
-    Write-Check 'Logic: verdict DNS failures = NoDns' ((Get-ProbeVerdict $dns $dns) -eq 'NoDns')
-    [byte[]]$q = New-DnsQueryPacket 'a.bc' 4660
-    $want = [byte[]](0x12,0x34,1,0,0,1,0,0,0,0,0,0,1,0x61,2,0x62,0x63,0,0,1,0,1)
-    Write-Check 'Logic: DNS query packet layout' (($q.Length -eq $want.Length) -and (-not (Compare-Object $q $want)))
-    Write-Check 'Logic: learnable DHCP server (campus-like)' (Test-LearnableDhcpServer '172.16.1.5')
-    Write-Check 'Logic: DHCP server home router refused' (-not (Test-LearnableDhcpServer '192.168.1.1'))
-    Write-Check 'Logic: DHCP server hotspot refused' (-not (Test-LearnableDhcpServer '172.20.10.1'))
-    Write-Check 'Logic: DHCP server garbage refused' (-not (Test-LearnableDhcpServer 'not-an-ip'))
-    $save = $script:Cfg
-    try {
-        $script:Cfg = @{ PortalHost = 'gateway.nitjsr.ac.in'; PortalIp = '10.114.0.5'; CampusDomain = 'nitjsr.ac.in'; PortalUrl = 'https://gateway.nitjsr.ac.in:8003/index.php?zone=nitjsr' }
-        Write-Check 'Logic: host bounded trims trailing dots' ((Resolve-HostBounded 'gateway.nitjsr.ac.in.') -eq '10.114.0.5')
-        Write-Check 'Logic: host bounded trims whitespace' ((Resolve-HostBounded '  gateway.nitjsr.ac.in.  ') -eq '10.114.0.5')

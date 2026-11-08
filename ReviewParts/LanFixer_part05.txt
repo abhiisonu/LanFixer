@@ -1,3 +1,18 @@
+# State: Online | Captive | NoDns | Offline  (+ Location of a captive redirect, when there is one)
+function Get-InternetState {
+    param([switch]$NoCache, [string]$SourceIp)
+    $explicit = $PSBoundParameters.ContainsKey('SourceIp')
+    if (-not $script:Cfg.ProbeSourceBind) { $SourceIp = '' }
+    elseif (-not $explicit) { $SourceIp = Get-PrimarySourceIp }
+    if ($null -eq $SourceIp) { $SourceIp = '' }
+    if (-not $SourceIp -or $SourceIp -like '169.254.*') {
+        $upEths = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })
+        if ($upEths.Count -gt 0 -and (Test-OtherUplinkActive)) {
+            return @{ State = 'Offline'; DnsOk = $false; Code = 0; Location = ''; Error = 'NoValidIpOnEthernet' }
+        }
+    }
+    $ckey = ('{0}|{1}' -f $SourceIp, $explicit)
+    if (-not $NoCache -and $script:ConnCache -and $script:ConnCache.Key -eq $ckey -and (((Get-Date) - $script:ConnCache.Time).TotalSeconds -lt 1.8)) { return $script:ConnCache.Result }
     $none = @{ Code = 0; Body = ''; Location = ''; Error = '' }
     $p1 = Invoke-HttpProbe 'connectivitycheck.gstatic.com' '/generate_204' 2500 $SourceIp
     $p2 = $none
@@ -15,14 +30,18 @@
                 $wr.Timeout = 2500
                 $wr.AllowAutoRedirect = $false
                 $wr.Proxy = $null   # a local proxy answering 204 must not count as internet
-                $resp = $wr.GetResponse()
-                $c = [int]$resp.StatusCode
-                if ($c -eq 204) { $state = 'Online'; $via = 'system' }
-                elseif (($c -ge 300 -and $c -le 399) -or ($c -ge 200 -and $c -le 299) -or $c -eq 401 -or $c -eq 407 -or $c -eq 511) {
-                    $state = 'Captive'; $via = 'system'
-                    $p1 = @{ Code = $c; Location = [string]$resp.Headers['Location'] }
+                $resp = $null
+                try {
+                    $resp = $wr.GetResponse()
+                    $c = [int]$resp.StatusCode
+                    if ($c -eq 204) { $state = 'Online'; $via = 'system' }
+                    elseif (($c -ge 300 -and $c -le 399) -or ($c -ge 200 -and $c -le 299) -or $c -eq 401 -or $c -eq 407 -or $c -eq 511) {
+                        $state = 'Captive'; $via = 'system'
+                        $p1 = @{ Code = $c; Location = [string]$resp.Headers['Location'] }
+                    }
+                } finally {
+                    if ($resp) { try { $resp.Close() } catch {} }
                 }
-                $resp.Close()
             } catch [System.Net.WebException] {
                 $webResp = $_.Exception.Response -as [System.Net.HttpWebResponse]
                 if ($webResp) {
@@ -501,7 +520,12 @@ function Resolve-DuplexFlap($Ad) {
     $speed = [string]$Ad.LinkSpeed
     $isGigabitOrHigher = $false
     try {
-        if ([int64]$Ad.LinkSpeed -ge 1000000000 -or [int64]$Ad.MaxSpeed -ge 1000000000 -or [int64]$Ad.TransmitLinkSpeed -ge 1000000000) { $isGigabitOrHigher = $true }
+        $rawSpeed = 0L
+        if ($Ad.TransmitLinkSpeed) { $rawSpeed = [int64]$Ad.TransmitLinkSpeed }
+        elseif ($Ad.ReceiveLinkSpeed) { $rawSpeed = [int64]$Ad.ReceiveLinkSpeed }
+        elseif ($Ad.MaxSpeed) { $rawSpeed = [int64]$Ad.MaxSpeed }
+
+        if ($rawSpeed -ge 1000000000 -or $speed -match 'Gbps|1000\s*Mbps|2\.5\s*G|5\s*G|10\s*G') { $isGigabitOrHigher = $true }
         elseif ($Ad.InterfaceDescription -match 'Gigabit|GbE|1000|2\.5G|5G|10G|10000|RTL81|I21|I22') { $isGigabitOrHigher = $true }
         else {
             $sdProp = Get-NetAdapterAdvancedProperty -Name $Ad.Name -RegistryKeyword '*SpeedDuplex' -ErrorAction SilentlyContinue
@@ -597,7 +621,7 @@ function Shield-TransceiverBus($Ad) {
                     $ok = Invoke-Change ("PnP hardware controller reset cycle on {0} (clearing error code {1})" -f $Ad.Name, $code) {
                         $pnputil = Get-SysExe 'pnputil.exe'
                         if (Test-Path -LiteralPath $pnputil) {
-                            [void](Invoke-Native $pnputil @('/restart-device', ('"{0}"' -f $Ad.PnPDeviceID)) 10000)
+                            [void](Invoke-Native $pnputil @('/restart-device', [string]$Ad.PnPDeviceID) 10000)
                         } else {
                             Disable-PnpDevice -InstanceId $Ad.PnPDeviceID -Confirm:$false -ErrorAction SilentlyContinue
                             Start-Sleep -Milliseconds 500
@@ -774,27 +798,3 @@ function Wait-StpConvergence($Ad, [int]$MaxWaitSec = 45) {
                 $gw = @(Get-GatewaysV4 $curAd) | Select-Object -First 1
                 if ($gw) {
                     $chk = Test-GatewayAlive $curAd $gw
-                    if ($chk.Alive) { $converged = $true; break }
-                } else {
-                    $converged = $true; break
-                }
-            }
-        }
-        Start-Sleep -Milliseconds 350
-    }
-    $sw.Stop()
-    if ($converged) {
-        Write-Log 'OK' ("STP convergence achieved on {0} after {1}s." -f $Ad.Name, [math]::Round($sw.Elapsed.TotalSeconds, 1))
-    } else {
-        Write-Log 'WARN' ("STP convergence window expired after {0}s on {1}." -f [math]::Round($sw.Elapsed.TotalSeconds, 1), $Ad.Name)
-    }
-    return $converged
-}
-
-function Get-IPv4Interface($Ad) { return (Get-NetIPInterface -InterfaceIndex $Ad.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue) }
-
-function Get-DhcpFailureDiagnosis($Ad) { return (Get-DhcpFailureText (Get-DhcpErrorCode) ([string]$Ad.MacAddress)) }
-function Test-DhcpLeaseUsable($Ad) {
-    $ip = Get-ValidIPv4 $Ad
-    if (-not $ip) { return $false }
-    $gw = @(Get-GatewaysV4 $Ad) | Select-Object -First 1

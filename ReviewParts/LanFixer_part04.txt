@@ -1,3 +1,18 @@
+        $cell = $keyTag.Length + 1 + $it[1].Length + 2
+        if ($len + $cell -gt ($Width + 2) -and $len -gt 2) { [void]$rows.Add($segs); $segs = @((Seg 'text' '  ')); $len = 2 }
+        $isRec = ($it[0].ToLower() -eq $Rec)
+        $segs += (Seg 'faint' '[')
+        $segs += (Seg $(if ($isRec) { 'ok!' } else { 'accent!' }) $it[0])
+        $segs += (Seg 'faint' ']')
+        $segs += (Seg $(if ($isRec) { 'text!' } else { 'dim' }) (' ' + $it[1] + '  '))
+        $len += $cell
+    }
+    if ($len -gt 2) { [void]$rows.Add($segs) }
+    return $rows.ToArray()
+}
+
+function Get-DashboardModel($t, $adv, [int]$Width = 0) {
+    $w = $Width
     if ($w -le 0) { $w = Get-UiWidth }
     $L = New-Object System.Collections.ArrayList
     $pulseIdx = -1
@@ -783,18 +798,3 @@ function Get-PrimarySourceIp {
     }
     return ''
 }
-# State: Online | Captive | NoDns | Offline  (+ Location of a captive redirect, when there is one)
-function Get-InternetState {
-    param([switch]$NoCache, [string]$SourceIp)
-    $explicit = $PSBoundParameters.ContainsKey('SourceIp')
-    if (-not $script:Cfg.ProbeSourceBind) { $SourceIp = '' }
-    elseif (-not $explicit) { $SourceIp = Get-PrimarySourceIp }
-    if ($null -eq $SourceIp) { $SourceIp = '' }
-    if (-not $SourceIp -or $SourceIp -like '169.254.*') {
-        $upEths = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })
-        if ($upEths.Count -gt 0 -and (Test-OtherUplinkActive)) {
-            return @{ State = 'Offline'; DnsOk = $false; Code = 0; Location = ''; Error = 'NoValidIpOnEthernet' }
-        }
-    }
-    $ckey = ('{0}|{1}' -f $SourceIp, $explicit)
-    if (-not $NoCache -and $script:ConnCache -and $script:ConnCache.Key -eq $ckey -and (((Get-Date) - $script:ConnCache.Time).TotalSeconds -lt 1.8)) { return $script:ConnCache.Result }

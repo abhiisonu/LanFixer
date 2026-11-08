@@ -1,3 +1,27 @@
+                    if ($chk.Alive) { $converged = $true; break }
+                } else {
+                    $converged = $true; break
+                }
+            }
+        }
+        Start-Sleep -Milliseconds 350
+    }
+    $sw.Stop()
+    if ($converged) {
+        Write-Log 'OK' ("STP convergence achieved on {0} after {1}s." -f $Ad.Name, [math]::Round($sw.Elapsed.TotalSeconds, 1))
+    } else {
+        Write-Log 'WARN' ("STP convergence window expired after {0}s on {1}." -f [math]::Round($sw.Elapsed.TotalSeconds, 1), $Ad.Name)
+    }
+    return $converged
+}
+
+function Get-IPv4Interface($Ad) { return (Get-NetIPInterface -InterfaceIndex $Ad.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue) }
+
+function Get-DhcpFailureDiagnosis($Ad) { return (Get-DhcpFailureText (Get-DhcpErrorCode) ([string]$Ad.MacAddress)) }
+function Test-DhcpLeaseUsable($Ad) {
+    $ip = Get-ValidIPv4 $Ad
+    if (-not $ip) { return $false }
+    $gw = @(Get-GatewaysV4 $Ad) | Select-Object -First 1
     if (-not $gw) { return $false }
     return (Test-GatewayAlive $Ad $gw).Alive
 }
@@ -264,8 +288,9 @@ function Shield-GatewayArp($Ctx, [string]$ConnState) {
                 $existingHostRoute = Get-NetRoute -InterfaceIndex $ad.ifIndex -DestinationPrefix ("{0}/32" -f $gw) -AddressFamily IPv4 -ErrorAction SilentlyContinue
                 if (-not $existingHostRoute) {
                     [void](Invoke-Change ("Injected on-link host route for off-subnet gateway {0} on {1}" -f $gw, $ad.Name) {
-                        New-NetRoute -InterfaceIndex $ad.ifIndex -DestinationPrefix ("{0}/32" -f $gw) -NextHop '0.0.0.0' -RouteMetric 1 -AddressFamily IPv4 -PolicyStore ActiveStore -ErrorAction Stop | Out-Null
+                        New-NetRoute -InterfaceIndex $ad.ifIndex -DestinationPrefix ("{0}/32" -f $gw) -NextHop '0.0.0.0' -RouteMetric 5 -AddressFamily IPv4 -PolicyStore ActiveStore -ErrorAction Stop | Out-Null
                     })
+                    Add-TrackedHostRoute $gw
                 }
             } catch {}
         }
@@ -426,8 +451,19 @@ function Test-RouteViaAdapter($Ad, [string]$Target) {
         return ([int]$r[0].InterfaceIndex -eq [int]$Ad.ifIndex)
     } catch { return $true }
 }
-function Get-PathMtuForAdapter($Ad, [string]$Target = '9.9.9.9') {
-    foreach ($t in @($Target, '1.1.1.1') | Where-Object { $_ } | Select-Object -Unique) {
+function Get-PathMtuForAdapter($Ad, [string]$Target = '') {
+    $cands = @($Target)
+    if (-not $Target) {
+        if ($Ad) {
+            $cands += @(Get-GatewaysV4 $Ad)
+            $cands += @(Get-DhcpDnsServers ([string]$Ad.InterfaceGuid))
+        }
+        $cands += @($script:Cfg.PublicDns)
+        $cands += @('9.9.9.9', '1.1.1.1')
+    } else {
+        $cands += @('1.1.1.1', '9.9.9.9')
+    }
+    foreach ($t in @($cands | Where-Object { $_ } | Select-Object -Unique)) {
         if (-not (Test-RouteViaAdapter $Ad $t)) {
             Write-Log 'INFO' ("Path-MTU probe to {0} skipped on {1}: route uses another interface." -f $t, $Ad.Name)
             continue
@@ -762,39 +798,3 @@ function Set-AdapterDnsAutomatic($Ad) {
             Set-DnsClientServerAddress -InterfaceIndex $Ad.ifIndex -ResetServerAddresses -ErrorAction Stop
         } catch {
             $netsh = Get-SysExe 'netsh.exe'
-            [void](Invoke-Native $netsh @('interface', 'ipv4', 'set', 'dnsservers', ("name={0}" -f $Ad.Name), 'dhcp') 5000)
-        }
-    }
-    if ($ok -and -not $script:IsDry) { (Get-SubTable 'Dns' $guid).Managed = $true; Clear-DnsClientCache -ErrorAction SilentlyContinue }
-    return $ok
-}
-# Only undo what WE changed (never wipe a static DNS the user set themselves).
-function Restore-AdapterDns($Ad) {
-    $guid = [string]$Ad.InterfaceGuid
-    $d = Get-SubTable 'Dns' $guid
-    if (-not $d.Managed) { return }
-    $snap = Get-SubTable 'Snapshot' $guid
-    $orig = if ($snap.ContainsKey('DnsStatic')) { [string]$snap['DnsStatic'] } else { '' }
-    $ok = $false
-    if ($orig -eq '') {
-        $ok = Invoke-Change "DNS on $($Ad.Name) restored to automatic (DHCP)" { Set-DnsClientServerAddress -InterfaceIndex $Ad.ifIndex -ResetServerAddresses -ErrorAction Stop }
-    } else {
-        $list = @($orig -split '[,\s]+' | Where-Object { $_ })
-        $ok = Invoke-Change "DNS on $($Ad.Name) restored to your original: $orig" { Set-DnsClientServerAddress -InterfaceIndex $Ad.ifIndex -ServerAddresses $list -ErrorAction Stop }
-    }
-    if ($ok -and -not $script:IsDry) { $d.Managed = $false; $d.Phase = 'Auto'; Clear-DnsClientCache -ErrorAction SilentlyContinue }
-}
-# Sweep EVERY physical adapter this tool ever substituted a resolver on (Ethernet, Wi-Fi, USB tethering, Bluetooth PAN)
-# and put back the user's exact pre-Lan Fixer value. Restore-AdapterDns only touches adapters marked managed, so an
-# adapter the tool never touched is never altered; when no snapshot exists (state written by an older build) it falls
-# back to automatic DHCP, which is the only honest restore available. Returns how many adapters were restored.
-function Restore-ManagedAdapterDns([string]$Why = 'DNS restored') {
-    $n = 0
-    foreach ($a in @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue)) {
-        $g = [string]$a.InterfaceGuid
-        if (-not $g) { continue }
-        if ((Get-SubTable 'Dns' $g).Managed -eq $true) {
-            Restore-AdapterDns $a
-            $n++
-        }
-    }

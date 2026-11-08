@@ -1,3 +1,13 @@
+            if (Test-Path -LiteralPath $lf) {
+                try {
+                    $raw = [System.IO.File]::ReadAllText($lf)
+                    $h = ConvertFrom-Json -InputObject $raw
+                    if ($h -and $h.Pid) {
+                        $p = Get-Process -Id ([int]$h.Pid) -ErrorAction SilentlyContinue
+                        if (-not $p) { $holderDead = $true }
+                    }
+                } catch {}
+            }
             if ($holderDead) {
                 try { Remove-Item -LiteralPath $lf -Force -ErrorAction SilentlyContinue } catch {}
                 try { $got = $script:Mutex.WaitOne(1000) } catch [System.Threading.AbandonedMutexException] { $got = $true }
@@ -124,9 +134,14 @@ function Test-TcpPort([string]$Address, [int]$Port, [int]$TimeoutMs = 800, [stri
     $iar = $null
     try {
         if ($SourceIp -and $SourceIp -ne '0.0.0.0' -and $SourceIp -notlike '169.254.*') {
-            $ep = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Parse($SourceIp), 0)
-            $c = New-Object System.Net.Sockets.TcpClient($ep)
-        } else {
+            try {
+                $ep = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Parse($SourceIp), 0)
+                $c = New-Object System.Net.Sockets.TcpClient($ep)
+            } catch {
+                if ($c) { try { $c.Close() } catch {} }; $c = $null
+            }
+        }
+        if (-not $c) {
             $c = New-Object System.Net.Sockets.TcpClient
         }
         $iar = $c.BeginConnect($Address, $Port, $null, $null)
@@ -783,18 +798,3 @@ function Expand-HttpBody([byte[]]$Bytes, [string]$Encoding, [int]$MaxBytes = 104
     } catch { return , $Bytes }
     finally { foreach ($o in @($zs, $out, $in)) { if ($o) { try { $o.Dispose() } catch {} } } }
 }
-function ConvertFrom-HttpBytes([byte[]]$Raw) {
-    $r = @{ Code = 0; Headers = @{}; Cookies = @(); Body = ''; Location = '' }
-    if ($null -eq $Raw -or $Raw.Length -lt 12) { return $r }
-    $he = -1
-    $termLen = 4
-    for ($i = 0; $i -lt ($Raw.Length - 3); $i++) {
-        if ($Raw[$i] -eq 13 -and $Raw[$i + 1] -eq 10 -and $Raw[$i + 2] -eq 13 -and $Raw[$i + 3] -eq 10) {
-            $he = $i; $termLen = 4; break
-        }
-    }
-    if ($he -lt 0) {
-        for ($i = 0; $i -lt ($Raw.Length - 1); $i++) {
-            if ($Raw[$i] -eq 10 -and $Raw[$i + 1] -eq 10) {
-                $he = $i; $termLen = 2; break
-            }

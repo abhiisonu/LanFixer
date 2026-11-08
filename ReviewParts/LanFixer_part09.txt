@@ -1,3 +1,45 @@
+                    }
+                } catch {}
+                try {
+                    Restart-NetAdapter -Name $ad.Name -Confirm:$false -ErrorAction SilentlyContinue
+                } catch {}
+                # Re-bind core NDIS protocols
+                foreach ($comp in @('ms_tcpip', 'ms_tcpip6', 'ms_rspndr', 'ms_lltdio', 'ms_msclient', 'ms_server', 'ms_pacer', 'ms_lldp', 'ms_netbt')) {
+                    try { Enable-NetAdapterBinding -Name $ad.Name -ComponentID $comp -ErrorAction SilentlyContinue } catch {}
+                }
+            }
+
+            # Wake physical silicon from Modern Standby D3cold / PCIe ASPM hardware lockup
+            try {
+                $pnpDevs = @(Get-PnpDevice -Class Net -Status OK -ErrorAction SilentlyContinue | Where-Object { $_.InstanceId -match '^(PCI|USB)\\' })
+                foreach ($pdev in $pnpDevs) {
+                    Write-Log 'INFO' "Issuing hardware PnP bus restart to wake silicon: $($pdev.FriendlyName)..."
+                    [void](Invoke-Native (Get-SysExe 'pnputil.exe') @('/restart-device', $pdev.InstanceId) 8000)
+                }
+            } catch {}
+        }
+
+        # ----------------------------------------------------------------------
+        # STAGE 3/12: DUAL-ARCHITECTURE WINSOCK CATALOG OBLITERATION (64-BIT & 32-BIT)
+        # ----------------------------------------------------------------------
+        Write-Log 'STEP' 'STAGE 3/12 Dual-architecture Winsock LSP/NSP catalog wipe (64-bit System32 & 32-bit SysWOW64)'
+        if ($script:IsDry) {
+            Write-Log 'DRY' 'Would execute 64-bit and 32-bit: netsh winsock reset catalog & netsh winsock reset'
+            Write-Log 'DRY' 'Would reset Winsock AutodialFlags to 0 in registry'
+        } else {
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('winsock', 'reset', 'catalog') 8000)
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('winsock', 'reset') 5000)
+            $wowNetsh = Join-Path $env:SystemRoot 'SysWOW64\netsh.exe'
+            if (Test-Path -LiteralPath $wowNetsh) {
+                [void](Invoke-Native $wowNetsh @('winsock', 'reset', 'catalog') 8000)
+                [void](Invoke-Native $wowNetsh @('winsock', 'reset') 5000)
+            }
+            try {
+                $ws2Key = 'HKLM:\SYSTEM\CurrentControlSet\Services\WinSock2\Parameters'
+                if (Test-Path -LiteralPath $ws2Key) {
+                    Set-ItemProperty -LiteralPath $ws2Key -Name 'AutodialFlags' -Value 0 -Type DWord -ErrorAction SilentlyContinue
+                }
+            } catch {}
         }
 
         # ----------------------------------------------------------------------
@@ -638,7 +680,7 @@ function Invoke-HealPipeline([switch]$SkipSystemStack) {
         return $res
     }
     $res.AnyUp = $true
-    if ($script:State.Misc -and $script:State.Misc['LinkDownSince']) { $script:State.Misc.Remove('LinkDownSince') }
+    if ($script:State.Misc -and $script:State.Misc['LinkDownSince']) { $script:State.Misc.Remove('LinkDownSince'); if ($script:State.Times) { $script:State.Times.Remove('LinkDownSince') } }
     $ctxs = @()
     foreach ($a in $ups) { $ctxs += @{ Ad = $a; Env = (Get-AdapterEnvironment $a); Repaired = $false } }
     foreach ($c in $ctxs) {
@@ -756,45 +798,3 @@ function Resolve-PortalUrl($Inet) {
     try { $rh = ([uri][string]$Inet.Location).Host } catch {}
     Write-Log 'WARN' ("The captive redirect points to '{0}', which is not on the campus domain or the configured portal, so it was NOT opened automatically. Opening the configured portal instead." -f $rh)
     return $anchor
-}
-# ==============================================================================
-# DPAPI SECURE CREDENTIAL VAULT (Machine + Hardware Entropy, AES/DPAPI)
-# ==============================================================================
-$script:VaultFile = Join-Path $script:StoreDir 'vault.bin'
-
-# CREDENTIAL trust: stricter than Test-TrustedPortalHost on purpose. The DNS suffix a network's own DHCP hands out is
-# attacker-controlled on a rogue LAN, so it must never decide where the saved password goes. Only the configured
-# PortalHost / PortalIp / CampusDomain qualify (set them in config.json for another institution), or an IP literal,
-# which Invoke-TlsHttp still only talks to with a Windows-valid or user-pinned certificate.
-function Test-CredentialPortalHost([string]$HostName) {
-    $h = ([string]$HostName).ToLowerInvariant().TrimEnd('.')
-    if (-not $h) { return $false }
-    if ($script:Cfg.PortalHost -and $h -eq ([string]$script:Cfg.PortalHost).ToLowerInvariant().TrimEnd('.')) { return $true }
-    if ($script:Cfg.PortalIp -and $h -eq [string]$script:Cfg.PortalIp) { return $true }
-    $tmpIp = $null
-    if ([System.Net.IPAddress]::TryParse($h, [ref]$tmpIp)) { return [bool](Test-AllowedPortalIp $h) }
-    $dom = ([string]$script:Cfg.CampusDomain).ToLowerInvariant().Trim('.')
-    return [bool]($dom -and ($h -eq $dom -or $h.EndsWith('.' + $dom)))
-}
-function Get-CredentialPortalUrl([string]$Location) {
-    if (-not $Location) { return '' }
-    $u = $null
-    try { $u = [uri]$Location } catch { return '' }
-    if (-not $u.IsAbsoluteUri) { return '' }
-    if ($u.Scheme -ne 'http' -and $u.Scheme -ne 'https') { return '' }
-    if ($u.UserInfo) { return '' }
-    if (-not (Test-CredentialPortalHost $u.Host)) { return '' }
-    return [string]$u.AbsoluteUri
-}
-function Get-VaultEntropy {
-    $guid = ''
-    try { $guid = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Cryptography' -Name MachineGuid -ErrorAction SilentlyContinue).MachineGuid } catch {}
-    if (-not $guid) {
-        try { $guid = (Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue).SerialNumber } catch {}
-    }
-    return [System.Text.Encoding]::UTF8.GetBytes("LanFixer_NITJSR_AS_SecureEntropy_2026_$guid")
-}
-
-function Save-PortalCredentials([string]$User, [string]$Pass) {
-    if (-not $User -or -not $Pass) { return $false }
-    if ($User -match '[\t\r\n]') { Write-Log 'FAIL' 'The username cannot contain tabs or line breaks.'; return $false }

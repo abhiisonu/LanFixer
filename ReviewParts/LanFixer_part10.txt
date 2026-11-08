@@ -1,3 +1,45 @@
+}
+# ==============================================================================
+# DPAPI SECURE CREDENTIAL VAULT (Machine + Hardware Entropy, AES/DPAPI)
+# ==============================================================================
+$script:VaultFile = Join-Path $script:StoreDir 'vault.bin'
+
+# CREDENTIAL trust: stricter than Test-TrustedPortalHost on purpose. The DNS suffix a network's own DHCP hands out is
+# attacker-controlled on a rogue LAN, so it must never decide where the saved password goes. Only the configured
+# PortalHost / PortalIp / CampusDomain qualify (set them in config.json for another institution), or an IP literal,
+# which Invoke-TlsHttp still only talks to with a Windows-valid or user-pinned certificate.
+function Test-CredentialPortalHost([string]$HostName) {
+    $h = ([string]$HostName).ToLowerInvariant().TrimEnd('.')
+    if (-not $h) { return $false }
+    if ($script:Cfg.PortalHost -and $h -eq ([string]$script:Cfg.PortalHost).ToLowerInvariant().TrimEnd('.')) { return $true }
+    if ($script:Cfg.PortalIp -and $h -eq [string]$script:Cfg.PortalIp) { return $true }
+    $tmpIp = $null
+    if ([System.Net.IPAddress]::TryParse($h, [ref]$tmpIp)) { return [bool](Test-AllowedPortalIp $h) }
+    $dom = ([string]$script:Cfg.CampusDomain).ToLowerInvariant().Trim('.')
+    return [bool]($dom -and ($h -eq $dom -or $h.EndsWith('.' + $dom)))
+}
+function Get-CredentialPortalUrl([string]$Location) {
+    if (-not $Location) { return '' }
+    $u = $null
+    try { $u = [uri]$Location } catch { return '' }
+    if (-not $u.IsAbsoluteUri) { return '' }
+    if ($u.Scheme -ne 'http' -and $u.Scheme -ne 'https') { return '' }
+    if ($u.UserInfo) { return '' }
+    if (-not (Test-CredentialPortalHost $u.Host)) { return '' }
+    return [string]$u.AbsoluteUri
+}
+function Get-VaultEntropy {
+    $guid = ''
+    try { $guid = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Cryptography' -Name MachineGuid -ErrorAction SilentlyContinue).MachineGuid } catch {}
+    if (-not $guid) {
+        try { $guid = (Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue).SerialNumber } catch {}
+    }
+    return [System.Text.Encoding]::UTF8.GetBytes("LanFixer_NITJSR_AS_SecureEntropy_2026_$guid")
+}
+
+function Save-PortalCredentials([string]$User, [string]$Pass) {
+    if (-not $User -or -not $Pass) { return $false }
+    if ($User -match '[\t\r\n]') { Write-Log 'FAIL' 'The username cannot contain tabs or line breaks.'; return $false }
     $tmp = $script:VaultFile + '.new'
     $moved = $false
     try {
@@ -756,45 +798,3 @@ function Restore-Everything {
                 if ($snap.ContainsKey('DisabledComponents')) {
                     $dc = $snap['DisabledComponents']
                     [void](Invoke-Change 'IPv6 prefix policy restored' {
-                        if ($null -eq $dc) { Remove-ItemProperty -LiteralPath $script:Tcpip6Key -Name DisabledComponents -ErrorAction SilentlyContinue }
-                        else { New-ItemProperty -LiteralPath $script:Tcpip6Key -Name DisabledComponents -Value ([int]$dc) -PropertyType DWord -Force -ErrorAction Stop | Out-Null }
-                    })
-                }
-                if ($snap.ContainsKey('Ncsi')) {
-                    $nk = 'HKLM:\SYSTEM\CurrentControlSet\Services\NlaSvc\Parameters\Internet'
-                    $v = [int]$snap['Ncsi']
-                    [void](Invoke-Change "Connectivity probing setting restored to $v" { Set-ItemProperty -LiteralPath $nk -Name EnableActiveProbing -Value $v -Type DWord -ErrorAction Stop })
-                }
-                if ($snap.ContainsKey('MaxNegativeCacheTtl')) {
-                    $nct = $snap['MaxNegativeCacheTtl']
-                    [void](Invoke-Change 'Negative DNS cache TTL restored' {
-                        if ($null -eq $nct) { Remove-ItemProperty -LiteralPath $script:DnsParamKey -Name MaxNegativeCacheTtl -ErrorAction SilentlyContinue }
-                        else { Set-ItemProperty -LiteralPath $script:DnsParamKey -Name MaxNegativeCacheTtl -Value ([int]$nct) -Type DWord -ErrorAction Stop }
-                    })
-                }
-                if ($snap.ContainsKey('EnableMDNS')) {
-                    $md = $snap['EnableMDNS']
-                    [void](Invoke-Change 'mDNS setting restored' {
-                        if ($null -eq $md) { Remove-ItemProperty -LiteralPath $script:DnsParamKey -Name EnableMDNS -ErrorAction SilentlyContinue }
-                        else { Set-ItemProperty -LiteralPath $script:DnsParamKey -Name EnableMDNS -Value ([int]$md) -Type DWord -ErrorAction Stop }
-                    })
-                }
-                if ($snap.ContainsKey('DisableSmartNameResolution') -or (Test-Path -LiteralPath $script:DnsPolicyKey)) {
-                    [void](Invoke-Change 'Smart Name Resolution policy cleared' {
-                        Remove-ItemProperty -LiteralPath $script:DnsPolicyKey -Name DisableSmartNameResolution -ErrorAction SilentlyContinue
-                    })
-                }
-                if ($snap.ContainsKey('KeepAliveTime')) {
-                    $kat = $snap['KeepAliveTime']
-                    [void](Invoke-Change 'TCP KeepAliveTime restored' {
-                        if ($null -eq $kat) { Remove-ItemProperty -LiteralPath $script:TcpParamKey -Name KeepAliveTime -ErrorAction SilentlyContinue }
-                        else { Set-ItemProperty -LiteralPath $script:TcpParamKey -Name KeepAliveTime -Value ([int]$kat) -Type DWord -ErrorAction Stop }
-                    })
-                }
-                if ($snap.ContainsKey('KeepAliveInterval')) {
-                    $kai = $snap['KeepAliveInterval']
-                    [void](Invoke-Change 'TCP KeepAliveInterval restored' {
-                        if ($null -eq $kai) { Remove-ItemProperty -LiteralPath $script:TcpParamKey -Name KeepAliveInterval -ErrorAction SilentlyContinue }
-                        else { Set-ItemProperty -LiteralPath $script:TcpParamKey -Name KeepAliveInterval -Value ([int]$kai) -Type DWord -ErrorAction Stop }
-                    })
-                }

@@ -1,3 +1,45 @@
+    }
+    # 2. Dynamic Detection & Neutralization of Rogue DNS Interceptors, WFP Callouts & Loopback Stubs
+    $wfpDnsRegex = 'portmaster|nextdns|yogadns|dnscrypt|acrylic|adguard|stubby|warp-svc'
+    $dnsBroken = $false
+    $dnsEvidence = ''
+    $testRecs = @(Resolve-DnsName -Name 'accounts.google.com' -QuickTimeout -ErrorAction SilentlyContinue)
+    $hasA = [bool]($testRecs | Where-Object { $_.IPAddress -and [string]$_.Type -eq 'A' })
+    $hasPoison = @($testRecs | Where-Object { ([string]$_.Name -match 'inf\.portmaster|blocked\.|sinkhole|dns\.local') -or ([string]$_.Strings -match 'unsuccessful|expired|blocked|refused|failure') }).Count -gt 0
+    if ($hasPoison) {
+        $dnsBroken = $true
+        $dnsEvidence = 'synthetic interceptor error record detected'
+    } elseif (-not $hasA) {
+        $ethUps = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })
+        $stackSrc = if ($ethUps.Count -gt 0) { Get-ValidIPv4 $ethUps[0] } else { '' }
+        $rawDns = Measure-ResolversFast @('8.8.8.8','1.1.1.1') 400 53 $stackSrc
+        $rawNet = (Test-TcpPort '8.8.8.8' 53 600 $stackSrc) -or (Test-TcpPort '1.1.1.1' 443 600 $stackSrc)
+        if (@($rawDns.Values | Where-Object { $null -ne $_ }).Count -gt 0 -or $rawNet -or $Aggressive) {
+            $dnsBroken = $true
+            $dnsEvidence = if ($Aggressive) { 'system resolver failed during aggressive remediation' } else { 'system resolver failed while raw IPv4 internet (8.8.8.8 / 1.1.1.1) is alive' }
+        }
+    }
+    if ($dnsBroken) {
+        $roguePids = [System.Collections.Generic.HashSet[int]]::new()
+        foreach ($ep in @(Get-NetUDPEndpoint -LocalPort 53 -ErrorAction SilentlyContinue)) {
+            if ($ep.OwningProcess -gt 4) { [void]$roguePids.Add([int]$ep.OwningProcess) }
+        }
+        foreach ($ep in @(Get-NetTCPConnection -LocalPort 53 -ErrorAction SilentlyContinue)) {
+            if ($ep.OwningProcess -gt 4) { [void]$roguePids.Add([int]$ep.OwningProcess) }
+        }
+        # Step 1: Clean loopback DNS from physical adapters first to see if that resolves the issue without killing services.
+        # The ORIGINAL resolver string is snapshotted BEFORE the write and the adapter is marked managed, so this bypass is
+        # undone exactly (and only) when Lan Fixer is finished with the link: no adapter keeps a substituted resolver.
+        $loopbackCleared = $false
+        foreach ($na in @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' })) {
+            $naGuid = [string]$na.InterfaceGuid
+            $dnsAddrs = @(Get-DnsClientServerAddress -InterfaceIndex $na.ifIndex -ErrorAction SilentlyContinue).ServerAddresses
+            if (@($dnsAddrs | Where-Object { $_ -match '^(127\.|::1|0\.0\.0\.0|localhost)' }).Count -gt 0) {
+                Save-Original $naGuid 'DnsStatic' (Get-StaticDnsString $naGuid)
+                $okLoop = Invoke-Change "Bypassed local loopback DNS on adapter $($na.Name) -> DHCP automatic" {
+                    Set-DnsClientServerAddress -InterfaceIndex $na.ifIndex -ResetServerAddresses -ErrorAction SilentlyContinue
+                }
+                if ($okLoop -and -not $script:IsDry) { (Get-SubTable 'Dns' $naGuid).Managed = $true }
                 if ($okLoop) { $loopbackCleared = $true }
             }
         }
@@ -756,45 +798,3 @@ function Invoke-DoomsdayReset {
                             }
                             try { Disable-NetAdapterBinding -Name $ad.Name -ComponentID $b.ComponentID -ErrorAction SilentlyContinue } catch {}
                         }
-                    }
-                } catch {}
-                try {
-                    Restart-NetAdapter -Name $ad.Name -Confirm:$false -ErrorAction SilentlyContinue
-                } catch {}
-                # Re-bind core NDIS protocols
-                foreach ($comp in @('ms_tcpip', 'ms_tcpip6', 'ms_rspndr', 'ms_lltdio', 'ms_msclient', 'ms_server', 'ms_pacer', 'ms_lldp', 'ms_netbt')) {
-                    try { Enable-NetAdapterBinding -Name $ad.Name -ComponentID $comp -ErrorAction SilentlyContinue } catch {}
-                }
-            }
-
-            # Wake physical silicon from Modern Standby D3cold / PCIe ASPM hardware lockup
-            try {
-                $pnpDevs = @(Get-PnpDevice -Class Net -Status OK -ErrorAction SilentlyContinue | Where-Object { $_.InstanceId -match '^(PCI|USB)\\' })
-                foreach ($pdev in $pnpDevs) {
-                    Write-Log 'INFO' "Issuing hardware PnP bus restart to wake silicon: $($pdev.FriendlyName)..."
-                    [void](Invoke-Native (Get-SysExe 'pnputil.exe') @('/restart-device', $pdev.InstanceId) 8000)
-                }
-            } catch {}
-        }
-
-        # ----------------------------------------------------------------------
-        # STAGE 3/12: DUAL-ARCHITECTURE WINSOCK CATALOG OBLITERATION (64-BIT & 32-BIT)
-        # ----------------------------------------------------------------------
-        Write-Log 'STEP' 'STAGE 3/12 Dual-architecture Winsock LSP/NSP catalog wipe (64-bit System32 & 32-bit SysWOW64)'
-        if ($script:IsDry) {
-            Write-Log 'DRY' 'Would execute 64-bit and 32-bit: netsh winsock reset catalog & netsh winsock reset'
-            Write-Log 'DRY' 'Would reset Winsock AutodialFlags to 0 in registry'
-        } else {
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('winsock', 'reset', 'catalog') 8000)
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('winsock', 'reset') 5000)
-            $wowNetsh = Join-Path $env:SystemRoot 'SysWOW64\netsh.exe'
-            if (Test-Path -LiteralPath $wowNetsh) {
-                [void](Invoke-Native $wowNetsh @('winsock', 'reset', 'catalog') 8000)
-                [void](Invoke-Native $wowNetsh @('winsock', 'reset') 5000)
-            }
-            try {
-                $ws2Key = 'HKLM:\SYSTEM\CurrentControlSet\Services\WinSock2\Parameters'
-                if (Test-Path -LiteralPath $ws2Key) {
-                    Set-ItemProperty -LiteralPath $ws2Key -Name 'AutodialFlags' -Value 0 -Type DWord -ErrorAction SilentlyContinue
-                }
-            } catch {}

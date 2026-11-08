@@ -1,3 +1,45 @@
+                        if ($isConsole) { Show-SentinelHud $ad $linkHealth 'Online' $currentCadence }
+                        Wait-SentinelCadence $currentCadence $isConsole $ad
+                        continue
+                    }
+                }
+                
+                # If no credentials or headless login didn't complete, ensure campus routing & DNS are active, and open portal (throttled)
+                if (Test-Elapsed 'LastPortal' 60) {
+                    Write-SentinelLog 'INFO' "Captive portal active. Opening campus login page in default browser..."
+                    [void](Invoke-WithLock -WaitMs 3000 {
+                        Open-Portal -Force -SourceIp $ethIp
+                        Set-StateTime 'LastPortal'
+                        Save-State
+                    })
+                }
+                $script:DaemonConsecutiveFails = 0
+                $currentCadence = [Math]::Min(15, $IntervalSec)
+                if ($isConsole) { Show-SentinelHud $ad $linkHealth 'Captive (Login Ready)' $currentCadence }
+                Wait-SentinelCadence $currentCadence $isConsole $ad
+                continue
+            }
+
+            # Degradation Detected
+            $script:DaemonConsecutiveFails++
+            $ipDesc = if ($ethIp) { $ethIp } else { 'No IPv4 / APIPA' }
+            Write-SentinelLog 'WARN' ("Degradation detected on {0} (Fail #{1}): IP={2}, State={3}, Ndis={4}, Gateway={5}" -f $ad.Name, $script:DaemonConsecutiveFails, $ipDesc, $state.State, $linkHealth.Reason, $(if ($gwOk) { 'OK' } else { 'Timeout' }))
+
+            # Circuit Breaker Check (Smart Cadence Back-Off without surrendering)
+            if ($script:DaemonConsecutiveFails -ge $script:Cfg.BreakerFails) {
+                $currentCadence = [Math]::Min(60, 15 * [Math]::Pow(2, [Math]::Min(2, $script:DaemonConsecutiveFails - $script:Cfg.BreakerFails)))
+                Write-SentinelLog 'WARN' ("Circuit breaker active ({0} fails). Upstream network down. Throttling scan to {1}s to protect switch port security." -f $script:DaemonConsecutiveFails, $currentCadence)
+                if ($isConsole) { Show-SentinelHud $ad $linkHealth "Breaker ($($state.State))" $currentCadence }
+                # Do NOT continue - still execute remediation ladder below!
+            }
+
+            # Engaging 6-Tier Self-Healing Ladder (Strict OSI Layered Hierarchy)
+            $recovered = $false
+            $remedTier = ''
+
+            # Tier 1: IP & DHCP Lease Re-acquisition (Layer 1-3 Foundational Prerequisite)
+            $curIp = Get-ValidIPv4 $ad
+            if (-not $recovered -and (-not $curIp -or $curIp -like '169.254*')) {
                 Write-SentinelLog 'TIER1' ("Executing Tier 1: Invalid IP or APIPA detected ({0}). Unfreezing DHCP and recovering valid lease..." -f $(if ($curIp) { $curIp } else { 'None' }))
                 [void](Invoke-WithLock -WaitMs 25000 {
                     Repair-Dhcp $ad -ForceRelease

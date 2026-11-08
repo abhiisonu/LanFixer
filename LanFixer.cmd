@@ -9,7 +9,7 @@ exit /b %errorlevel%
 
 <#
 .SYNOPSIS
-    Lan Fixer 6.5.1 - Sovereign self-healing Ethernet stabilizer for campus/hostel LANs (Windows 10/11, Ethernet only).
+    Lan Fixer 6.5.2 - Sovereign self-healing Ethernet stabilizer for campus/hostel LANs (Windows 10/11, Ethernet only).
     Author: A.S.
 .DESCRIPTION
     Single file, ASCII only. Run it normally for the control center, or use -Mode:
@@ -18,6 +18,16 @@ exit /b %errorlevel%
     Add -DryRun to see exactly what would change without changing anything.
     Every change is snapshotted first, so ResetFactory restores YOUR original values.
 .NOTES
+    6.5.2 (Exhaustive Forensic Audit Resolutions & Hardware/Stack Reliability Hardening):
+      - NDIS Link Speed Cast: Replaced fragile [int64]$Ad.LinkSpeed string conversion with UInt64 TransmitLinkSpeed and robust regex evaluation, preventing duplex flap crash.
+      - Roaming Debounce State: Stamped LinkDownSince in $script:State.Misc to unfreeze AutoHeal from perpetual 45s debounce trap; cleared both Misc and Times on recovery.
+      - Smart DNS Management Guard: Added management flag check to Restore-SmartDnsIfManaged to avoid spurious registry writes.
+      - PnP Hardware Restart Quoting: Removed manual outer quotes on PnPDeviceID in Invoke-Native pnputil call to prevent double-escaping failure.
+      - DHCP DNS Management Inversion: Set Managed=false on Set-AdapterDnsAutomatic to prevent erroneous re-management after DHCP reset.
+      - Off-Subnet Gateway Route Tracking: Added Add-TrackedHostRoute and metric 5 alignment to off-subnet gateway injection for clean roaming teardown.
+      - Path MTU Target Fallbacks: Enriched Get-PathMtuForAdapter with gateway and DHCP DNS probe targets for firewalled intranets.
+      - Sockets DAD Binding Fallback: Added unbound socket fallback to Test-TcpPort on tentative local IP addresses.
+      - HttpWebRequest Stream Disposal: Guaranteed $resp.Close() in Get-InternetState system fallback via try/finally.
     6.5.1 (Definitive Forensic Audit Resolutions & Omni-Adaptive Dynamic Stack Hardening):
       - Subnet Calculus: Pre-assigned $ipBytes before prefix validation; converted WildcardMask from scalar byte to 4-octet dotted quad.
       - State Persistence: Repointed Shield-Profile to Snapshot table; stamped DiscoveryTime on Other cleanup and purged missing keys on sync.
@@ -221,7 +231,7 @@ try { Add-Type -AssemblyName System.Security -ErrorAction SilentlyContinue } cat
 # ==============================================================================
 # CONFIG (edit here, nowhere else)
 # ==============================================================================
-$script:Version = '6.5.1'
+$script:Version = '6.5.2'
 $script:Sys32   = Join-Path $env:SystemRoot 'System32'
 $script:SelfPath = if ($env:LANFIXER_SELF -and (Test-Path -LiteralPath $env:LANFIXER_SELF)) { $env:LANFIXER_SELF } elseif ($PSCommandPath -and (Test-Path -LiteralPath $PSCommandPath)) { $PSCommandPath } elseif ($MyInvocation.MyCommand.Path -and (Test-Path -LiteralPath $MyInvocation.MyCommand.Path)) { $MyInvocation.MyCommand.Path } elseif ($PSScriptRoot -and (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'LanFixer.cmd'))) { (Join-Path $PSScriptRoot 'LanFixer.cmd') } else { (Join-Path (Get-Location).Path 'LanFixer.cmd') }
 $script:IsDry   = [bool]$DryRun
@@ -924,9 +934,14 @@ function Test-TcpPort([string]$Address, [int]$Port, [int]$TimeoutMs = 800, [stri
     $iar = $null
     try {
         if ($SourceIp -and $SourceIp -ne '0.0.0.0' -and $SourceIp -notlike '169.254.*') {
-            $ep = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Parse($SourceIp), 0)
-            $c = New-Object System.Net.Sockets.TcpClient($ep)
-        } else {
+            try {
+                $ep = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Parse($SourceIp), 0)
+                $c = New-Object System.Net.Sockets.TcpClient($ep)
+            } catch {
+                if ($c) { try { $c.Close() } catch {} }; $c = $null
+            }
+        }
+        if (-not $c) {
             $c = New-Object System.Net.Sockets.TcpClient
         }
         $iar = $c.BeginConnect($Address, $Port, $null, $null)
@@ -3215,14 +3230,18 @@ function Get-InternetState {
                 $wr.Timeout = 2500
                 $wr.AllowAutoRedirect = $false
                 $wr.Proxy = $null   # a local proxy answering 204 must not count as internet
-                $resp = $wr.GetResponse()
-                $c = [int]$resp.StatusCode
-                if ($c -eq 204) { $state = 'Online'; $via = 'system' }
-                elseif (($c -ge 300 -and $c -le 399) -or ($c -ge 200 -and $c -le 299) -or $c -eq 401 -or $c -eq 407 -or $c -eq 511) {
-                    $state = 'Captive'; $via = 'system'
-                    $p1 = @{ Code = $c; Location = [string]$resp.Headers['Location'] }
+                $resp = $null
+                try {
+                    $resp = $wr.GetResponse()
+                    $c = [int]$resp.StatusCode
+                    if ($c -eq 204) { $state = 'Online'; $via = 'system' }
+                    elseif (($c -ge 300 -and $c -le 399) -or ($c -ge 200 -and $c -le 299) -or $c -eq 401 -or $c -eq 407 -or $c -eq 511) {
+                        $state = 'Captive'; $via = 'system'
+                        $p1 = @{ Code = $c; Location = [string]$resp.Headers['Location'] }
+                    }
+                } finally {
+                    if ($resp) { try { $resp.Close() } catch {} }
                 }
-                $resp.Close()
             } catch [System.Net.WebException] {
                 $webResp = $_.Exception.Response -as [System.Net.HttpWebResponse]
                 if ($webResp) {
@@ -3701,7 +3720,12 @@ function Resolve-DuplexFlap($Ad) {
     $speed = [string]$Ad.LinkSpeed
     $isGigabitOrHigher = $false
     try {
-        if ([int64]$Ad.LinkSpeed -ge 1000000000 -or [int64]$Ad.MaxSpeed -ge 1000000000 -or [int64]$Ad.TransmitLinkSpeed -ge 1000000000) { $isGigabitOrHigher = $true }
+        $rawSpeed = 0L
+        if ($Ad.TransmitLinkSpeed) { $rawSpeed = [int64]$Ad.TransmitLinkSpeed }
+        elseif ($Ad.ReceiveLinkSpeed) { $rawSpeed = [int64]$Ad.ReceiveLinkSpeed }
+        elseif ($Ad.MaxSpeed) { $rawSpeed = [int64]$Ad.MaxSpeed }
+
+        if ($rawSpeed -ge 1000000000 -or $speed -match 'Gbps|1000\s*Mbps|2\.5\s*G|5\s*G|10\s*G') { $isGigabitOrHigher = $true }
         elseif ($Ad.InterfaceDescription -match 'Gigabit|GbE|1000|2\.5G|5G|10G|10000|RTL81|I21|I22') { $isGigabitOrHigher = $true }
         else {
             $sdProp = Get-NetAdapterAdvancedProperty -Name $Ad.Name -RegistryKeyword '*SpeedDuplex' -ErrorAction SilentlyContinue
@@ -3797,7 +3821,7 @@ function Shield-TransceiverBus($Ad) {
                     $ok = Invoke-Change ("PnP hardware controller reset cycle on {0} (clearing error code {1})" -f $Ad.Name, $code) {
                         $pnputil = Get-SysExe 'pnputil.exe'
                         if (Test-Path -LiteralPath $pnputil) {
-                            [void](Invoke-Native $pnputil @('/restart-device', ('"{0}"' -f $Ad.PnPDeviceID)) 10000)
+                            [void](Invoke-Native $pnputil @('/restart-device', [string]$Ad.PnPDeviceID) 10000)
                         } else {
                             Disable-PnpDevice -InstanceId $Ad.PnPDeviceID -Confirm:$false -ErrorAction SilentlyContinue
                             Start-Sleep -Milliseconds 500
@@ -4264,8 +4288,9 @@ function Shield-GatewayArp($Ctx, [string]$ConnState) {
                 $existingHostRoute = Get-NetRoute -InterfaceIndex $ad.ifIndex -DestinationPrefix ("{0}/32" -f $gw) -AddressFamily IPv4 -ErrorAction SilentlyContinue
                 if (-not $existingHostRoute) {
                     [void](Invoke-Change ("Injected on-link host route for off-subnet gateway {0} on {1}" -f $gw, $ad.Name) {
-                        New-NetRoute -InterfaceIndex $ad.ifIndex -DestinationPrefix ("{0}/32" -f $gw) -NextHop '0.0.0.0' -RouteMetric 1 -AddressFamily IPv4 -PolicyStore ActiveStore -ErrorAction Stop | Out-Null
+                        New-NetRoute -InterfaceIndex $ad.ifIndex -DestinationPrefix ("{0}/32" -f $gw) -NextHop '0.0.0.0' -RouteMetric 5 -AddressFamily IPv4 -PolicyStore ActiveStore -ErrorAction Stop | Out-Null
                     })
+                    Add-TrackedHostRoute $gw
                 }
             } catch {}
         }
@@ -4426,8 +4451,19 @@ function Test-RouteViaAdapter($Ad, [string]$Target) {
         return ([int]$r[0].InterfaceIndex -eq [int]$Ad.ifIndex)
     } catch { return $true }
 }
-function Get-PathMtuForAdapter($Ad, [string]$Target = '9.9.9.9') {
-    foreach ($t in @($Target, '1.1.1.1') | Where-Object { $_ } | Select-Object -Unique) {
+function Get-PathMtuForAdapter($Ad, [string]$Target = '') {
+    $cands = @($Target)
+    if (-not $Target) {
+        if ($Ad) {
+            $cands += @(Get-GatewaysV4 $Ad)
+            $cands += @(Get-DhcpDnsServers ([string]$Ad.InterfaceGuid))
+        }
+        $cands += @($script:Cfg.PublicDns)
+        $cands += @('9.9.9.9', '1.1.1.1')
+    } else {
+        $cands += @('1.1.1.1', '9.9.9.9')
+    }
+    foreach ($t in @($cands | Where-Object { $_ } | Select-Object -Unique)) {
         if (-not (Test-RouteViaAdapter $Ad $t)) {
             Write-Log 'INFO' ("Path-MTU probe to {0} skipped on {1}: route uses another interface." -f $t, $Ad.Name)
             continue
@@ -4765,7 +4801,7 @@ function Set-AdapterDnsAutomatic($Ad) {
             [void](Invoke-Native $netsh @('interface', 'ipv4', 'set', 'dnsservers', ("name={0}" -f $Ad.Name), 'dhcp') 5000)
         }
     }
-    if ($ok -and -not $script:IsDry) { (Get-SubTable 'Dns' $guid).Managed = $true; Clear-DnsClientCache -ErrorAction SilentlyContinue }
+    if ($ok -and -not $script:IsDry) { (Get-SubTable 'Dns' $guid).Managed = $false; Clear-DnsClientCache -ErrorAction SilentlyContinue }
     return $ok
 }
 # Only undo what WE changed (never wipe a static DNS the user set themselves).
@@ -5107,7 +5143,12 @@ function Invoke-RoamingCleanup {
     foreach ($fl in $flags) { if ($script:State.Misc[$fl] -eq $true) { $any = $true } }
     if (-not $any) { return }
     if ($Mode -eq 'AutoHeal') {
-        if (-not $script:State.Misc['LinkDownSince']) { Set-StateTime 'LinkDownSince'; Write-Log 'INFO' 'Link down: debouncing roaming cleanup against momentary cable flap (45s grace period).'; return }
+        if (-not $script:State.Misc['LinkDownSince']) {
+            $script:State.Misc['LinkDownSince'] = (Get-Date).ToString('o')
+            Set-StateTime 'LinkDownSince'
+            Write-Log 'INFO' 'Link down: debouncing roaming cleanup against momentary cable flap (45s grace period).'
+            return
+        }
         if (-not (Test-Elapsed 'LinkDownSince' 45)) { Write-Log 'INFO' 'Link down under 45s: debouncing roaming cleanup against momentary cable flap.'; return }
     }
     if (Test-MetricsManaged) { Restore-InterfaceMetrics 'No active Ethernet link' }
@@ -5281,6 +5322,7 @@ function Shield-Mdns($Ctxs) {
 
 $script:DnsPolicyKey = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient'
 function Restore-SmartDnsIfManaged([string]$Why) {
+    if ($script:State.Misc['SmartDnsManaged'] -ne $true) { return }
     $ok = Invoke-Change $Why {
         Remove-ItemProperty -LiteralPath $script:DnsPolicyKey -Name DisableSmartNameResolution -ErrorAction SilentlyContinue
     }
@@ -7038,7 +7080,7 @@ function Invoke-HealPipeline([switch]$SkipSystemStack) {
         return $res
     }
     $res.AnyUp = $true
-    if ($script:State.Misc -and $script:State.Misc['LinkDownSince']) { $script:State.Misc.Remove('LinkDownSince') }
+    if ($script:State.Misc -and $script:State.Misc['LinkDownSince']) { $script:State.Misc.Remove('LinkDownSince'); if ($script:State.Times) { $script:State.Times.Remove('LinkDownSince') } }
     $ctxs = @()
     foreach ($a in $ups) { $ctxs += @{ Ad = $a; Env = (Get-AdapterEnvironment $a); Repaired = $false } }
     foreach ($c in $ctxs) {
