@@ -9,7 +9,7 @@ exit /b %errorlevel%
 
 <#
 .SYNOPSIS
-    Lan Fixer 6.4.2 - Sovereign self-healing Ethernet stabilizer for campus/hostel LANs (Windows 10/11, Ethernet only).
+    Lan Fixer 6.5.1 - Sovereign self-healing Ethernet stabilizer for campus/hostel LANs (Windows 10/11, Ethernet only).
     Author: A.S.
 .DESCRIPTION
     Single file, ASCII only. Run it normally for the control center, or use -Mode:
@@ -18,6 +18,14 @@ exit /b %errorlevel%
     Add -DryRun to see exactly what would change without changing anything.
     Every change is snapshotted first, so ResetFactory restores YOUR original values.
 .NOTES
+    6.5.1 (Definitive Forensic Audit Resolutions & Omni-Adaptive Dynamic Stack Hardening):
+      - Subnet Calculus: Pre-assigned $ipBytes before prefix validation; converted WildcardMask from scalar byte to 4-octet dotted quad.
+      - State Persistence: Repointed Shield-Profile to Snapshot table; stamped DiscoveryTime on Other cleanup and purged missing keys on sync.
+      - Socket & Route Safety: Validated IPv4 in Get-DhcpDnsServers to prevent UdpClient address family mismatches while retaining IPv6 support.
+      - TLS Decision Priority: Validated CA certificates prior to pin check in New-CertCallback to prevent rejection of updated certificates.
+      - Institutional Overrides: Enforced Import-UserConfig on Initialize-Store completion.
+      - Dynamic Portals: Replaced hardcoded portal endpoints in [G] dashboard handler and Invoke-HeadlessPortalLogin with Get-ActivePortalEndpoint.
+      - Reset MTU Scavenging: Purged all wildcard MtuCandidate* keys during resets.
     6.5.0 (Omniscient Layer 1-7 Healer, Doomsday Multi-Medium & Armageddon Deep OS Reset):
       - Invoke-ArmageddonReset: 4-stage Microsoft Windows native kernel network stack wipe and reinstallation weapon (netcfg.exe -d). Uninstalls all adapters, clears virtual switches/filters, wipes TCP/IP registry stack, and triggers clean PnP driver reinstallation upon reboot.
       - Invoke-DoomsdayReset: 12-stage universal doomsday network stack annihilation engine with 5 Deep Forensic Antidotes for total connectivity death across ALL media (Wi-Fi, Bluetooth, USB Tethering, Ethernet, Cellular).
@@ -213,7 +221,7 @@ try { Add-Type -AssemblyName System.Security -ErrorAction SilentlyContinue } cat
 # ==============================================================================
 # CONFIG (edit here, nowhere else)
 # ==============================================================================
-$script:Version = '6.5.0'
+$script:Version = '6.5.1'
 $script:Sys32   = Join-Path $env:SystemRoot 'System32'
 $script:SelfPath = if ($env:LANFIXER_SELF -and (Test-Path -LiteralPath $env:LANFIXER_SELF)) { $env:LANFIXER_SELF } elseif ($PSCommandPath -and (Test-Path -LiteralPath $PSCommandPath)) { $PSCommandPath } elseif ($MyInvocation.MyCommand.Path -and (Test-Path -LiteralPath $MyInvocation.MyCommand.Path)) { $MyInvocation.MyCommand.Path } elseif ($PSScriptRoot -and (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'LanFixer.cmd'))) { (Join-Path $PSScriptRoot 'LanFixer.cmd') } else { (Join-Path (Get-Location).Path 'LanFixer.cmd') }
 $script:IsDry   = [bool]$DryRun
@@ -687,6 +695,7 @@ function Initialize-Store {
         $r1 = Invoke-Native $icacls @($dir, '/setowner', '*S-1-5-32-544', '/C', '/Q')
         $r2 = Invoke-Native $icacls @($dir, '/inheritance:r', '/grant:r', '*S-1-5-18:(OI)(CI)F', '/grant:r', '*S-1-5-32-544:(OI)(CI)F', '/grant:r', '*S-1-5-32-545:(OI)(CI)RX', '/C', '/Q')
         Repair-StoreChildren $dir
+        Import-UserConfig
         $script:StoreSecure = ($r1.ExitCode -eq 0 -and $r2.ExitCode -eq 0)
         $script:StoreReady = $true
         try { $fi = Get-Item -LiteralPath $script:LogFile -ErrorAction Stop; if ($fi.Length -gt $script:Cfg.LogMaxBytes) { Move-Item -LiteralPath $script:LogFile -Destination ($script:LogFile + '.1') -Force } } catch {}
@@ -789,12 +798,3 @@ function Enter-Lock([int]$TimeoutMs = 1000) {
                     }
                 } catch {}
             }
-            if ($holderDead) {
-                try { Remove-Item -LiteralPath $lf -Force -ErrorAction SilentlyContinue } catch {}
-                try { $got = $script:Mutex.WaitOne(1000) } catch [System.Threading.AbandonedMutexException] { $got = $true }
-            }
-        }
-        if ($got) {
-            $script:LockDepth = 1
-            $script:HasMutex = $true
-            try {

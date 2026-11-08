@@ -1,3 +1,13 @@
+        }
+    }
+    if ($he -lt 0) { return $r }
+    $headerStr = [System.Text.Encoding]::ASCII.GetString($Raw, 0, $he)
+    $lines = $headerStr -split "`r?`n"
+    $m = [regex]::Match($lines[0], '^HTTP/\d\.\d\s+(\d{3})')
+    if (-not $m.Success) { return $r }
+    $r.Code = [int]$m.Groups[1].Value
+    foreach ($l in ($lines | Select-Object -Skip 1)) {
+        $c = $l.IndexOf(':'); if ($c -lt 1) { continue }
         $k = $l.Substring(0, $c).Trim().ToLower(); $v = $l.Substring($c + 1).Trim()
         if ($k -eq 'set-cookie') { $r.Cookies += $v } else { $r.Headers[$k] = $v }
     }
@@ -788,13 +798,3 @@ function Get-LegendRows($Items, [string]$Rec, [int]$Width) {
 
 function Get-DashboardModel($t, $adv, [int]$Width = 0) {
     $w = $Width
-    if ($w -le 0) { $w = Get-UiWidth }
-    $L = New-Object System.Collections.ArrayList
-    $pulseIdx = -1
-    # header
-    $left = @((Seg 'accent!' '  LAN FIXER'), (Seg 'faint' ('  v' + $script:Version)))
-    $chips = @()
-    $chipDefs = @(@('admin', $t.Admin, $(if ($t.Admin) { 'Admin' } else { 'Limited' })), @('watchdog', $t.Watchdog, 'Guard'), @('vault', $t.Vault, 'Vault'))
-    foreach ($c in $chipDefs) {
-        $dotRole = 'faint'; $glyph = $script:G.ring
-        if ($c[1]) { $dotRole = 'ok'; $glyph = $script:G.dot } elseif ($c[0] -eq 'admin') { $dotRole = 'warn'; $glyph = $script:G.dot }

@@ -1,3 +1,26 @@
+        $r.Text = ($r.Status + ' ' + $r.Action)
+        return $r
+    }
+    if ($t.ArpPending) {
+        $r.Status = 'Gateway MAC changed on switch. Candidate pending your review.'
+        $r.Action = 'Press [ENTER] to review & approve the new gateway MAC (or press K).'
+        $r.Key = 'k'; $r.KeyLabel = 'review the gateway MAC change'
+        $r.Text = ($r.Status + ' ' + $r.Action)
+        return $r
+    }
+    switch ($t.Problem) {
+        { $_ -eq 'Healthy' -or $_ -eq 'Online' } {
+            if ($t.UplinkIsPrimary -and $t.UplinkName) {
+                $uLabel = if ($t.UplinkProfile) { "$($t.UplinkName) ($($t.UplinkProfile))" } else { $t.UplinkName }
+                $r.Status = "Internet active via $uLabel. Ethernet link is in standby ($($t.Routing))."
+            } else {
+                $r.Status = 'Connected to network. All communication layers verified optimal.'
+            }
+            if (-not $t.Watchdog) {
+                $r.Action = 'Press [ENTER] to arm background watchdog guard (or press 2).'
+                $r.Key = '2'; $r.KeyLabel = 'arm the watchdog'
+            } else {
+                $r.Status = 'Connected to network with background watchdog active.'
                 if ($t.LastFull) { $r.Status += (' Last repair ' + ([datetime]$t.LastFull).ToString('ddd yyyy-MM-dd HH:mm') + '.') }
                 $r.Action = 'No action needed.'
             }
@@ -775,26 +798,3 @@ function Start-AutonomousDaemon([int]$IntervalSec = 10, [switch]$Headless) {
             # Tier 1: IP & DHCP Lease Re-acquisition (Layer 1-3 Foundational Prerequisite)
             $curIp = Get-ValidIPv4 $ad
             if (-not $recovered -and (-not $curIp -or $curIp -like '169.254*')) {
-                Write-SentinelLog 'TIER1' ("Executing Tier 1: Invalid IP or APIPA detected ({0}). Unfreezing DHCP and recovering valid lease..." -f $(if ($curIp) { $curIp } else { 'None' }))
-                [void](Invoke-WithLock -WaitMs 25000 {
-                    Repair-Dhcp $ad -ForceRelease
-                })
-                $newIp = Get-ValidIPv4 $ad
-                if ($newIp -and $newIp -notlike '169.254*') {
-                    Write-SentinelLog 'OK' "Tier 1 SUCCESS: Acquired valid DHCP lease: $newIp"
-                    $script:SentinelStats.T4_Dhcp++
-                    $ethIp = $newIp
-                    $gw = Get-DefaultGateway $ad
-                    $gwOk = if ($gw) { (Test-LatencySample $gw 800) -ge 0 } else { $false }
-                    $state = Get-InternetState -NoCache -SourceIp $newIp
-                    
-                    # Immediately enforce routing and DNS for the newly acquired IP!
-                    $ctxT1 = @{ Ad = $ad; Env = (Get-AdapterEnvironment $ad) }
-                    Ensure-CampusPortalPath $ad
-                    Shield-RouteMetrics $ctxT1 $state.State
-                    Shield-Dns $ctxT1 $state.State
-                    Save-State
-
-                    if ($state.State -eq 'Online') {
-                        $recovered = $true; $remedTier = 'Tier 1 (DHCP Lease -> Online)'
-                    } elseif ($state.State -eq 'Captive') {

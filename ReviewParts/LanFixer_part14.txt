@@ -1,3 +1,26 @@
+                Write-SentinelLog 'TIER1' ("Executing Tier 1: Invalid IP or APIPA detected ({0}). Unfreezing DHCP and recovering valid lease..." -f $(if ($curIp) { $curIp } else { 'None' }))
+                [void](Invoke-WithLock -WaitMs 25000 {
+                    Repair-Dhcp $ad -ForceRelease
+                })
+                $newIp = Get-ValidIPv4 $ad
+                if ($newIp -and $newIp -notlike '169.254*') {
+                    Write-SentinelLog 'OK' "Tier 1 SUCCESS: Acquired valid DHCP lease: $newIp"
+                    $script:SentinelStats.T4_Dhcp++
+                    $ethIp = $newIp
+                    $gw = Get-DefaultGateway $ad
+                    $gwOk = if ($gw) { (Test-LatencySample $gw 800) -ge 0 } else { $false }
+                    $state = Get-InternetState -NoCache -SourceIp $newIp
+                    
+                    # Immediately enforce routing and DNS for the newly acquired IP!
+                    $ctxT1 = @{ Ad = $ad; Env = (Get-AdapterEnvironment $ad) }
+                    Ensure-CampusPortalPath $ad
+                    Shield-RouteMetrics $ctxT1 $state.State
+                    Shield-Dns $ctxT1 $state.State
+                    Save-State
+
+                    if ($state.State -eq 'Online') {
+                        $recovered = $true; $remedTier = 'Tier 1 (DHCP Lease -> Online)'
+                    } elseif ($state.State -eq 'Captive') {
                         Write-SentinelLog 'INFO' "DHCP lease acquired; captive portal detected. Passing directly to portal authentication..."
                     }
                 } else {

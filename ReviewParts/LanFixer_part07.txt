@@ -1,3 +1,22 @@
+    if ($n -gt 0) { Write-Log 'OK' ("{0}: {1} adapter(s) put back on the DNS they had before Lan Fixer touched them." -f $Why, $n) }
+    return $n
+}
+function Get-OurNrptRules { return @(Get-DnsClientNrptRule -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -eq 'LanFixer-Campus' }) }
+function Remove-CampusNrpt {
+    foreach ($r in (Get-OurNrptRules)) { [void](Invoke-Change "Removed campus-domain DNS rule" { Remove-DnsClientNrptRule -Name $r.Name -Force -ErrorAction Stop }) }
+}
+# Pure (unit-tested): does this lease look like the campus the built-in Cfg values describe?
+# Positive evidence: the configured campus resolver in the lease, a DNS suffix under the configured domain, or the
+# configured portal answering. With no lease data at all the last known verdict (or "yes", the legacy behaviour) holds.
+# Anything else is a DIFFERENT network and must never be sent the configured portal IP / campus domain.
+function Get-HomeCampusVerdict([string[]]$DhcpDns, [string]$Suffix, [bool]$PortalHit, $Hist) {
+    $dns = @($DhcpDns | Where-Object { $_ })
+    $dom = ([string]$script:Cfg.CampusDomain).Trim().Trim('.').ToLowerInvariant()
+    $sfx = ([string]$Suffix).Trim().Trim('.').ToLowerInvariant()
+    if ($script:Cfg.CampusDns -and ($dns -contains [string]$script:Cfg.CampusDns)) { return $true }
+    if ($dom -and $sfx -and ($sfx -eq $dom -or $sfx.EndsWith('.' + $dom))) { return $true }
+    if ($PortalHit) { return $true }
+    if ($dns.Count -eq 0 -and -not $sfx) {
         if ($Hist -is [hashtable] -and $Hist.ContainsKey('Home')) { return [bool]$Hist['Home'] }
         return $true
     }
@@ -149,7 +168,10 @@ function Shield-Dns($Ctx, [string]$ConnState) {
     if ($Ctx.Env.Env -ne 'Campus') { Write-Log 'INFO' 'Environment unknown: DNS untouched.'; return }
     $campus = @(Get-DhcpDnsServers $guid)
     $homeNet = ($null -eq $Ctx.Env.Home) -or [bool]$Ctx.Env.Home
-    if ($campus.Count -eq 0) { $campus = @($script:Cfg.CampusDns) }
+    if ($campus.Count -eq 0) {
+        if ($homeNet) { $campus = @($script:Cfg.CampusDns) }
+        else { $campus = @(Get-GatewaysV4 $ad | Where-Object { $_ }) }
+    }
     $phase = 'Auto'
     $order = @()
     switch ($prof) {
@@ -247,7 +269,7 @@ function Shield-Profile($Ctx) {
             })
         } else { Write-Log 'INFO' "Network profile is $($np.NetworkCategory) (already safe or domain-managed)." }
     } elseif ($Ctx.Env.Env -eq 'Other') {
-        $snap = Get-SubTable 'Original' 'NetProfiles'
+        $snap = Get-SubTable 'Snapshot' 'NetProfiles'
         if ($snap.ContainsKey("Cat:" + $np.Name) -and [string]$snap["Cat:" + $np.Name] -eq 'Private') {
             if ([string]$np.NetworkCategory -ne 'Private') {
                 [void](Invoke-Change "Trusted network '$($np.Name)': restored profile to Private for local discovery and sharing" {
@@ -776,25 +798,3 @@ function Shield-SystemStack([switch]$Aggressive) {
                     Set-DnsClientServerAddress -InterfaceIndex $na.ifIndex -ResetServerAddresses -ErrorAction SilentlyContinue
                 }
                 if ($okLoop -and -not $script:IsDry) { (Get-SubTable 'Dns' $naGuid).Managed = $true }
-                if ($okLoop) { $loopbackCleared = $true }
-            }
-        }
-        $skipKill = $false
-        if ($loopbackCleared -and -not $Aggressive) {
-            Clear-DnsClientCache -ErrorAction SilentlyContinue
-            $testAgain = @(Resolve-DnsName -Name 'accounts.google.com' -QuickTimeout -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -and [string]$_.Type -eq 'A' })
-            if ($testAgain.Count -gt 0) {
-                Write-Log 'OK' 'DNS resolution restored by bypassing loopback adapter settings (local proxy service preserved).'
-                $skipKill = $true
-            }
-        }
-        if (-not $loopbackCleared -and -not $hasPoison -and -not $Aggressive) {
-            Write-Log 'INFO' 'System resolver failed, but nothing points at a local resolver and no synthetic error record was seen; local processes and services were left alone.'
-            $skipKill = $true
-        }
-        if (-not $skipKill) {
-            $matchRegex = $wfpDnsRegex
-            $rogueProcs = @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
-                ($_.ProcessName -match $matchRegex) -and
-                ($roguePids.Contains($_.Id) -or $Aggressive -or $hasPoison) -and
-                ($_.ProcessName -notmatch '^(svchost|System|Idle|services|lsass|csrss|smss|wininit)$')

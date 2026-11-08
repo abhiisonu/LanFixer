@@ -1,3 +1,12 @@
+            if ($holderDead) {
+                try { Remove-Item -LiteralPath $lf -Force -ErrorAction SilentlyContinue } catch {}
+                try { $got = $script:Mutex.WaitOne(1000) } catch [System.Threading.AbandonedMutexException] { $got = $true }
+            }
+        }
+        if ($got) {
+            $script:LockDepth = 1
+            $script:HasMutex = $true
+            try {
                 $lf = Join-Path $script:StoreDir 'lock.json'
                 $meta = @{ Pid = $PID; Mode = ([string]$Mode); Time = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss'); User = [string]$env:USERNAME }
                 [System.IO.File]::WriteAllText($lf, (ConvertTo-Json -InputObject $meta -Compress))
@@ -14,6 +23,7 @@
             if ($memMisc['DiscoveryTime'] -and ([string]$memMisc['DiscoveryTime'] -ge [string]$script:State.Misc['DiscoveryTime'])) {
                 foreach ($mk in @('DiscoveredDomain','DiscoveredPortalUrl','DiscoveredPortalIp','DiscoveryTime')) {
                     if ($memMisc.ContainsKey($mk)) { $script:State.Misc[$mk] = $memMisc[$mk] }
+                    else { $script:State.Misc.Remove($mk) }
                 }
             }
             if ($memMisc['InjectedHostRoutes']) {
@@ -707,8 +717,8 @@ function New-CertCallback([string]$Pin, $Capture) {
             try { $c2 = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($cert); $Capture.Subject = [string]$c2.Subject; $Capture.Issuer = [string]$c2.Issuer; $Capture.NotAfter = $c2.NotAfter.ToString('yyyy-MM-dd') } catch {}
             if ($Capture.AcceptAny) { return $true }
         }
-        if ($pinU) { return ($hex -and ($hex -eq $pinU)) }
         if ([string]$errs -eq 'None') { return $true }
+        if ($pinU -and $hex -and ($hex -eq $pinU)) { return $true }
         return $false
     }.GetNewClosure()
     return [System.Net.Security.RemoteCertificateValidationCallback]$cb
@@ -788,13 +798,3 @@ function ConvertFrom-HttpBytes([byte[]]$Raw) {
             if ($Raw[$i] -eq 10 -and $Raw[$i + 1] -eq 10) {
                 $he = $i; $termLen = 2; break
             }
-        }
-    }
-    if ($he -lt 0) { return $r }
-    $headerStr = [System.Text.Encoding]::ASCII.GetString($Raw, 0, $he)
-    $lines = $headerStr -split "`r?`n"
-    $m = [regex]::Match($lines[0], '^HTTP/\d\.\d\s+(\d{3})')
-    if (-not $m.Success) { return $r }
-    $r.Code = [int]$m.Groups[1].Value
-    foreach ($l in ($lines | Select-Object -Skip 1)) {
-        $c = $l.IndexOf(':'); if ($c -lt 1) { continue }

@@ -1,3 +1,13 @@
+    if ($w -le 0) { $w = Get-UiWidth }
+    $L = New-Object System.Collections.ArrayList
+    $pulseIdx = -1
+    # header
+    $left = @((Seg 'accent!' '  LAN FIXER'), (Seg 'faint' ('  v' + $script:Version)))
+    $chips = @()
+    $chipDefs = @(@('admin', $t.Admin, $(if ($t.Admin) { 'Admin' } else { 'Limited' })), @('watchdog', $t.Watchdog, 'Guard'), @('vault', $t.Vault, 'Vault'))
+    foreach ($c in $chipDefs) {
+        $dotRole = 'faint'; $glyph = $script:G.ring
+        if ($c[1]) { $dotRole = 'ok'; $glyph = $script:G.dot } elseif ($c[0] -eq 'admin') { $dotRole = 'warn'; $glyph = $script:G.dot }
         $chips += (Seg $dotRole $glyph); $chips += (Seg 'dim' (' ' + $c[2] + '  '))
     }
     $pad = ($w + 2) - (Get-SegsLength $left) - (Get-SegsLength $chips)
@@ -619,8 +629,9 @@ function Invoke-DashboardKey([string]$Key, $adv) {
                         return @{ State = 'Online'; Signed = $true }
                     }
                     if ($inet.State -ne 'Captive') {
-                        if ($inet.State -eq 'Offline' -and (Test-PortalOnlineSmart $script:Cfg.PortalIp ([int]$script:Cfg.PortalPort))) {
-                            $inet = @{ State = 'Captive'; Location = $script:Cfg.PortalUrl; Via = 'link' }
+                        $epG = Get-ActivePortalEndpoint
+                        if ($inet.State -eq 'Offline' -and (Test-PortalOnlineSmart $epG.Ip ([int]$epG.Port))) {
+                            $inet = @{ State = 'Captive'; Location = $epG.Url; Via = 'link' }
                         } else {
                             Write-Log 'WARN' ("Link state is '{0}' (not behind captive portal). Run [1] Quick Heal first." -f $inet.State)
                             return @{ State = $inet.State; Signed = $false; SkipBrowser = $true }
@@ -787,14 +798,3 @@ function Get-InternetState {
     }
     $ckey = ('{0}|{1}' -f $SourceIp, $explicit)
     if (-not $NoCache -and $script:ConnCache -and $script:ConnCache.Key -eq $ckey -and (((Get-Date) - $script:ConnCache.Time).TotalSeconds -lt 1.8)) { return $script:ConnCache.Result }
-    $none = @{ Code = 0; Body = ''; Location = ''; Error = '' }
-    $p1 = Invoke-HttpProbe 'connectivitycheck.gstatic.com' '/generate_204' 2500 $SourceIp
-    $p2 = $none
-    if ($p1.Code -ne 204) { $p2 = Invoke-HttpProbe 'www.msftconnecttest.com' '/connecttest.txt' 2500 $SourceIp }
-    $state = Get-ProbeVerdict $p1 $p2
-    $via = 'link'
-    if (-not $explicit -and ($state -eq 'Offline' -or $state -eq 'NoDns') -and (Test-AllowSystemFallback $explicit $state (Test-OtherUplinkActive))) {
-        $u1 = $none
-        if ($SourceIp) { $u1 = Invoke-HttpProbe 'connectivitycheck.gstatic.com' '/generate_204' 2000 '' }
-        if ($u1.Code -eq 204) { $state = 'Online'; $via = 'system'; $p1 = $u1 }
-        elseif (($u1.Code -ge 300 -and $u1.Code -le 399) -or ($u1.Code -ge 200 -and $u1.Code -le 299) -or $u1.Code -eq 401 -or $u1.Code -eq 407 -or $u1.Code -eq 511) { $state = 'Captive'; $via = 'system'; $p1 = $u1 }

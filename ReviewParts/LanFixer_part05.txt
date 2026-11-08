@@ -1,3 +1,14 @@
+    $none = @{ Code = 0; Body = ''; Location = ''; Error = '' }
+    $p1 = Invoke-HttpProbe 'connectivitycheck.gstatic.com' '/generate_204' 2500 $SourceIp
+    $p2 = $none
+    if ($p1.Code -ne 204) { $p2 = Invoke-HttpProbe 'www.msftconnecttest.com' '/connecttest.txt' 2500 $SourceIp }
+    $state = Get-ProbeVerdict $p1 $p2
+    $via = 'link'
+    if (-not $explicit -and ($state -eq 'Offline' -or $state -eq 'NoDns') -and (Test-AllowSystemFallback $explicit $state (Test-OtherUplinkActive))) {
+        $u1 = $none
+        if ($SourceIp) { $u1 = Invoke-HttpProbe 'connectivitycheck.gstatic.com' '/generate_204' 2000 '' }
+        if ($u1.Code -eq 204) { $state = 'Online'; $via = 'system'; $p1 = $u1 }
+        elseif (($u1.Code -ge 300 -and $u1.Code -le 399) -or ($u1.Code -ge 200 -and $u1.Code -le 299) -or $u1.Code -eq 401 -or $u1.Code -eq 407 -or $u1.Code -eq 511) { $state = 'Captive'; $via = 'system'; $p1 = $u1 }
         if ($state -eq 'Offline' -or $state -eq 'NoDns') {
             try {
                 $wr = [System.Net.HttpWebRequest]::Create('http://connectivitycheck.gstatic.com/generate_204')
@@ -144,14 +155,20 @@ function Get-EthernetAdapters {
 function Get-IfaceReg([string]$Guid) {
     try { return (Get-ItemProperty -LiteralPath "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$Guid" -ErrorAction Stop) } catch { return $null }
 }
-function Get-DhcpDnsServers([string]$Guid) {
+function Get-DhcpDnsServers([string]$Guid, [switch]$IncludeIPv6) {
     $reg = Get-IfaceReg $Guid
-    if ($reg -and ($reg.DhcpNameServer -or $reg.Dhcpv6DNSServers)) {
-        $res = @(([string]$reg.DhcpNameServer) -split '[,\s]+' | Where-Object { $_ -match '^\d{1,3}(\.\d{1,3}){3}$' -or $_ -match '^[0-9a-fA-F:]+$' })
-        if ($reg.Dhcpv6DNSServers) { $res += @(([string]$reg.Dhcpv6DNSServers) -split '[,\s]+' | Where-Object { $_ -match '^[0-9a-fA-F:]+$' }) }
-        return @($res | Select-Object -Unique)
+    if (-not $reg) { return @() }
+    $res = @()
+    if ($reg.DhcpNameServer) {
+        $res += @(([string]$reg.DhcpNameServer) -split '[,\s]+' | Where-Object {
+            $a = $null
+            ($_ -match '^\d{1,3}(\.\d{1,3}){3}$') -and [System.Net.IPAddress]::TryParse($_, [ref]$a) -and ($a.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork)
+        })
     }
-    return @()
+    if ($IncludeIPv6 -and $reg.Dhcpv6DNSServers) {
+        $res += @(([string]$reg.Dhcpv6DNSServers) -split '[,\s]+' | Where-Object { $_ -match '^[0-9a-fA-F:]+$' })
+    }
+    return @($res | Select-Object -Unique)
 }
 function Get-DhcpCaptiveUrl([string]$Guid) {
     $reg = Get-IfaceReg $Guid
@@ -327,6 +344,7 @@ function Get-AdapterEnvironment {
                 $script:State.Misc.Remove('DiscoveredPortalIp')
                 $script:State.Misc.Remove('DiscoveredPortalUrl')
                 $script:State.Misc.Remove('DiscoveredDomain')
+                $script:State.Misc['DiscoveryTime'] = (Get-Date).ToString('o')
             }
         }
     }
@@ -780,21 +798,3 @@ function Test-DhcpLeaseUsable($Ad) {
     $ip = Get-ValidIPv4 $Ad
     if (-not $ip) { return $false }
     $gw = @(Get-GatewaysV4 $Ad) | Select-Object -First 1
-    if (-not $gw) { return $false }
-    return (Test-GatewayAlive $Ad $gw).Alive
-}
-function Repair-Dhcp($Ad, [switch]$ForceRelease) {
-    $guid = [string]$Ad.InterfaceGuid
-    $ipconfig = Get-SysExe 'ipconfig.exe'
-    Write-Log 'WARN' ("Starting DHCP recovery ladder on {0} ({1})." -f $Ad.Name, $(if ($ForceRelease) { 'gateway unreachable / stale lease' } else { 'APIPA / no valid IPv4' }))
-    # Step 1: release APIPA/stale state and renew with broadcast flag
-    if ($script:IsDry) { Write-Log 'DRY' "Would: DHCP renew on $($Ad.Name)"; return $false }
-    $curIp = Get-ValidIPv4 $Ad
-    if ($ForceRelease -or -not $curIp -or $curIp -like '169.254*') {
-        Write-Log 'INFO' "Releasing stale/APIPA lease on $($Ad.Name) before renew..."
-        if ($guid) {
-            try {
-                $ifKey = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$guid"
-                if (Test-Path -LiteralPath $ifKey) {
-                    Set-ItemProperty -LiteralPath $ifKey -Name 'DhcpConnForceBroadcastFlag' -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
-                    Set-ItemProperty -LiteralPath $ifKey -Name 'DhcpIPAddress' -Value '0.0.0.0' -ErrorAction SilentlyContinue

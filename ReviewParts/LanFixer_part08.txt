@@ -1,3 +1,25 @@
+                if ($okLoop) { $loopbackCleared = $true }
+            }
+        }
+        $skipKill = $false
+        if ($loopbackCleared -and -not $Aggressive) {
+            Clear-DnsClientCache -ErrorAction SilentlyContinue
+            $testAgain = @(Resolve-DnsName -Name 'accounts.google.com' -QuickTimeout -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -and [string]$_.Type -eq 'A' })
+            if ($testAgain.Count -gt 0) {
+                Write-Log 'OK' 'DNS resolution restored by bypassing loopback adapter settings (local proxy service preserved).'
+                $skipKill = $true
+            }
+        }
+        if (-not $loopbackCleared -and -not $hasPoison -and -not $Aggressive) {
+            Write-Log 'INFO' 'System resolver failed, but nothing points at a local resolver and no synthetic error record was seen; local processes and services were left alone.'
+            $skipKill = $true
+        }
+        if (-not $skipKill) {
+            $matchRegex = $wfpDnsRegex
+            $rogueProcs = @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
+                ($_.ProcessName -match $matchRegex) -and
+                ($roguePids.Contains($_.Id) -or $Aggressive -or $hasPoison) -and
+                ($_.ProcessName -notmatch '^(svchost|System|Idle|services|lsass|csrss|smss|wininit)$')
             })
             $rogueSvcs = @(Get-Service -ErrorAction SilentlyContinue | Where-Object {
                 ($_.Status -eq 'Running') -and ($_.Name -match $matchRegex -or $_.DisplayName -match $matchRegex)
@@ -144,7 +166,7 @@ function Invoke-SupremeOmnifix {
             $script:State.Misc['RouteProfile'] = 'Adaptive'
             $script:State.Misc['DnsProfile'] = 'Adaptive'
             $script:State.Misc['FailStreak'] = 0
-            $script:State.Misc.Remove('MtuCandidate')
+            foreach ($mk in @($script:State.Misc.Keys | Where-Object { $_ -like 'MtuCandidate*' })) { $script:State.Misc.Remove($mk) }
             $script:State.Misc.Remove('DiscoveredDomain')
             $script:State.Misc.Remove('DiscoveredPortalIp')
             $script:State.Misc.Remove('DiscoveredPortalUrl')
@@ -265,7 +287,7 @@ function Invoke-UltraSystemReset {
             $script:State.Misc['RouteProfile'] = 'Adaptive'
             $script:State.Misc['DnsProfile'] = 'Adaptive'
             $script:State.Misc['FailStreak'] = 0
-            $script:State.Misc.Remove('MtuCandidate')
+            foreach ($mk in @($script:State.Misc.Keys | Where-Object { $_ -like 'MtuCandidate*' })) { $script:State.Misc.Remove($mk) }
             $script:State.Misc.Remove('DiscoveredDomain')
             $script:State.Misc.Remove('DiscoveredPortalIp')
             $script:State.Misc.Remove('DiscoveredPortalUrl')
@@ -677,7 +699,7 @@ function Invoke-DoomsdayReset {
             $script:State.Misc['RouteProfile'] = 'Adaptive'
             $script:State.Misc['DnsProfile'] = 'Adaptive'
             $script:State.Misc['FailStreak'] = 0
-            $script:State.Misc.Remove('MtuCandidate')
+            foreach ($mk in @($script:State.Misc.Keys | Where-Object { $_ -like 'MtuCandidate*' })) { $script:State.Misc.Remove($mk) }
             $script:State.Misc.Remove('DiscoveredDomain')
             $script:State.Misc.Remove('DiscoveredPortalIp')
             $script:State.Misc.Remove('DiscoveredPortalUrl')
@@ -776,25 +798,3 @@ function Invoke-DoomsdayReset {
                     Set-ItemProperty -LiteralPath $ws2Key -Name 'AutodialFlags' -Value 0 -Type DWord -ErrorAction SilentlyContinue
                 }
             } catch {}
-        }
-
-        # ----------------------------------------------------------------------
-        # STAGE 4/12: DUAL-STACK TCP/IP STACK REBUILD, HEURISTICS & TUNNEL DEFEAT
-        # ----------------------------------------------------------------------
-        Write-Log 'STEP' 'STAGE 4/12 Dual-stack TCP/IP stack restoration, global heuristics reset & HTTP flush'
-        if ($script:IsDry) {
-            Write-Log 'DRY' 'Would execute: netsh int ip reset & netsh int ipv6 reset'
-            Write-Log 'DRY' 'Would execute: netsh int tcp reset & normalize autotuning/RSS/RSC/timestamps'
-            Write-Log 'DRY' 'Would disable transition tunnels: Teredo, ISATAP, 6to4'
-        } else {
-            $ipLog = Join-Path $env:TEMP ('netsh_ip_reset_' + [Guid]::NewGuid().ToString('N').Substring(0,8) + '.log')
-            $ipv6Log = Join-Path $env:TEMP ('netsh_ipv6_reset_' + [Guid]::NewGuid().ToString('N').Substring(0,8) + '.log')
-            try {
-                [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'ip', 'reset', $ipLog) 10000)
-            } finally {
-                if (Test-Path -LiteralPath $ipLog) { Remove-Item -LiteralPath $ipLog -Force -ErrorAction SilentlyContinue }
-            }
-            try {
-                [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'ipv6', 'reset', $ipv6Log) 10000)
-            } finally {
-                if (Test-Path -LiteralPath $ipv6Log) { Remove-Item -LiteralPath $ipv6Log -Force -ErrorAction SilentlyContinue }

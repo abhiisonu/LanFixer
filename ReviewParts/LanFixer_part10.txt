@@ -1,3 +1,25 @@
+    $tmp = $script:VaultFile + '.new'
+    $moved = $false
+    try {
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($User + [string][char]9 + $Pass)
+        $enc = [System.Security.Cryptography.ProtectedData]::Protect($bytes, (Get-VaultEntropy), [System.Security.Cryptography.DataProtectionScope]::LocalMachine)
+        [Array]::Clear($bytes, 0, $bytes.Length)
+        # Lock an EMPTY file first, write second: the secret never exists under a looser ACL.
+        [System.IO.File]::WriteAllBytes($tmp, [byte[]]@())
+        if (-not (Protect-VaultFile $tmp) -or -not (Test-VaultAcl $tmp)) { throw 'could not restrict the vault file to Administrators/SYSTEM' }
+        [System.IO.File]::WriteAllBytes($tmp, $enc)
+        Move-Item -LiteralPath $tmp -Destination $script:VaultFile -Force -ErrorAction Stop
+        $moved = $true
+        if (-not (Test-VaultAcl $script:VaultFile)) { throw 'vault permissions did not survive the move' }
+        $script:State.Misc['PortalFails'] = 0; $script:State.Misc['PortalAmbiguous'] = 0
+        $script:State.Misc['PortalLoginSuspended'] = $false
+        return $true
+    } catch {
+        Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+        if ($moved) {
+            Remove-Item -LiteralPath $script:VaultFile -Force -ErrorAction SilentlyContinue   # fail closed: never leave a half-protected secret
+        }
+        Write-Log 'FAIL' ('Credentials were NOT saved: ' + $_.Exception.Message)
         return $false
     }
 }
@@ -55,8 +77,9 @@ function Invoke-HeadlessPortalLogin {
         }
         $Inet = if ($SourceIp) { Get-InternetState -NoCache -SourceIp $SourceIp } else { Get-InternetState -NoCache }
     }
-    if ($Manual -and $Inet.State -eq 'Offline' -and (Test-PortalOnlineSmart $script:Cfg.PortalIp ([int]$script:Cfg.PortalPort))) {
-        $Inet = @{ State = 'Captive'; Location = $script:Cfg.PortalUrl; Via = 'link' }
+    $epHl = Get-ActivePortalEndpoint
+    if ($Manual -and $Inet.State -eq 'Offline' -and (Test-PortalOnlineSmart $epHl.Ip ([int]$epHl.Port))) {
+        $Inet = @{ State = 'Captive'; Location = $epHl.Url; Via = 'link' }
     }
     if ($Inet.State -ne 'Captive') { if ($Manual) { Write-Log 'INFO' 'This link is not behind the login page right now; nothing to do.' }; return $false }
     if ($Inet.Location) { try { Ensure-CampusPortalPath ([uri]$Inet.Location) } catch {} }
@@ -775,26 +798,3 @@ function Restore-Everything {
                         else { Set-ItemProperty -LiteralPath $script:TcpParamKey -Name KeepAliveInterval -Value ([int]$kai) -Type DWord -ErrorAction Stop }
                     })
                 }
-                if ($snap.ContainsKey('TcpAutoTuning')) {
-                    $tat = [string]$snap['TcpAutoTuning']
-                    if ($tat -eq 'Disabled') {
-                        [void](Invoke-Change 'TCP Window Auto-Tuning restored to Disabled (original user setting)' {
-                            Set-NetTCPSetting -SettingName Internet -AutoTuningLevelLocal Disabled -ErrorAction Stop
-                        })
-                    }
-                }
-                continue
-            }
-            $ad = $present | Where-Object { [string]$_.InterfaceGuid -eq [string]$guid } | Select-Object -First 1
-            if (-not $ad) { Write-Log 'INFO' "Adapter $guid is not present; its snapshot is skipped."; continue }
-            foreach ($key in @($snap.Keys)) {
-                $val = $snap[$key]
-                if ($key -eq 'StaticIp4') {
-                    if ($val -and $val.IPAddress) {
-                        [void](Invoke-Change "Static IPv4 configuration ($($val.IPAddress)/$($val.PrefixLength)) restored on $($ad.Name)" {
-                            Set-NetIPInterface -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -Dhcp Disabled -ErrorAction Stop
-                            Get-NetIPAddress -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue
-                            if ($val.DefaultGateway) {
-                                Remove-NetRoute -InterfaceIndex $ad.ifIndex -DestinationPrefix '0.0.0.0/0' -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue
-                                Remove-NetRoute -InterfaceIndex $ad.ifIndex -DestinationPrefix '0.0.0.0/0' -PolicyStore PersistentStore -Confirm:$false -ErrorAction SilentlyContinue
-                                New-NetIPAddress -InterfaceIndex $ad.ifIndex -IPAddress $val.IPAddress -PrefixLength $val.PrefixLength -DefaultGateway $val.DefaultGateway -ErrorAction SilentlyContinue | Out-Null

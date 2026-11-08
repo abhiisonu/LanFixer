@@ -1,3 +1,26 @@
+        Write-Check 'Logic: allowed portal IP includes configured IP' (Test-AllowedPortalIp '10.114.0.5')
+        Write-Check 'Logic: portal host trusted (configured)' (Test-TrustedPortalHost 'gateway.nitjsr.ac.in')
+        Write-Check 'Logic: portal host trusted (campus subdomain)' (Test-TrustedPortalHost 'Portal.NITJSR.ac.in.')
+        Write-Check 'Logic: portal host trusted (portal IP)' (Test-TrustedPortalHost '10.114.0.5')
+        Write-Check 'Logic: portal host refused (lookalike suffix)' (-not (Test-TrustedPortalHost 'gateway.nitjsr.ac.in.evil.com'))
+        Write-Check 'Logic: portal host refused (no dot boundary)' (-not (Test-TrustedPortalHost 'evilnitjsr.ac.in'))
+        Write-Check 'Logic: portal host refused (stranger)' (-not (Test-TrustedPortalHost 'example.com'))
+        Write-Check 'Logic: live URL with new port/zone accepted' ((Get-SafePortalUrl 'https://gateway.nitjsr.ac.in:8443/portal/login?z=2&redirurl=http%3A%2F%2Fa.b%2F') -like 'https://gateway.nitjsr.ac.in:8443/portal/login?z=2&redirurl=*')
+        Write-Check 'Logic: live URL, untrusted host refused' ((Get-SafePortalUrl 'http://login.evil.com/steal') -eq '')
+        Write-Check 'Logic: live URL, user-info trick refused' ((Get-SafePortalUrl 'http://gateway.nitjsr.ac.in@evil.com/x') -eq '')
+        Write-Check 'Logic: live URL, relative path refused' ((Get-SafePortalUrl '/login') -eq '')
+        Write-Check 'Logic: live URL, non-http scheme refused' ((Get-SafePortalUrl 'javascript:alert(1)') -eq '')
+    } finally {
+        $script:Cfg = $save
+    }
+    Write-Check 'Logic: IPv6 verdict none' ((Get-Ipv6Verdict $false $false 'Online' $false) -eq 'None')
+    Write-Check 'Logic: IPv6 verdict blackhole' ((Get-Ipv6Verdict $true $true 'Online' $false) -eq 'Blackhole')
+    Write-Check 'Logic: IPv6 verdict working' ((Get-Ipv6Verdict $true $true 'Online' $true) -eq 'Working')
+    Write-Check 'Logic: IPv6 verdict untested while captive' ((Get-Ipv6Verdict $true $true 'Captive' $false) -eq 'Untested')
+    Write-Check 'Logic: hard failures counted' ((Test-HardFailure 'Offline') -and (Test-HardFailure 'NoIp') -and -not (Test-HardFailure 'Captive') -and -not (Test-HardFailure 'Healthy'))
+    Write-Check 'Logic: Notify Task XML well-formed' ([bool]([xml](New-NotifyTaskXml)))
+    # Unit Test: DPAPI LocalMachine crypto round-trip
+    $testBytes = [System.Text.Encoding]::UTF8.GetBytes('nitjsr_test_secret')
     $testEntropy = Get-VaultEntropy
     $testEnc = [System.Security.Cryptography.ProtectedData]::Protect($testBytes, $testEntropy, [System.Security.Cryptography.DataProtectionScope]::LocalMachine)
     $testDec = [System.Security.Cryptography.ProtectedData]::Unprotect($testEnc, $testEntropy, [System.Security.Cryptography.DataProtectionScope]::LocalMachine)
@@ -775,26 +798,3 @@ function Get-Advice($t) {
         $r.Status = 'Running in read-only Limited Mode (without Administrator privileges).'
         $r.Action = 'Press [ENTER] to relaunch as Administrator (or press E).'
         $r.Key = 'e'; $r.KeyLabel = 'relaunch as Administrator'
-        $r.Text = ($r.Status + ' ' + $r.Action)
-        return $r
-    }
-    if ($t.ArpPending) {
-        $r.Status = 'Gateway MAC changed on switch. Candidate pending your review.'
-        $r.Action = 'Press [ENTER] to review & approve the new gateway MAC (or press K).'
-        $r.Key = 'k'; $r.KeyLabel = 'review the gateway MAC change'
-        $r.Text = ($r.Status + ' ' + $r.Action)
-        return $r
-    }
-    switch ($t.Problem) {
-        { $_ -eq 'Healthy' -or $_ -eq 'Online' } {
-            if ($t.UplinkIsPrimary -and $t.UplinkName) {
-                $uLabel = if ($t.UplinkProfile) { "$($t.UplinkName) ($($t.UplinkProfile))" } else { $t.UplinkName }
-                $r.Status = "Internet active via $uLabel. Ethernet link is in standby ($($t.Routing))."
-            } else {
-                $r.Status = 'Connected to network. All communication layers verified optimal.'
-            }
-            if (-not $t.Watchdog) {
-                $r.Action = 'Press [ENTER] to arm background watchdog guard (or press 2).'
-                $r.Key = '2'; $r.KeyLabel = 'arm the watchdog'
-            } else {
-                $r.Status = 'Connected to network with background watchdog active.'

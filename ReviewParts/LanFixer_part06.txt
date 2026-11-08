@@ -1,3 +1,21 @@
+    if (-not $gw) { return $false }
+    return (Test-GatewayAlive $Ad $gw).Alive
+}
+function Repair-Dhcp($Ad, [switch]$ForceRelease) {
+    $guid = [string]$Ad.InterfaceGuid
+    $ipconfig = Get-SysExe 'ipconfig.exe'
+    Write-Log 'WARN' ("Starting DHCP recovery ladder on {0} ({1})." -f $Ad.Name, $(if ($ForceRelease) { 'gateway unreachable / stale lease' } else { 'APIPA / no valid IPv4' }))
+    # Step 1: release APIPA/stale state and renew with broadcast flag
+    if ($script:IsDry) { Write-Log 'DRY' "Would: DHCP renew on $($Ad.Name)"; return $false }
+    $curIp = Get-ValidIPv4 $Ad
+    if ($ForceRelease -or -not $curIp -or $curIp -like '169.254*') {
+        Write-Log 'INFO' "Releasing stale/APIPA lease on $($Ad.Name) before renew..."
+        if ($guid) {
+            try {
+                $ifKey = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$guid"
+                if (Test-Path -LiteralPath $ifKey) {
+                    Set-ItemProperty -LiteralPath $ifKey -Name 'DhcpConnForceBroadcastFlag' -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
+                    Set-ItemProperty -LiteralPath $ifKey -Name 'DhcpIPAddress' -Value '0.0.0.0' -ErrorAction SilentlyContinue
                 }
             } catch {}
         }
@@ -342,14 +360,15 @@ function Get-SubnetInfoFromLease($Ad) {
                 if ($calcPrefix -gt 0 -and $calcPrefix -le 32) { $prefix = $calcPrefix }
             }
         }
-        if ($prefix -le 0 -or $prefix -gt 32) {
-            $prefix = if ($ipBytes[0] -lt 128) { 8 } elseif ($ipBytes[0] -lt 192) { 16 } else { 24 }
-        }
     }
 
     $ip = [System.Net.IPAddress]::Parse($ipStr)
     $ipBytes = $ip.GetAddressBytes()
+    if ($prefix -le 0 -or $prefix -gt 32) {
+        $prefix = if ($ipBytes[0] -lt 128) { 8 } elseif ($ipBytes[0] -lt 192) { 16 } else { 24 }
+    }
     $maskBytes = New-Object byte[] 4
+    $wildBytes = New-Object byte[] 4
     $netBytes = New-Object byte[] 4
     $bcastBytes = New-Object byte[] 4
 
@@ -357,8 +376,8 @@ function Get-SubnetInfoFromLease($Ad) {
         $bits = [math]::Max(0, [math]::Min(8, $prefix - ($i * 8)))
         $maskBytes[$i] = [byte]$(if ($bits -eq 0) { 0 } else { 256 - [math]::Pow(2, 8 - $bits) })
         $netBytes[$i]  = [byte]($ipBytes[$i] -band $maskBytes[$i])
-        $wildcard      = [byte](255 -bxor $maskBytes[$i])
-        $bcastBytes[$i]= [byte]($netBytes[$i] -bor $wildcard)
+        $wildBytes[$i] = [byte](255 -bxor $maskBytes[$i])
+        $bcastBytes[$i]= [byte]($netBytes[$i] -bor $wildBytes[$i])
     }
 
     $minHostBytes = [byte[]]$netBytes.Clone()
@@ -374,7 +393,7 @@ function Get-SubnetInfoFromLease($Ad) {
         IPAddress      = $ipStr
         PrefixLength   = $prefix
         SubnetMask     = ($maskBytes -join '.')
-        WildcardMask   = ($wildcard -join '.')
+        WildcardMask   = ($wildBytes -join '.')
         NetworkAddress = ($netBytes -join '.')
         Broadcast      = ($bcastBytes -join '.')
         MinHost        = ($minHostBytes -join '.')
@@ -779,22 +798,3 @@ function Restore-ManagedAdapterDns([string]$Why = 'DNS restored') {
             $n++
         }
     }
-    if ($n -gt 0) { Write-Log 'OK' ("{0}: {1} adapter(s) put back on the DNS they had before Lan Fixer touched them." -f $Why, $n) }
-    return $n
-}
-function Get-OurNrptRules { return @(Get-DnsClientNrptRule -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -eq 'LanFixer-Campus' }) }
-function Remove-CampusNrpt {
-    foreach ($r in (Get-OurNrptRules)) { [void](Invoke-Change "Removed campus-domain DNS rule" { Remove-DnsClientNrptRule -Name $r.Name -Force -ErrorAction Stop }) }
-}
-# Pure (unit-tested): does this lease look like the campus the built-in Cfg values describe?
-# Positive evidence: the configured campus resolver in the lease, a DNS suffix under the configured domain, or the
-# configured portal answering. With no lease data at all the last known verdict (or "yes", the legacy behaviour) holds.
-# Anything else is a DIFFERENT network and must never be sent the configured portal IP / campus domain.
-function Get-HomeCampusVerdict([string[]]$DhcpDns, [string]$Suffix, [bool]$PortalHit, $Hist) {
-    $dns = @($DhcpDns | Where-Object { $_ })
-    $dom = ([string]$script:Cfg.CampusDomain).Trim().Trim('.').ToLowerInvariant()
-    $sfx = ([string]$Suffix).Trim().Trim('.').ToLowerInvariant()
-    if ($script:Cfg.CampusDns -and ($dns -contains [string]$script:Cfg.CampusDns)) { return $true }
-    if ($dom -and $sfx -and ($sfx -eq $dom -or $sfx.EndsWith('.' + $dom))) { return $true }
-    if ($PortalHit) { return $true }
-    if ($dns.Count -eq 0 -and -not $sfx) {

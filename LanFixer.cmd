@@ -9,7 +9,7 @@ exit /b %errorlevel%
 
 <#
 .SYNOPSIS
-    Lan Fixer 6.4.2 - Sovereign self-healing Ethernet stabilizer for campus/hostel LANs (Windows 10/11, Ethernet only).
+    Lan Fixer 6.5.1 - Sovereign self-healing Ethernet stabilizer for campus/hostel LANs (Windows 10/11, Ethernet only).
     Author: A.S.
 .DESCRIPTION
     Single file, ASCII only. Run it normally for the control center, or use -Mode:
@@ -18,6 +18,14 @@ exit /b %errorlevel%
     Add -DryRun to see exactly what would change without changing anything.
     Every change is snapshotted first, so ResetFactory restores YOUR original values.
 .NOTES
+    6.5.1 (Definitive Forensic Audit Resolutions & Omni-Adaptive Dynamic Stack Hardening):
+      - Subnet Calculus: Pre-assigned $ipBytes before prefix validation; converted WildcardMask from scalar byte to 4-octet dotted quad.
+      - State Persistence: Repointed Shield-Profile to Snapshot table; stamped DiscoveryTime on Other cleanup and purged missing keys on sync.
+      - Socket & Route Safety: Validated IPv4 in Get-DhcpDnsServers to prevent UdpClient address family mismatches while retaining IPv6 support.
+      - TLS Decision Priority: Validated CA certificates prior to pin check in New-CertCallback to prevent rejection of updated certificates.
+      - Institutional Overrides: Enforced Import-UserConfig on Initialize-Store completion.
+      - Dynamic Portals: Replaced hardcoded portal endpoints in [G] dashboard handler and Invoke-HeadlessPortalLogin with Get-ActivePortalEndpoint.
+      - Reset MTU Scavenging: Purged all wildcard MtuCandidate* keys during resets.
     6.5.0 (Omniscient Layer 1-7 Healer, Doomsday Multi-Medium & Armageddon Deep OS Reset):
       - Invoke-ArmageddonReset: 4-stage Microsoft Windows native kernel network stack wipe and reinstallation weapon (netcfg.exe -d). Uninstalls all adapters, clears virtual switches/filters, wipes TCP/IP registry stack, and triggers clean PnP driver reinstallation upon reboot.
       - Invoke-DoomsdayReset: 12-stage universal doomsday network stack annihilation engine with 5 Deep Forensic Antidotes for total connectivity death across ALL media (Wi-Fi, Bluetooth, USB Tethering, Ethernet, Cellular).
@@ -213,7 +221,7 @@ try { Add-Type -AssemblyName System.Security -ErrorAction SilentlyContinue } cat
 # ==============================================================================
 # CONFIG (edit here, nowhere else)
 # ==============================================================================
-$script:Version = '6.5.0'
+$script:Version = '6.5.1'
 $script:Sys32   = Join-Path $env:SystemRoot 'System32'
 $script:SelfPath = if ($env:LANFIXER_SELF -and (Test-Path -LiteralPath $env:LANFIXER_SELF)) { $env:LANFIXER_SELF } elseif ($PSCommandPath -and (Test-Path -LiteralPath $PSCommandPath)) { $PSCommandPath } elseif ($MyInvocation.MyCommand.Path -and (Test-Path -LiteralPath $MyInvocation.MyCommand.Path)) { $MyInvocation.MyCommand.Path } elseif ($PSScriptRoot -and (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'LanFixer.cmd'))) { (Join-Path $PSScriptRoot 'LanFixer.cmd') } else { (Join-Path (Get-Location).Path 'LanFixer.cmd') }
 $script:IsDry   = [bool]$DryRun
@@ -687,6 +695,7 @@ function Initialize-Store {
         $r1 = Invoke-Native $icacls @($dir, '/setowner', '*S-1-5-32-544', '/C', '/Q')
         $r2 = Invoke-Native $icacls @($dir, '/inheritance:r', '/grant:r', '*S-1-5-18:(OI)(CI)F', '/grant:r', '*S-1-5-32-544:(OI)(CI)F', '/grant:r', '*S-1-5-32-545:(OI)(CI)RX', '/C', '/Q')
         Repair-StoreChildren $dir
+        Import-UserConfig
         $script:StoreSecure = ($r1.ExitCode -eq 0 -and $r2.ExitCode -eq 0)
         $script:StoreReady = $true
         try { $fi = Get-Item -LiteralPath $script:LogFile -ErrorAction Stop; if ($fi.Length -gt $script:Cfg.LogMaxBytes) { Move-Item -LiteralPath $script:LogFile -Destination ($script:LogFile + '.1') -Force } } catch {}
@@ -814,6 +823,7 @@ function Enter-Lock([int]$TimeoutMs = 1000) {
             if ($memMisc['DiscoveryTime'] -and ([string]$memMisc['DiscoveryTime'] -ge [string]$script:State.Misc['DiscoveryTime'])) {
                 foreach ($mk in @('DiscoveredDomain','DiscoveredPortalUrl','DiscoveredPortalIp','DiscoveryTime')) {
                     if ($memMisc.ContainsKey($mk)) { $script:State.Misc[$mk] = $memMisc[$mk] }
+                    else { $script:State.Misc.Remove($mk) }
                 }
             }
             if ($memMisc['InjectedHostRoutes']) {
@@ -1507,8 +1517,8 @@ function New-CertCallback([string]$Pin, $Capture) {
             try { $c2 = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($cert); $Capture.Subject = [string]$c2.Subject; $Capture.Issuer = [string]$c2.Issuer; $Capture.NotAfter = $c2.NotAfter.ToString('yyyy-MM-dd') } catch {}
             if ($Capture.AcceptAny) { return $true }
         }
-        if ($pinU) { return ($hex -and ($hex -eq $pinU)) }
         if ([string]$errs -eq 'None') { return $true }
+        if ($pinU -and $hex -and ($hex -eq $pinU)) { return $true }
         return $false
     }.GetNewClosure()
     return [System.Net.Security.RemoteCertificateValidationCallback]$cb
@@ -3019,8 +3029,9 @@ function Invoke-DashboardKey([string]$Key, $adv) {
                         return @{ State = 'Online'; Signed = $true }
                     }
                     if ($inet.State -ne 'Captive') {
-                        if ($inet.State -eq 'Offline' -and (Test-PortalOnlineSmart $script:Cfg.PortalIp ([int]$script:Cfg.PortalPort))) {
-                            $inet = @{ State = 'Captive'; Location = $script:Cfg.PortalUrl; Via = 'link' }
+                        $epG = Get-ActivePortalEndpoint
+                        if ($inet.State -eq 'Offline' -and (Test-PortalOnlineSmart $epG.Ip ([int]$epG.Port))) {
+                            $inet = @{ State = 'Captive'; Location = $epG.Url; Via = 'link' }
                         } else {
                             Write-Log 'WARN' ("Link state is '{0}' (not behind captive portal). Run [1] Quick Heal first." -f $inet.State)
                             return @{ State = $inet.State; Signed = $false; SkipBrowser = $true }
@@ -3344,14 +3355,20 @@ function Get-EthernetAdapters {
 function Get-IfaceReg([string]$Guid) {
     try { return (Get-ItemProperty -LiteralPath "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$Guid" -ErrorAction Stop) } catch { return $null }
 }
-function Get-DhcpDnsServers([string]$Guid) {
+function Get-DhcpDnsServers([string]$Guid, [switch]$IncludeIPv6) {
     $reg = Get-IfaceReg $Guid
-    if ($reg -and ($reg.DhcpNameServer -or $reg.Dhcpv6DNSServers)) {
-        $res = @(([string]$reg.DhcpNameServer) -split '[,\s]+' | Where-Object { $_ -match '^\d{1,3}(\.\d{1,3}){3}$' -or $_ -match '^[0-9a-fA-F:]+$' })
-        if ($reg.Dhcpv6DNSServers) { $res += @(([string]$reg.Dhcpv6DNSServers) -split '[,\s]+' | Where-Object { $_ -match '^[0-9a-fA-F:]+$' }) }
-        return @($res | Select-Object -Unique)
+    if (-not $reg) { return @() }
+    $res = @()
+    if ($reg.DhcpNameServer) {
+        $res += @(([string]$reg.DhcpNameServer) -split '[,\s]+' | Where-Object {
+            $a = $null
+            ($_ -match '^\d{1,3}(\.\d{1,3}){3}$') -and [System.Net.IPAddress]::TryParse($_, [ref]$a) -and ($a.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork)
+        })
     }
-    return @()
+    if ($IncludeIPv6 -and $reg.Dhcpv6DNSServers) {
+        $res += @(([string]$reg.Dhcpv6DNSServers) -split '[,\s]+' | Where-Object { $_ -match '^[0-9a-fA-F:]+$' })
+    }
+    return @($res | Select-Object -Unique)
 }
 function Get-DhcpCaptiveUrl([string]$Guid) {
     $reg = Get-IfaceReg $Guid
@@ -3527,6 +3544,7 @@ function Get-AdapterEnvironment {
                 $script:State.Misc.Remove('DiscoveredPortalIp')
                 $script:State.Misc.Remove('DiscoveredPortalUrl')
                 $script:State.Misc.Remove('DiscoveredDomain')
+                $script:State.Misc['DiscoveryTime'] = (Get-Date).ToString('o')
             }
         }
     }
@@ -4342,14 +4360,15 @@ function Get-SubnetInfoFromLease($Ad) {
                 if ($calcPrefix -gt 0 -and $calcPrefix -le 32) { $prefix = $calcPrefix }
             }
         }
-        if ($prefix -le 0 -or $prefix -gt 32) {
-            $prefix = if ($ipBytes[0] -lt 128) { 8 } elseif ($ipBytes[0] -lt 192) { 16 } else { 24 }
-        }
     }
 
     $ip = [System.Net.IPAddress]::Parse($ipStr)
     $ipBytes = $ip.GetAddressBytes()
+    if ($prefix -le 0 -or $prefix -gt 32) {
+        $prefix = if ($ipBytes[0] -lt 128) { 8 } elseif ($ipBytes[0] -lt 192) { 16 } else { 24 }
+    }
     $maskBytes = New-Object byte[] 4
+    $wildBytes = New-Object byte[] 4
     $netBytes = New-Object byte[] 4
     $bcastBytes = New-Object byte[] 4
 
@@ -4357,8 +4376,8 @@ function Get-SubnetInfoFromLease($Ad) {
         $bits = [math]::Max(0, [math]::Min(8, $prefix - ($i * 8)))
         $maskBytes[$i] = [byte]$(if ($bits -eq 0) { 0 } else { 256 - [math]::Pow(2, 8 - $bits) })
         $netBytes[$i]  = [byte]($ipBytes[$i] -band $maskBytes[$i])
-        $wildcard      = [byte](255 -bxor $maskBytes[$i])
-        $bcastBytes[$i]= [byte]($netBytes[$i] -bor $wildcard)
+        $wildBytes[$i] = [byte](255 -bxor $maskBytes[$i])
+        $bcastBytes[$i]= [byte]($netBytes[$i] -bor $wildBytes[$i])
     }
 
     $minHostBytes = [byte[]]$netBytes.Clone()
@@ -4374,7 +4393,7 @@ function Get-SubnetInfoFromLease($Ad) {
         IPAddress      = $ipStr
         PrefixLength   = $prefix
         SubnetMask     = ($maskBytes -join '.')
-        WildcardMask   = ($wildcard -join '.')
+        WildcardMask   = ($wildBytes -join '.')
         NetworkAddress = ($netBytes -join '.')
         Broadcast      = ($bcastBytes -join '.')
         MinHost        = ($minHostBytes -join '.')
@@ -4949,7 +4968,10 @@ function Shield-Dns($Ctx, [string]$ConnState) {
     if ($Ctx.Env.Env -ne 'Campus') { Write-Log 'INFO' 'Environment unknown: DNS untouched.'; return }
     $campus = @(Get-DhcpDnsServers $guid)
     $homeNet = ($null -eq $Ctx.Env.Home) -or [bool]$Ctx.Env.Home
-    if ($campus.Count -eq 0) { $campus = @($script:Cfg.CampusDns) }
+    if ($campus.Count -eq 0) {
+        if ($homeNet) { $campus = @($script:Cfg.CampusDns) }
+        else { $campus = @(Get-GatewaysV4 $ad | Where-Object { $_ }) }
+    }
     $phase = 'Auto'
     $order = @()
     switch ($prof) {
@@ -5047,7 +5069,7 @@ function Shield-Profile($Ctx) {
             })
         } else { Write-Log 'INFO' "Network profile is $($np.NetworkCategory) (already safe or domain-managed)." }
     } elseif ($Ctx.Env.Env -eq 'Other') {
-        $snap = Get-SubTable 'Original' 'NetProfiles'
+        $snap = Get-SubTable 'Snapshot' 'NetProfiles'
         if ($snap.ContainsKey("Cat:" + $np.Name) -and [string]$snap["Cat:" + $np.Name] -eq 'Private') {
             if ([string]$np.NetworkCategory -ne 'Private') {
                 [void](Invoke-Change "Trusted network '$($np.Name)': restored profile to Private for local discovery and sharing" {
@@ -5744,7 +5766,7 @@ function Invoke-SupremeOmnifix {
             $script:State.Misc['RouteProfile'] = 'Adaptive'
             $script:State.Misc['DnsProfile'] = 'Adaptive'
             $script:State.Misc['FailStreak'] = 0
-            $script:State.Misc.Remove('MtuCandidate')
+            foreach ($mk in @($script:State.Misc.Keys | Where-Object { $_ -like 'MtuCandidate*' })) { $script:State.Misc.Remove($mk) }
             $script:State.Misc.Remove('DiscoveredDomain')
             $script:State.Misc.Remove('DiscoveredPortalIp')
             $script:State.Misc.Remove('DiscoveredPortalUrl')
@@ -5865,7 +5887,7 @@ function Invoke-UltraSystemReset {
             $script:State.Misc['RouteProfile'] = 'Adaptive'
             $script:State.Misc['DnsProfile'] = 'Adaptive'
             $script:State.Misc['FailStreak'] = 0
-            $script:State.Misc.Remove('MtuCandidate')
+            foreach ($mk in @($script:State.Misc.Keys | Where-Object { $_ -like 'MtuCandidate*' })) { $script:State.Misc.Remove($mk) }
             $script:State.Misc.Remove('DiscoveredDomain')
             $script:State.Misc.Remove('DiscoveredPortalIp')
             $script:State.Misc.Remove('DiscoveredPortalUrl')
@@ -6277,7 +6299,7 @@ function Invoke-DoomsdayReset {
             $script:State.Misc['RouteProfile'] = 'Adaptive'
             $script:State.Misc['DnsProfile'] = 'Adaptive'
             $script:State.Misc['FailStreak'] = 0
-            $script:State.Misc.Remove('MtuCandidate')
+            foreach ($mk in @($script:State.Misc.Keys | Where-Object { $_ -like 'MtuCandidate*' })) { $script:State.Misc.Remove($mk) }
             $script:State.Misc.Remove('DiscoveredDomain')
             $script:State.Misc.Remove('DiscoveredPortalIp')
             $script:State.Misc.Remove('DiscoveredPortalUrl')
@@ -7255,8 +7277,9 @@ function Invoke-HeadlessPortalLogin {
         }
         $Inet = if ($SourceIp) { Get-InternetState -NoCache -SourceIp $SourceIp } else { Get-InternetState -NoCache }
     }
-    if ($Manual -and $Inet.State -eq 'Offline' -and (Test-PortalOnlineSmart $script:Cfg.PortalIp ([int]$script:Cfg.PortalPort))) {
-        $Inet = @{ State = 'Captive'; Location = $script:Cfg.PortalUrl; Via = 'link' }
+    $epHl = Get-ActivePortalEndpoint
+    if ($Manual -and $Inet.State -eq 'Offline' -and (Test-PortalOnlineSmart $epHl.Ip ([int]$epHl.Port))) {
+        $Inet = @{ State = 'Captive'; Location = $epHl.Url; Via = 'link' }
     }
     if ($Inet.State -ne 'Captive') { if ($Manual) { Write-Log 'INFO' 'This link is not behind the login page right now; nothing to do.' }; return $false }
     if ($Inet.Location) { try { Ensure-CampusPortalPath ([uri]$Inet.Location) } catch {} }
