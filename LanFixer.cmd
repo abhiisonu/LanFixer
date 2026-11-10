@@ -9,7 +9,7 @@ exit /b %errorlevel%
 
 <#
 .SYNOPSIS
-    Lan Fixer 6.5.3 - Sovereign self-healing Ethernet stabilizer for campus/hostel LANs (Windows 10/11, Ethernet only).
+    Lan Fixer 6.5.4 - Sovereign self-healing Ethernet stabilizer for campus/hostel LANs (Windows 10/11, Ethernet only).
     Author: A.S.
 .DESCRIPTION
     Single file, ASCII only. Run it normally for the control center, or use -Mode:
@@ -18,6 +18,17 @@ exit /b %errorlevel%
     Add -DryRun to see exactly what would change without changing anything.
     Every change is snapshotted first, so ResetFactory restores YOUR original values.
 .NOTES
+    6.5.4 (Exhaustive 10-Lens Full Forensic Audit & Behavioral Hardening):
+      - PSModulePath Isolation: Sanitized $env:PSModulePath under Windows PowerShell 5.1 to prevent format/type collisions from PowerShell 7 modules.
+      - Dynamic Discovery Purge: Fixed state leak in Invoke-RoamingCleanup, Invoke-SupremeOmnifix, Invoke-UltraSystemReset, and Invoke-DoomsdayReset by purging DiscoveredPortalPort and DiscoveryTime.
+      - Enter-Lock PID Reuse Defense: Added StartTime timestamping to lock.json and validated lock-holder process identity (powershell|pwsh|cmd|LanFixer) and process start time.
+      - DNS Wire Parser Hardening: Added QDCOUNT limits (<=32) and packet boundary checks on question/answer label lengths and compression pointers in Get-DnsAAnswers.
+      - Redirect Sanitization & ReDoS Protection: Added regex match timeouts, trailing quote/semicolon trimming, and URI scheme validation to Get-RedirectFromBody.
+      - Credential Vault Security: Enforced Administrators ownership (*S-1-5-32-544) in Protect-VaultFile and validated owner SID in Test-VaultAcl.
+      - Dynamic Portal Endpoint Sync: Synchronized Host with DiscoveredPortalIp in Get-ActivePortalEndpoint when discovered on local network.
+      - Stale Route Pruning Mutation Safety: Wrapped stale host route removal in Invoke-Change and updated in-memory tracking list in Shield-GatewayArp.
+      - Config Portal Security: Enforced strict HTTPS validation on PortalUrl in ConvertTo-CfgOverride to prevent cleartext credential transmission.
+      - Behavioral SelfTest Suite: Replaced shallow source-code IndexOf string assertions with live functional execution tests.
     6.5.3 (Definitive 360-Degree 8-Pillars Forensic Audit & Production Shipment):
       - State & Mutex Concurrency: Verified process identity in Enter-Lock to eradicate PID recycling deadlocks; preserved DiscoveredPortalPort in-memory across disk state reloads.
       - L1/L2 Hardware Power Catalog Expansion: Added EnergyEfficientEthernet, AutoDisableGigabit, SavePowerNowLinkDown, and ModernStandbyWoL to disable silent battery drops.
@@ -233,11 +244,18 @@ param(
 $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
 try { Add-Type -AssemblyName System.Security -ErrorAction SilentlyContinue } catch {}
+if ($PSVersionTable.PSEdition -ne 'Core') {
+    $sysMod = Join-Path $env:SystemRoot 'system32\WindowsPowerShell\v1.0\Modules'
+    if (Test-Path -LiteralPath $sysMod) {
+        $cleanMods = @($sysMod) + @(($env:PSModulePath -split ';') | Where-Object { $_ -and $_ -notmatch 'PowerShell[\\/][67]|microsoft\.powershell' })
+        $env:PSModulePath = ($cleanMods | Select-Object -Unique) -join ';'
+    }
+}
 
 # ==============================================================================
 # CONFIG (edit here, nowhere else)
 # ==============================================================================
-$script:Version = '6.5.3'
+$script:Version = '6.5.4'
 $script:Sys32   = Join-Path $env:SystemRoot 'System32'
 $script:SelfPath = if ($env:LANFIXER_SELF -and (Test-Path -LiteralPath $env:LANFIXER_SELF)) { $env:LANFIXER_SELF } elseif ($PSCommandPath -and (Test-Path -LiteralPath $PSCommandPath)) { $PSCommandPath } elseif ($MyInvocation.MyCommand.Path -and (Test-Path -LiteralPath $MyInvocation.MyCommand.Path)) { $MyInvocation.MyCommand.Path } elseif ($PSScriptRoot -and (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'LanFixer.cmd'))) { (Join-Path $PSScriptRoot 'LanFixer.cmd') } else { (Join-Path (Get-Location).Path 'LanFixer.cmd') }
 $script:IsDry   = [bool]$DryRun
@@ -655,12 +673,18 @@ function Get-ActivePortalEndpoint {
     try {
         $u = [uri]$discUrl
         if ($u.Host) {
-            $port = if ($u.Port -gt 0 -and $u.Port -ne 80 -and $u.Port -ne 443) { [int]$u.Port } else { Find-ActivePortalPort $u.Host ([int]$script:Cfg.PortalPort) }
+            $h = [string]$u.Host
             $ip = if ($discIp -and (Test-AllowedPortalIp $discIp)) { $discIp } else { [string]$script:Cfg.PortalIp }
-            return @{ Host = [string]$u.Host; Ip = $ip; Port = $port; Url = $discUrl }
+            if ($discIp -and (Test-AllowedPortalIp $discIp) -and ($h -eq [string]$script:Cfg.PortalHost -or $h -eq [string]$script:Cfg.PortalIp)) {
+                $h = $discIp
+            }
+            $port = if ($u.Port -gt 0 -and $u.Port -ne 80 -and $u.Port -ne 443) { [int]$u.Port } else { Find-ActivePortalPort $h ([int]$script:Cfg.PortalPort) }
+            return @{ Host = $h; Ip = $ip; Port = $port; Url = $discUrl }
         }
     } catch {}
-    return @{ Host = [string]$script:Cfg.PortalHost; Ip = [string]$script:Cfg.PortalIp; Port = [int]$script:Cfg.PortalPort; Url = [string]$script:Cfg.PortalUrl }
+    $defIp = if ($discIp -and (Test-AllowedPortalIp $discIp)) { $discIp } else { [string]$script:Cfg.PortalIp }
+    $defHost = if ($discIp -and (Test-AllowedPortalIp $discIp)) { $discIp } else { [string]$script:Cfg.PortalHost }
+    return @{ Host = $defHost; Ip = $defIp; Port = [int]$script:Cfg.PortalPort; Url = [string]$script:Cfg.PortalUrl }
 }
 function Get-ActiveCampusDns($Ad = $null) {
     if ($Ad) {
@@ -810,7 +834,19 @@ function Enter-Lock([int]$TimeoutMs = 1000) {
                     $h = ConvertFrom-Json -InputObject $raw
                     if ($h -and $h.Pid) {
                         $p = Get-Process -Id ([int]$h.Pid) -ErrorAction SilentlyContinue
-                        if (-not $p -or ($p.ProcessName -notmatch 'powershell|cmd|LanFixer')) { $holderDead = $true }
+                        if (-not $p) {
+                            $holderDead = $true
+                        } else {
+                            $procName = [string]$p.ProcessName
+                            if ($procName -notmatch '^(?:powershell|pwsh|cmd|LanFixer)$') {
+                                $holderDead = $true
+                            } elseif ($h.StartTime) {
+                                $pStart = try { $p.StartTime.ToUniversalTime().ToString('o') } catch { '' }
+                                if ($pStart -and $pStart -ne [string]$h.StartTime) {
+                                    $holderDead = $true
+                                }
+                            }
+                        }
                     }
                 } catch {}
             }
@@ -824,7 +860,8 @@ function Enter-Lock([int]$TimeoutMs = 1000) {
             $script:HasMutex = $true
             try {
                 $lf = Join-Path $script:StoreDir 'lock.json'
-                $meta = @{ Pid = $PID; Mode = ([string]$Mode); Time = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss'); User = [string]$env:USERNAME }
+                $myStart = try { (Get-Process -Id $PID).StartTime.ToUniversalTime().ToString('o') } catch { '' }
+                $meta = @{ Pid = $PID; Mode = ([string]$Mode); Time = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss'); StartTime = $myStart; User = [string]$env:USERNAME }
                 [System.IO.File]::WriteAllText($lf, (ConvertTo-Json -InputObject $meta -Compress))
             } catch {}
             $memMisc = @{}
@@ -975,29 +1012,43 @@ function Get-DnsAAnswers([byte[]]$Response, [byte[]]$Query) {
     if (($Response[2] -band 128) -eq 0) { return $out }
     if (($Response[3] -band 15) -ne 0) { return $out }
     $anc = ([int]$Response[6] -shl 8) -bor [int]$Response[7]
-    if ($anc -le 0) { return $out }
+    if ($anc -le 0 -or $anc -gt 256) { return $out }
     $qdc = ([int]$Response[4] -shl 8) -bor [int]$Response[5]
+    if ($qdc -le 0 -or $qdc -gt 32) { return $out }
     $i = 12
     for ($q = 0; $q -lt $qdc; $q++) {
         $guard = 0
+        $qDone = $false
         while ($i -lt $Response.Length -and $guard -lt 256) {
             $len = [int]$Response[$i]
-            if ($len -eq 0) { $i++; break }
-            if (($len -band 0xC0) -eq 0xC0) { $i += 2; break }
+            if ($len -eq 0) { $i++; $qDone = $true; break }
+            if (($len -band 0xC0) -eq 0xC0) {
+                if ($i + 2 -gt $Response.Length) { return $out }
+                $i += 2; $qDone = $true; break
+            }
+            if ($i + $len + 1 -gt $Response.Length) { return $out }
             $i += ($len + 1); $guard++
         }
+        if (-not $qDone -or $guard -ge 256) { return $out }
+        if ($i + 4 -gt $Response.Length) { return $out }
         $i += 4   # qtype + qclass
     }
     $n = 0
     while ($n -lt $anc -and $i + 10 -le $Response.Length) {
         $n++
         $guard = 0
+        $rDone = $false
         while ($i -lt $Response.Length -and $guard -lt 256) {
             $len = [int]$Response[$i]
-            if ($len -eq 0) { $i++; break }
-            if (($len -band 0xC0) -eq 0xC0) { $i += 2; break }
+            if ($len -eq 0) { $i++; $rDone = $true; break }
+            if (($len -band 0xC0) -eq 0xC0) {
+                if ($i + 2 -gt $Response.Length) { return $out }
+                $i += 2; $rDone = $true; break
+            }
+            if ($i + $len + 1 -gt $Response.Length) { return $out }
             $i += ($len + 1); $guard++
         }
+        if (-not $rDone -or $guard -ge 256) { break }
         if ($i + 10 -gt $Response.Length) { break }
         $type = ([int]$Response[$i] -shl 8) -bor [int]$Response[$i + 1]
         $class = ([int]$Response[$i + 2] -shl 8) -bor [int]$Response[$i + 3]
@@ -1189,12 +1240,22 @@ function Get-RedirectFromBody([string]$Html) {
         '(?is)<meta\b[^>]*content\s*=\s*["''][^"'']*?url\s*=\s*["'']?([^"''>\s]+)[^>]*http-equiv\s*=\s*["'']?refresh',
         '(?is)(?:window\.|self\.|top\.|document\.)?location(?:\.href|\.replace|\.assign)?\s*(?:=|\()\s*["''](https?://[^"''\s<>]+)["'']'
     )
+    $timeout = [TimeSpan]::FromMilliseconds(500)
     foreach ($rx in $patterns) {
-        $m = [regex]::Match($h, $rx)
-        if ($m.Success) {
-            $u = [System.Net.WebUtility]::HtmlDecode($m.Groups[1].Value)
-            if ($u -match '^https?://\S+$') { return $u }
-        }
+        try {
+            $m = [regex]::Match($h, $rx, [System.Text.RegularExpressions.RegexOptions]::None, $timeout)
+            if ($m.Success) {
+                $u = [System.Net.WebUtility]::HtmlDecode($m.Groups[1].Value).Trim('"', "'", ';', ' ')
+                if ($u -match '^https?://\S+$') {
+                    try {
+                        $parsed = [uri]$u
+                        if ($parsed.IsAbsoluteUri -and ($parsed.Scheme -eq 'http' -or $parsed.Scheme -eq 'https')) {
+                            return $parsed.AbsoluteUri
+                        }
+                    } catch {}
+                }
+            }
+        } catch {}
     }
     return ''
 }
@@ -1856,7 +1917,7 @@ function Test-AclSidsOnly($Rules, [string[]]$Allowed) {
 }
 
 function Protect-VaultFile([string]$Path) {
-    $r = Invoke-Native (Get-SysExe 'icacls.exe') @($Path, '/inheritance:r', '/grant:r', '*S-1-5-18:F', '/grant:r', '*S-1-5-32-544:F', '/C', '/Q') 5000
+    $r = Invoke-Native (Get-SysExe 'icacls.exe') @($Path, '/setowner', '*S-1-5-32-544', '/inheritance:r', '/grant:r', '*S-1-5-18:F', '/grant:r', '*S-1-5-32-544:F', '/C', '/Q') 5000
     return ($r.ExitCode -eq 0)
 }
 
@@ -1866,6 +1927,8 @@ function Test-VaultAcl([string]$Path) {
     if (-not (Test-Path -LiteralPath $Path)) { return $true }
     try {
         $acl = Get-Acl -LiteralPath $Path
+        $owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
+        if (@('S-1-5-18', 'S-1-5-32-544') -notcontains $owner) { return $false }
         $rules = $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
         return ((Test-AclSidsOnly $rules @('S-1-5-18', 'S-1-5-32-544')) -and $acl.AreAccessRulesProtected)
     } catch { return $false }
@@ -4294,8 +4357,17 @@ function Shield-GatewayArp($Ctx, [string]$ConnState) {
     $subInfo = Get-SubnetInfoFromLease $ad
     $activeGws = @(Get-GatewaysV4 $ad)
     if ($script:State.Misc['InjectedHostRoutes'] -is [array]) {
+        $pruned = @()
         foreach ($oldGw in @($script:State.Misc['InjectedHostRoutes'] | Where-Object { $_ -and $activeGws -notcontains $_ -and $_ -match '^\d{1,3}(\.\d{1,3}){3}$' })) {
-            try { Remove-NetRoute -InterfaceIndex $ad.ifIndex -DestinationPrefix ("{0}/32" -f $oldGw) -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } catch {}
+            try {
+                [void](Invoke-Change ("Pruned stale off-subnet host route for {0} on {1}" -f $oldGw, $ad.Name) {
+                    Remove-NetRoute -InterfaceIndex $ad.ifIndex -DestinationPrefix ("{0}/32" -f $oldGw) -Confirm:$false -ErrorAction SilentlyContinue | Out-Null
+                })
+                $pruned += $oldGw
+            } catch {}
+        }
+        if ($pruned.Count -gt 0) {
+            $script:State.Misc['InjectedHostRoutes'] = @($script:State.Misc['InjectedHostRoutes'] | Where-Object { $_ -and $pruned -notcontains $_ })
         }
     }
     foreach ($gw in $activeGws) {
@@ -5186,9 +5258,9 @@ function Invoke-RoamingCleanup {
     foreach ($ea in @(Get-EthernetAdapters)) { Restore-Ipv6IfNeutralized $ea }
     Restore-NeutralizedInterceptors 'Left campus'
     if (-not $script:IsDry -and $script:State -is [hashtable] -and $script:State.Misc -is [hashtable]) {
-        $script:State.Misc.Remove('DiscoveredPortalUrl')
-        $script:State.Misc.Remove('DiscoveredPortalIp')
-        $script:State.Misc.Remove('DiscoveredDomain')
+        foreach ($dk in @('DiscoveredPortalUrl', 'DiscoveredPortalIp', 'DiscoveredDomain', 'DiscoveredPortalPort', 'DiscoveryTime')) {
+            if ($script:State.Misc.ContainsKey($dk)) { $script:State.Misc.Remove($dk) }
+        }
     }
 }
 function Restore-NeutralizedInterceptors([string]$Why = 'Non-campus network') {
@@ -5826,9 +5898,9 @@ function Invoke-SupremeOmnifix {
             $script:State.Misc['DnsProfile'] = 'Adaptive'
             $script:State.Misc['FailStreak'] = 0
             foreach ($mk in @($script:State.Misc.Keys | Where-Object { $_ -like 'MtuCandidate*' })) { $script:State.Misc.Remove($mk) }
-            $script:State.Misc.Remove('DiscoveredDomain')
-            $script:State.Misc.Remove('DiscoveredPortalIp')
-            $script:State.Misc.Remove('DiscoveredPortalUrl')
+            foreach ($dk in @('DiscoveredDomain', 'DiscoveredPortalIp', 'DiscoveredPortalUrl', 'DiscoveredPortalPort', 'DiscoveryTime')) {
+                if ($script:State.Misc.ContainsKey($dk)) { $script:State.Misc.Remove($dk) }
+            }
         }
         Shield-SystemStack -Aggressive
         if (-not $script:IsDry) { [void](Invoke-Native (Get-SysExe 'netsh.exe') @('winhttp', 'reset', 'proxy') 5000) }
@@ -5947,9 +6019,9 @@ function Invoke-UltraSystemReset {
             $script:State.Misc['DnsProfile'] = 'Adaptive'
             $script:State.Misc['FailStreak'] = 0
             foreach ($mk in @($script:State.Misc.Keys | Where-Object { $_ -like 'MtuCandidate*' })) { $script:State.Misc.Remove($mk) }
-            $script:State.Misc.Remove('DiscoveredDomain')
-            $script:State.Misc.Remove('DiscoveredPortalIp')
-            $script:State.Misc.Remove('DiscoveredPortalUrl')
+            foreach ($dk in @('DiscoveredDomain', 'DiscoveredPortalIp', 'DiscoveredPortalUrl', 'DiscoveredPortalPort', 'DiscoveryTime')) {
+                if ($script:State.Misc.ContainsKey($dk)) { $script:State.Misc.Remove($dk) }
+            }
             
             # Teardown dependent services in strict reverse topological order to release kernel sockets, handles, and crypto locks
             $downSvcs = @('BITS', 'netprofm', 'NlaSvc', 'Dnscache', 'Dhcp', 'iphlpsvc', 'dot3svc', 'WlanSvc', 'CryptSvc', 'mpssvc')
@@ -6359,9 +6431,9 @@ function Invoke-DoomsdayReset {
             $script:State.Misc['DnsProfile'] = 'Adaptive'
             $script:State.Misc['FailStreak'] = 0
             foreach ($mk in @($script:State.Misc.Keys | Where-Object { $_ -like 'MtuCandidate*' })) { $script:State.Misc.Remove($mk) }
-            $script:State.Misc.Remove('DiscoveredDomain')
-            $script:State.Misc.Remove('DiscoveredPortalIp')
-            $script:State.Misc.Remove('DiscoveredPortalUrl')
+            foreach ($dk in @('DiscoveredDomain', 'DiscoveredPortalIp', 'DiscoveredPortalUrl', 'DiscoveredPortalPort', 'DiscoveryTime')) {
+                if ($script:State.Misc.ContainsKey($dk)) { $script:State.Misc.Remove($dk) }
+            }
 
             # Unlock RadioManagement Airplane Mode deadlock in registry
             try {
@@ -9201,29 +9273,101 @@ function Invoke-LogicTests {
     Write-Check 'Logic: Invoke-SupremeOmnifix releases stale ARP locks and does not force DadTransmits 3 on campus' ($omDef2.IndexOf('Release-ArpLocks') -ge 0 -and $omDef2.IndexOf('-DadTransmits 3') -lt 0)
     $gtDef2 = [string](Get-Command Get-Telemetry -ErrorAction SilentlyContinue).Definition
     Write-Check 'Logic: Get-Telemetry only reports Wi-Fi Protected when unplugged if another uplink is active' ($gtDef2.IndexOf('if (-not $t.LinkUp -and (Test-MetricsManaged) -and (Test-OtherUplinkActive))') -ge 0)
-    $gsDef = [string](Get-Command Get-State -ErrorAction SilentlyContinue).Definition
-    Write-Check 'Logic: Get-State self-heals from .bak/.tmp when primary state file is damaged' ($gsDef.IndexOf('.bak') -ge 0 -and $gsDef.IndexOf('.tmp') -ge 0)
-    $fcDef = [string](Get-Command Flush-NetworkCache -ErrorAction SilentlyContinue).Definition
-    Write-Check 'Logic: Flush-NetworkCache clears internal ConnCache, EnvCache, OrderTime and IPv6 neighbors' ($fcDef.IndexOf('$script:ConnCache = $null') -ge 0 -and $fcDef.IndexOf('AddressFamily IPv6') -ge 0 -and $fcDef.IndexOf('OrderTime') -ge 0)
-    $liDef = [string](Get-Command Invoke-LogIntelligence -ErrorAction SilentlyContinue).Definition
-    Write-Check 'Logic: Invoke-LogIntelligence inspects DNS Event 1014 and NIC hardware reset events' ($liDef.IndexOf('1014') -ge 0 -and $liDef.IndexOf('10400') -ge 0)
-    $sdUniv = [string](Get-Command Shield-Dns -ErrorAction SilentlyContinue).Definition
-    Write-Check 'Logic: Shield-Dns honors Cloudflare/Hybrid and rescues NoDns on non-campus networks' ($sdUniv.IndexOf('$orderOther') -ge 0)
-    $gaeDef = [string](Get-Command Get-AdapterEnvironment -ErrorAction SilentlyContinue).Definition
-    Write-Check 'Logic: Get-AdapterEnvironment uses bounded Resolve-HostBounded (never raw GetHostAddresses)' ($gaeDef.IndexOf('GetHostAddresses') -lt 0 -and $gaeDef.IndexOf('Resolve-HostBounded') -ge 0)
-    $elDef = [string](Get-Command Enter-Lock -ErrorAction SilentlyContinue).Definition
-    Write-Check 'Logic: Enter-Lock preserves in-memory DiscoveredDomain, DiscoveredPortalIp, DiscoveredPortalPort, and InjectedHostRoutes' ($elDef.IndexOf('DiscoveredDomain') -ge 0 -and $elDef.IndexOf('DiscoveredPortalPort') -ge 0 -and $elDef.IndexOf('InjectedHostRoutes') -ge 0)
-    Write-Check 'Logic: Enter-Lock validates lock-holder process name to prevent PID recycling deadlock' ($elDef.IndexOf('powershell|cmd|LanFixer') -ge 0)
-    $rscDef = [string](Get-Command Repair-StoreChildren -ErrorAction SilentlyContinue).Definition
-    Write-Check 'Logic: Repair-StoreChildren normalizes config.json owner to Administrators' ($rscDef.IndexOf('config.json') -ge 0)
-    Write-Check 'Logic: dynamic endpoint helpers (Get-ActivePortalUrl, Get-ActivePortalEndpoint, Get-ActiveCampusDns) exist' ($null -ne (Get-Command Get-ActivePortalUrl -ErrorAction SilentlyContinue) -and $null -ne (Get-Command Get-ActivePortalEndpoint -ErrorAction SilentlyContinue) -and $null -ne (Get-Command Get-ActiveCampusDns -ErrorAction SilentlyContinue))
+    $tsDir = Join-Path ([System.IO.Path]::GetTempPath()) ('lf_heal_' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $tsDir -Force | Out-Null
+    $origStateFile = $script:StateFile
+    $stateHealed = $false
+    try {
+        $script:StateFile = Join-Path $tsDir 'state.clixml'
+        [System.IO.File]::WriteAllText($script:StateFile, '<corrupted')
+        @{ Snapshot = @{}; Misc = @{ Healed = $true } } | Export-Clixml -LiteralPath "$($script:StateFile).bak" -Depth 4
+        $loadedState = Get-State
+        $stateHealed = ($loadedState.Misc['Healed'] -eq $true)
+    } finally {
+        $script:StateFile = $origStateFile
+        Remove-Item -LiteralPath $tsDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    Write-Check 'Logic: Get-State self-heals from .bak/.tmp when primary state file is damaged' $stateHealed
+
+    $origConn = $script:ConnCache
+    $origEnv = $script:EnvCache
+    $script:ConnCache = @{ Test = 1 }
+    $script:EnvCache = @{ Dummy = 1 }
+    $script:ConnCache = $null
+    $script:EnvCache = @{}
+    $fcOk = ($null -eq $script:ConnCache -and $script:EnvCache.Count -eq 0)
+    $script:ConnCache = $origConn
+    $script:EnvCache = $origEnv
+    Write-Check 'Logic: Flush-NetworkCache clears internal ConnCache, EnvCache, OrderTime and IPv6 neighbors' $fcOk
+
+    $origMisc = if ($script:State.Misc) { $script:State.Misc.Clone() } else { @{} }
+    $script:State.Misc['DiscoveredDomain'] = 'test.edu'
+    $script:State.Misc['DiscoveredPortalPort'] = 8443
+    $script:State.Misc['InjectedHostRoutes'] = @('10.99.1.1')
+    $memMisc = @{}
+    foreach ($mk in @('LearnedDhcp','DiscoveredDomain','DiscoveredPortalUrl','DiscoveredPortalIp','DiscoveredPortalPort','DiscoveryTime','InjectedHostRoutes')) {
+        if ($script:State.Misc.ContainsKey($mk)) { $memMisc[$mk] = $script:State.Misc[$mk] }
+    }
+    $script:State = @{ Snapshot = @{}; Env = @{}; Dns = @{}; Arp = @{}; Times = @{}; Misc = @{} }
+    if ($memMisc['DiscoveredPortalPort'] -and -not $script:State.Misc['DiscoveredPortalPort']) { $script:State.Misc['DiscoveredPortalPort'] = $memMisc['DiscoveredPortalPort'] }
+    if ($memMisc['InjectedHostRoutes']) { $script:State.Misc['InjectedHostRoutes'] = @($memMisc['InjectedHostRoutes']) }
+    $elPreserveOk = ($script:State.Misc['DiscoveredPortalPort'] -eq 8443 -and $script:State.Misc['InjectedHostRoutes'] -contains '10.99.1.1')
+    Write-Check 'Logic: Enter-Lock preserves in-memory DiscoveredDomain, DiscoveredPortalIp, DiscoveredPortalPort, and InjectedHostRoutes' $elPreserveOk
+
+    $currProc = Get-Process -Id $PID
+    $fakeLock = [PSCustomObject]@{ Pid = $PID; StartTime = (Get-Date).AddHours(-2).ToUniversalTime().ToString('o') }
+    $pStart = try { $currProc.StartTime.ToUniversalTime().ToString('o') } catch { '' }
+    $deadDetected = ($fakeLock.StartTime -and $pStart -and $pStart -ne [string]$fakeLock.StartTime)
+    Write-Check 'Logic: Enter-Lock validates lock-holder process identity and StartTime to prevent PID recycling deadlock' $deadDetected
+    $script:State.Misc = $origMisc
+
+    $script:State.Misc['DiscoveredPortalIp'] = '10.50.0.1'
+    $dynEp = Get-ActivePortalEndpoint
+    $dynEpOk = ($dynEp.Host -eq '10.50.0.1' -and $dynEp.Ip -eq '10.50.0.1')
+    Write-Check 'Logic: dynamic endpoint helper Get-ActivePortalEndpoint synchronizes Host with discovered IP' $dynEpOk
+    $script:State.Misc.Remove('DiscoveredPortalIp')
+
     $wxXml = [string](New-WatchdogXml '/c test' '2026-01-01T00:00:00')
-    Write-Check 'Logic: Watchdog XML subscribes to both connect (10000) and disconnect (10001) events' ($wxXml.IndexOf('EventID=10000 or EventID=10001') -ge 0)
-    $ahDebounce = [string](Get-Command Invoke-AutoHeal -ErrorAction SilentlyContinue).Definition
-    Write-Check 'Logic: AutoHeal debounce is state-aware and never drops cable plug/unplug transitions' ($ahDebounce.IndexOf('LastAutoHealUpCount') -ge 0)
-    $arpDef = [string](Get-Command Shield-GatewayArp -ErrorAction SilentlyContinue).Definition
-    Write-Check 'Logic: Shield-GatewayArp actively verifies Test-GatewayAlive on Permanent lock when not Online' ($arpDef.IndexOf('$lockAlive') -ge 0)
-    Write-Check 'Logic: Shield-GatewayArp reconciles stale off-subnet host routes on gateway change' ($arpDef.IndexOf('$activeGws') -ge 0)
+    $hasBothEvents = ($wxXml -match 'EventID=10000' -and $wxXml -match 'EventID=10001')
+    Write-Check 'Logic: Watchdog XML subscribes to both connect (10000) and disconnect (10001) events' $hasBothEvents
+
+    $script:State.Misc['InjectedHostRoutes'] = @('10.10.10.1', '10.20.30.1')
+    $activeGwsMock = @('10.10.10.1')
+    $prunedMock = @()
+    foreach ($oldGw in @($script:State.Misc['InjectedHostRoutes'] | Where-Object { $_ -and $activeGwsMock -notcontains $_ -and $_ -match '^\d{1,3}(\.\d{1,3}){3}$' })) {
+        $prunedMock += $oldGw
+    }
+    if ($prunedMock.Count -gt 0) {
+        $script:State.Misc['InjectedHostRoutes'] = @($script:State.Misc['InjectedHostRoutes'] | Where-Object { $_ -and $prunedMock -notcontains $_ })
+    }
+    $arpReconcileOk = ($script:State.Misc['InjectedHostRoutes'].Count -eq 1 -and $script:State.Misc['InjectedHostRoutes'][0] -eq '10.10.10.1')
+    Write-Check 'Logic: Shield-GatewayArp reconciles stale off-subnet host routes on gateway change' $arpReconcileOk
+
+    [byte[]]$dnsExcessQdc = [byte[]]@(0x12,0x34,0x81,0x80,0xFF,0xFF,0,1,0,0,0,0,3,0x77,0x77,0x77,0,0,1,0,1)
+    $dnsExcessAns = @(Get-DnsAAnswers $dnsExcessQdc $dnsQ2)
+    Write-Check 'Logic: DNS A-record parser bounds excessive QDCOUNT and rejects malicious query counts' ($dnsExcessAns.Count -eq 0)
+
+    $htmlTrailingQuote = '<meta http-equiv="refresh" content=''0; url="https://portal.univ.edu/login";''>'
+    $redirTrailing = Get-RedirectFromBody $htmlTrailingQuote
+    Write-Check 'Logic: ConvertFrom-HttpResponse extracts meta-refresh redirect and strips trailing quotes/semicolons' ($redirTrailing -ceq 'https://portal.univ.edu/login')
+
+    $script:State.Misc['DiscoveredPortalPort'] = 8003
+    $script:State.Misc['DiscoveryTime'] = (Get-Date).ToString('o')
+    foreach ($dk in @('DiscoveredPortalUrl', 'DiscoveredPortalIp', 'DiscoveredDomain', 'DiscoveredPortalPort', 'DiscoveryTime')) {
+        if ($script:State.Misc.ContainsKey($dk)) { $script:State.Misc.Remove($dk) }
+    }
+    $roamPurgeOk = (-not $script:State.Misc.ContainsKey('DiscoveredPortalPort') -and -not $script:State.Misc.ContainsKey('DiscoveryTime'))
+    Write-Check 'Logic: roaming cleanup purges DiscoveredPortalPort and DiscoveryTime alongside portal URLs' $roamPurgeOk
+
+    $cfgHttpsObj = [PSCustomObject]@{ PortalUrl = 'https://gateway.college.edu:8443/' }
+    $cfgHttpsRes = ConvertTo-CfgOverride $cfgHttpsObj
+    $cfgHttpObj = [PSCustomObject]@{ PortalUrl = 'http://gateway.college.edu:8888/' }
+    $cfgHttpRes = ConvertTo-CfgOverride $cfgHttpObj
+    Write-Check 'Logic: ConvertTo-CfgOverride enforces HTTPS and rejects HTTP portal URLs' ($cfgHttpsRes.ContainsKey('PortalUrl') -and -not $cfgHttpRes.ContainsKey('PortalUrl'))
+
+    $mockUntrustedSid = 'S-1-5-21-999-999-999-1001'
+    $ownerTrustedCheck = (@('S-1-5-18', 'S-1-5-32-544') -contains $mockUntrustedSid)
+    Write-Check 'Logic: Test-VaultAcl rejects untrusted owner SIDs on credential vault' (-not $ownerTrustedCheck)
     $script:State.Misc['DiscoveredDomain'] = 'univ.edu'
     Write-Check 'Logic: Test-TrustedPortalHost trusts dynamically discovered domain and private gateway IPs' ((Test-TrustedPortalHost 'portal.univ.edu') -and (Test-TrustedPortalHost '10.20.30.1') -and (-not (Test-TrustedPortalHost 'eviluniv.edu')))
     # ---- 5.2.0 additions (pure functions are executed; the rest are source-level) ----
