@@ -1,3 +1,20 @@
+    })
+    [void](Invoke-Change 'Network List service refreshed (clears a stuck "no internet" icon)' {
+        Restart-Service -Name NlaSvc -Force -ErrorAction Stop
+        Start-Service -Name netprofm -ErrorAction SilentlyContinue
+    })
+    Save-State
+    Write-Log 'OK' 'Network resolver, internal telemetry, and neighbor caches flushed successfully.'
+}
+
+# ==============================================================================
+# SELF TEST (verifies this machine supports everything; changes nothing)
+# ==============================================================================
+$script:TestFail = 0
+$script:TestWarn = 0
+function Write-Check([string]$Label, [bool]$Ok, [bool]$WarnOnly = $false, [string]$Detail = '') {
+    $gl = $script:G.ok; $role = 'ok'
+    if (-not $Ok) { if ($WarnOnly) { $gl = $script:G.warn; $role = 'warn'; $script:TestWarn++ } else { $gl = $script:G.bad; $role = 'bad'; $script:TestFail++ } }
     $segs = @((Seg $role ('  ' + $gl + ' ')), (Seg 'text' $Label))
     if ($Detail) { $segs += (Seg 'dim' ('  ' + $script:G.mid + ' ' + $Detail)) }
     Out-Line $segs
@@ -94,6 +111,7 @@ function Invoke-LogicTests {
     Write-Check 'Logic: prefer-IPv4 keeps existing DisabledComponents bits' (((Get-PreferIpv4Value $null) -eq 32) -and ((Get-PreferIpv4Value 1) -eq 33) -and ((Get-PreferIpv4Value 32) -eq 32) -and ((Get-PreferIpv4Value 17) -eq 49))
     Write-Check 'Logic: DHCP wording states facts only' (((Get-DhcpFailureText 121 'AA') -like '*0x79*') -and ((Get-DhcpFailureText 5 'AA') -like '*0x5*') -and ((Get-DhcpFailureText $null 'AA-BB') -like '*AA-BB*'))
     Write-Check 'Logic: PowerKeywords cover Realtek battery/adaptive/extra modes' (($script:PowerKeywords -contains 'BatteryModeLinkSpeed') -and ($script:PowerKeywords -contains 'EnableAdaptiveLinkCap') -and ($script:PowerKeywords -contains 'EnableExtraPowerSaving'))
+    Write-Check 'Logic: PowerKeywords include EnergyEfficientEthernet and AutoDisableGigabit' (($script:PowerKeywords -contains 'EnergyEfficientEthernet') -and ($script:PowerKeywords -contains 'AutoDisableGigabit'))
     try {
         $tb = [System.Text.Encoding]::UTF8.GetBytes('nitjsr_test_secret')
         $te = [System.Security.Cryptography.ProtectedData]::Protect($tb, (Get-VaultEntropy), [System.Security.Cryptography.DataProtectionScope]::LocalMachine)
@@ -346,6 +364,9 @@ function Invoke-LogicTests {
     Write-Check 'Logic: login form parser handles HTML5 inputs outside <form> tags' ($null -ne $fm5 -and $fm5.UserField -ceq 'u' -and $fm5.PassField -ceq 'p' -and $fm5.Action.AbsoluteUri -ceq 'https://gateway.nitjsr.ac.in:8003/auth')
     # v4.6.0: DNS CNAME with hybrid label+pointer name compression followed by A record
     [byte[]]$dnsQ2 = New-DnsQueryPacket 'a.bc' 4660
+    # Multi-question DNS packet skipping (RFC 1035)
+    [byte[]]$dnsQmulti = [byte[]]@(0x12,0x34,0x81,0x80,0,2,0,1,0,0,0,0) + [byte[]]$dnsQ2[12..21] + [byte[]]$dnsQ2[12..21] + [byte[]]@(0xC0,0x0C,0,1,0,1,0,0,0,60,0,4,5,6,7,8)
+    Write-Check 'Logic: DNS A-record parser skips multiple questions in QDCOUNT' (@(Get-DnsAAnswers $dnsQmulti $dnsQ2) -contains '5.6.7.8')
     [byte[]]$dnsCnameChain = [byte[]]@(0x12,0x34,0x81,0x80,0,1,0,2,0,0,0,0) + [byte[]]$dnsQ2[12..21] + [byte[]]@(0xC0,0x0C,0,5,0,1,0,0,0,60,0,2,0xC0,0x0C) + [byte[]]@(1,0x78,0xC0,0x0C,0,1,0,1,0,0,0,60,0,4,9,8,7,6)
     Write-Check 'Logic: DNS A-record parser resolves A record after CNAME with hybrid label+pointer name' (@(Get-DnsAAnswers $dnsCnameChain $dnsQ2) -contains '9.8.7.6')
     $ssBody = [string](Get-Command Shield-SystemStack -ErrorAction SilentlyContinue).Definition
@@ -391,7 +412,8 @@ function Invoke-LogicTests {
     $gaeDef = [string](Get-Command Get-AdapterEnvironment -ErrorAction SilentlyContinue).Definition
     Write-Check 'Logic: Get-AdapterEnvironment uses bounded Resolve-HostBounded (never raw GetHostAddresses)' ($gaeDef.IndexOf('GetHostAddresses') -lt 0 -and $gaeDef.IndexOf('Resolve-HostBounded') -ge 0)
     $elDef = [string](Get-Command Enter-Lock -ErrorAction SilentlyContinue).Definition
-    Write-Check 'Logic: Enter-Lock preserves in-memory DiscoveredDomain, DiscoveredPortalIp, and InjectedHostRoutes' ($elDef.IndexOf('DiscoveredDomain') -ge 0 -and $elDef.IndexOf('InjectedHostRoutes') -ge 0)
+    Write-Check 'Logic: Enter-Lock preserves in-memory DiscoveredDomain, DiscoveredPortalIp, DiscoveredPortalPort, and InjectedHostRoutes' ($elDef.IndexOf('DiscoveredDomain') -ge 0 -and $elDef.IndexOf('DiscoveredPortalPort') -ge 0 -and $elDef.IndexOf('InjectedHostRoutes') -ge 0)
+    Write-Check 'Logic: Enter-Lock validates lock-holder process name to prevent PID recycling deadlock' ($elDef.IndexOf('powershell|cmd|LanFixer') -ge 0)
     $rscDef = [string](Get-Command Repair-StoreChildren -ErrorAction SilentlyContinue).Definition
     Write-Check 'Logic: Repair-StoreChildren normalizes config.json owner to Administrators' ($rscDef.IndexOf('config.json') -ge 0)
     Write-Check 'Logic: dynamic endpoint helpers (Get-ActivePortalUrl, Get-ActivePortalEndpoint, Get-ActiveCampusDns) exist' ($null -ne (Get-Command Get-ActivePortalUrl -ErrorAction SilentlyContinue) -and $null -ne (Get-Command Get-ActivePortalEndpoint -ErrorAction SilentlyContinue) -and $null -ne (Get-Command Get-ActiveCampusDns -ErrorAction SilentlyContinue))
@@ -401,6 +423,7 @@ function Invoke-LogicTests {
     Write-Check 'Logic: AutoHeal debounce is state-aware and never drops cable plug/unplug transitions' ($ahDebounce.IndexOf('LastAutoHealUpCount') -ge 0)
     $arpDef = [string](Get-Command Shield-GatewayArp -ErrorAction SilentlyContinue).Definition
     Write-Check 'Logic: Shield-GatewayArp actively verifies Test-GatewayAlive on Permanent lock when not Online' ($arpDef.IndexOf('$lockAlive') -ge 0)
+    Write-Check 'Logic: Shield-GatewayArp reconciles stale off-subnet host routes on gateway change' ($arpDef.IndexOf('$activeGws') -ge 0)
     $script:State.Misc['DiscoveredDomain'] = 'univ.edu'
     Write-Check 'Logic: Test-TrustedPortalHost trusts dynamically discovered domain and private gateway IPs' ((Test-TrustedPortalHost 'portal.univ.edu') -and (Test-TrustedPortalHost '10.20.30.1') -and (-not (Test-TrustedPortalHost 'eviluniv.edu')))
     # ---- 5.2.0 additions (pure functions are executed; the rest are source-level) ----
@@ -473,6 +496,10 @@ function Invoke-LogicTests {
     $hrMs = ConvertFrom-HttpResponse ("HTTP/1.1 200 OK`r`n`r`nMicrosoft Connect Test")
     $hr204 = ConvertFrom-HttpResponse ("HTTP/1.1 204 No Content`r`n`r`n")
     Write-Check 'Logic: ConvertFrom-HttpResponse reads Location headers and meta/JS redirects of 200 portal pages' (($hr302.Location -ceq 'http://portal.univ.edu/login') -and ($hrMeta.Location -ceq 'http://portal.univ.edu/a?x=1&y=2') -and ($hrJs.Location -ceq 'http://portal.univ.edu/js'))
+    $hrMetaRev = ConvertFrom-HttpResponse ("HTTP/1.1 200 OK`r`n`r`n<html><head><meta content=""0; url=https://portal.univ.edu/rev"" http-equiv=""refresh""></head></html>")
+    Write-Check 'Logic: ConvertFrom-HttpResponse extracts meta-refresh redirect with reversed attributes' ($hrMetaRev.Location -ceq 'https://portal.univ.edu/rev')
+    $hrJsAssign = ConvertFrom-HttpResponse ("HTTP/1.1 200 OK`r`n`r`n<script>window.location.assign('https://portal.univ.edu/assign');</script>")
+    Write-Check 'Logic: ConvertFrom-HttpResponse extracts window.location.assign redirect' ($hrJsAssign.Location -ceq 'https://portal.univ.edu/assign')
     Write-Check 'Logic: ordinary probe answers (Microsoft test page, 204, relative JS) yield no redirect' (($hrRel.Location -eq '') -and ($hrMs.Location -eq '') -and ($hr204.Location -eq '') -and ($hrMs.Body -like 'Microsoft Connect Test*'))
     $edPlain = [System.Text.Encoding]::UTF8.GetBytes('<form>portal-ok</form>')
     $edMs = New-Object System.IO.MemoryStream
@@ -771,30 +798,3 @@ function Get-Telemetry {
         $t.UplinkProfile = [string]$script:UplinkProfileCache.Val
     }
     if ($ad) {
-        $desc = [string]$ad.InterfaceDescription
-        $t.Nic = ($desc -replace ' Family Controller', '' -replace ' Gigabit Network Connection', ' GbE' -replace ' PCI-E NIC', '')
-        if ($ad.MacAddress) { $t.Mac = [string]$ad.MacAddress }
-        $t.Problem = 'NoLink'
-        if ($ad.Status -eq 'Up') {
-            $t.LinkUp = $true
-            $t.Speed = [string]$ad.LinkSpeed
-            $h = Get-AdapterHealth $ad
-            $t.Problem = [string]$h.Problem
-            $t.Conn = [string]$h.Conn
-            if ($h.Ip) { $t.Ip = [string]$h.Ip }
-            if ($h.Gateway) { $t.GwIp = [string]$h.Gateway; $t.GwRtt = if ($null -ne $script:LiveGwRtt) { $script:LiveGwRtt } else { $h.GwRtt }; $t.GwAlive = [bool]$h.GwAlive }
-            $e = Get-AdapterEnvironment $ad -UseCache
-            $t.Env = [string]$e.Env; $t.EnvScore = [int]$e.Score; $t.Sticky = [bool]$e.Sticky
-            $ipif = Get-IPv4Interface $ad
-            if ($ipif) {
-                $t.Mtu = [string]$ipif.NlMtu
-                $t.Routing = Get-RoutingLabel (Test-MetricsManaged) ([int]$ipif.InterfaceMetric) $true $t.UplinkActive
-            }
-            $raw = @((Get-DnsClientServerAddress -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses)
-            if ($raw.Count -gt 0) { $t.DnsPrimary = [string]$raw[0] }
-            if ($raw.Count -gt 1) { $t.DnsSecondary = [string]$raw[1] }
-            $t.DnsProfile = Get-DnsProfileName
-            if ($script:State.Misc['DiscoveredDomain']) { $t.Domain = [string]$script:State.Misc['DiscoveredDomain'] }
-            try {
-                $sub = Get-SubnetInfoFromLease $ad
-                if ($sub -and $sub.Prefix) {

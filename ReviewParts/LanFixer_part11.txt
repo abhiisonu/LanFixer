@@ -1,3 +1,20 @@
+                    [void](Invoke-Change 'WinINet user proxy restored' {
+                        Set-ItemProperty -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -Name ProxyEnable -Value $pe -Type DWord -Force -ErrorAction SilentlyContinue
+                    })
+                }
+                if ($snap.ContainsKey('ProxyEnable_LM')) {
+                    $pe = [int]$snap['ProxyEnable_LM']
+                    [void](Invoke-Change 'WinINet machine proxy restored' {
+                        Set-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings' -Name ProxyEnable -Value $pe -Type DWord -Force -ErrorAction SilentlyContinue
+                    })
+                }
+                if ($snap.ContainsKey('Llmnr')) {
+                    $lv = $snap['Llmnr']
+                    [void](Invoke-Change 'LLMNR setting restored' { Restore-Llmnr $lv })
+                }
+                if ($snap.ContainsKey('DisabledComponents')) {
+                    $dc = $snap['DisabledComponents']
+                    [void](Invoke-Change 'IPv6 prefix policy restored' {
                         if ($null -eq $dc) { Remove-ItemProperty -LiteralPath $script:Tcpip6Key -Name DisabledComponents -ErrorAction SilentlyContinue }
                         else { New-ItemProperty -LiteralPath $script:Tcpip6Key -Name DisabledComponents -Value ([int]$dc) -PropertyType DWord -Force -ErrorAction Stop | Out-Null }
                     })
@@ -781,20 +798,3 @@ function Flush-NetworkCache {
     [void](Invoke-Change 'NetBIOS name cache purged & re-registered' {
         [void](Invoke-Native (Get-SysExe 'nbtstat.exe') @('-R') 8000)
         [void](Invoke-Native (Get-SysExe 'nbtstat.exe') @('-RR') 8000)
-    })
-    [void](Invoke-Change 'Network List service refreshed (clears a stuck "no internet" icon)' {
-        Restart-Service -Name NlaSvc -Force -ErrorAction Stop
-        Start-Service -Name netprofm -ErrorAction SilentlyContinue
-    })
-    Save-State
-    Write-Log 'OK' 'Network resolver, internal telemetry, and neighbor caches flushed successfully.'
-}
-
-# ==============================================================================
-# SELF TEST (verifies this machine supports everything; changes nothing)
-# ==============================================================================
-$script:TestFail = 0
-$script:TestWarn = 0
-function Write-Check([string]$Label, [bool]$Ok, [bool]$WarnOnly = $false, [string]$Detail = '') {
-    $gl = $script:G.ok; $role = 'ok'
-    if (-not $Ok) { if ($WarnOnly) { $gl = $script:G.warn; $role = 'warn'; $script:TestWarn++ } else { $gl = $script:G.bad; $role = 'bad'; $script:TestFail++ } }

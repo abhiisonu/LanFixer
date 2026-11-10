@@ -1,3 +1,20 @@
+    # 1. Ensure Core Windows Network Services are alive (registry fallback for ACL-locked services)
+    foreach ($svcName in @('Dhcp','Dnscache','NlaSvc','netprofm','WlanSvc','BFE','mpssvc','iphlpsvc')) {
+        $sv = Get-Service -Name $svcName -ErrorAction SilentlyContinue
+        if ($sv) {
+            if ($sv.StartType -eq 'Disabled') {
+                [void](Invoke-Change "Re-enabled critical Windows service $svcName" {
+                    try { Set-Service -Name $svcName -StartupType Automatic -ErrorAction Stop }
+                    catch {
+                        $sk = "HKLM:\SYSTEM\CurrentControlSet\Services\$svcName"
+                        if (Test-Path -LiteralPath $sk) { Set-ItemProperty -LiteralPath $sk -Name Start -Value 2 -Type DWord -Force -ErrorAction SilentlyContinue }
+                    }
+                })
+            }
+            if ($sv.Status -ne 'Running') {
+                [void](Invoke-Change "Started critical Windows service $svcName" { Start-Service -Name $svcName -ErrorAction SilentlyContinue })
+            }
+        }
     }
     # 2. Dynamic Detection & Neutralization of Rogue DNS Interceptors, WFP Callouts & Loopback Stubs
     $wfpDnsRegex = 'portmaster|nextdns|yogadns|dnscrypt|acrylic|adguard|stubby|warp-svc'
@@ -781,20 +798,3 @@ function Invoke-DoomsdayReset {
                 $_.InterfaceDescription -notmatch 'Virtual|Hyper-V|WSL|Tailscale|ZeroTier|WireGuard|TAP|Loopback'
             })
             foreach ($ad in $allPhys) {
-                # Deactivate rogue 3rd-party NDIS filter drivers (Npcap, VirtualBox, VPN, Antivirus packet drop traps)
-                try {
-                    $bindings = @(Get-NetAdapterBinding -Name $ad.Name -ErrorAction SilentlyContinue)
-                    foreach ($b in $bindings) {
-                        if ($b.ComponentID -notmatch '^(ms_|vms_)' -and $b.Enabled) {
-                            Write-Log 'WARN' "Deactivating 3rd-party NDIS filter trap '$($b.DisplayName)' ($($b.ComponentID)) on $($ad.Name)..."
-                            if (-not $script:State.Snapshot.ContainsKey('DeactivatedFilters')) {
-                                $script:State.Snapshot['DeactivatedFilters'] = @{}
-                            }
-                            if (-not $script:State.Snapshot['DeactivatedFilters'].ContainsKey($ad.Name)) {
-                                $script:State.Snapshot['DeactivatedFilters'][$ad.Name] = @()
-                            }
-                            if ($script:State.Snapshot['DeactivatedFilters'][$ad.Name] -notcontains $b.ComponentID) {
-                                $script:State.Snapshot['DeactivatedFilters'][$ad.Name] += $b.ComponentID
-                            }
-                            try { Disable-NetAdapterBinding -Name $ad.Name -ComponentID $b.ComponentID -ErrorAction SilentlyContinue } catch {}
-                        }

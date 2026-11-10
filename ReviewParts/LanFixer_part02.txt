@@ -1,10 +1,16 @@
+        }
+        $got = $false
+        try { $got = $script:Mutex.WaitOne($TimeoutMs) } catch [System.Threading.AbandonedMutexException] { $got = $true }
+        if (-not $got) {
+            $lf = Join-Path $script:StoreDir 'lock.json'
+            $holderDead = $false
             if (Test-Path -LiteralPath $lf) {
                 try {
                     $raw = [System.IO.File]::ReadAllText($lf)
                     $h = ConvertFrom-Json -InputObject $raw
                     if ($h -and $h.Pid) {
                         $p = Get-Process -Id ([int]$h.Pid) -ErrorAction SilentlyContinue
-                        if (-not $p) { $holderDead = $true }
+                        if (-not $p -or ($p.ProcessName -notmatch 'powershell|cmd|LanFixer')) { $holderDead = $true }
                     }
                 } catch {}
             }
@@ -23,13 +29,14 @@
             } catch {}
             $memMisc = @{}
             if ($script:State -is [hashtable] -and $script:State.Misc -is [hashtable]) {
-                foreach ($mk in @('LearnedDhcp','DiscoveredDomain','DiscoveredPortalUrl','DiscoveredPortalIp','DiscoveryTime','InjectedHostRoutes')) {
+                foreach ($mk in @('LearnedDhcp','DiscoveredDomain','DiscoveredPortalUrl','DiscoveredPortalIp','DiscoveredPortalPort','DiscoveryTime','InjectedHostRoutes')) {
                     if ($script:State.Misc.ContainsKey($mk)) { $memMisc[$mk] = $script:State.Misc[$mk] }
                 }
             }
             $memEnv = if ($script:State -is [hashtable] -and $script:State.Env -is [hashtable]) { $script:State.Env.Clone() } else { @{} }
             $script:State = Get-State
             if ($memMisc['LearnedDhcp'] -and -not $script:State.Misc['LearnedDhcp']) { $script:State.Misc['LearnedDhcp'] = $memMisc['LearnedDhcp'] }
+            if ($memMisc['DiscoveredPortalPort'] -and -not $script:State.Misc['DiscoveredPortalPort']) { $script:State.Misc['DiscoveredPortalPort'] = $memMisc['DiscoveredPortalPort'] }
             if ($memMisc['DiscoveryTime'] -and ([string]$memMisc['DiscoveryTime'] -ge [string]$script:State.Misc['DiscoveryTime'])) {
                 foreach ($mk in @('DiscoveredDomain','DiscoveredPortalUrl','DiscoveredPortalIp','DiscoveryTime')) {
                     if ($memMisc.ContainsKey($mk)) { $script:State.Misc[$mk] = $memMisc[$mk] }
@@ -169,15 +176,18 @@ function Get-DnsAAnswers([byte[]]$Response, [byte[]]$Query) {
     if (($Response[3] -band 15) -ne 0) { return $out }
     $anc = ([int]$Response[6] -shl 8) -bor [int]$Response[7]
     if ($anc -le 0) { return $out }
+    $qdc = ([int]$Response[4] -shl 8) -bor [int]$Response[5]
     $i = 12
-    $guard = 0
-    while ($i -lt $Response.Length -and $guard -lt 256) {
-        $len = [int]$Response[$i]
-        if ($len -eq 0) { $i++; break }
-        if (($len -band 0xC0) -eq 0xC0) { $i += 2; break }
-        $i += ($len + 1); $guard++
+    for ($q = 0; $q -lt $qdc; $q++) {
+        $guard = 0
+        while ($i -lt $Response.Length -and $guard -lt 256) {
+            $len = [int]$Response[$i]
+            if ($len -eq 0) { $i++; break }
+            if (($len -band 0xC0) -eq 0xC0) { $i += 2; break }
+            $i += ($len + 1); $guard++
+        }
+        $i += 4   # qtype + qclass
     }
-    $i += 4   # qtype + qclass
     $n = 0
     while ($n -lt $anc -and $i + 10 -le $Response.Length) {
         $n++
@@ -376,7 +386,8 @@ function Get-RedirectFromBody([string]$Html) {
     if ($h.Length -gt 4096) { $h = $h.Substring(0, 4096) }
     $patterns = @(
         '(?is)<meta\b[^>]*http-equiv\s*=\s*["'']?refresh["'']?[^>]*content\s*=\s*["''][^"'']*?url\s*=\s*["'']?([^"''>\s]+)',
-        '(?is)(?:window\.|self\.|top\.|document\.)?location(?:\.href|\.replace)?\s*(?:=|\()\s*["''](https?://[^"''\s<>]+)["'']'
+        '(?is)<meta\b[^>]*content\s*=\s*["''][^"'']*?url\s*=\s*["'']?([^"''>\s]+)[^>]*http-equiv\s*=\s*["'']?refresh',
+        '(?is)(?:window\.|self\.|top\.|document\.)?location(?:\.href|\.replace|\.assign)?\s*(?:=|\()\s*["''](https?://[^"''\s<>]+)["'']'
     )
     foreach ($rx in $patterns) {
         $m = [regex]::Match($h, $rx)
@@ -787,14 +798,3 @@ function Expand-HttpBody([byte[]]$Bytes, [string]$Encoding, [int]$MaxBytes = 104
         $out = New-Object System.IO.MemoryStream
         $buf = New-Object byte[] 8192
         $total = 0
-        while ($true) {
-            $n = $zs.Read($buf, 0, $buf.Length)
-            if ($n -le 0) { break }
-            $total += $n
-            if ($total -gt $MaxBytes) { return , $Bytes }
-            $out.Write($buf, 0, $n)
-        }
-        return , ($out.ToArray())
-    } catch { return , $Bytes }
-    finally { foreach ($o in @($zs, $out, $in)) { if ($o) { try { $o.Dispose() } catch {} } } }
-}

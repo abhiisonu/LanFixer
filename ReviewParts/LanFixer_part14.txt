@@ -1,3 +1,30 @@
+                Wait-SentinelCadence $currentCadence $isConsole $ad
+                continue
+            }
+
+            # Captive State Handling: Captive is normal on campus, NOT a failure!
+            if ($ethIp -and $state.State -eq 'Captive') {
+                $cCtx = @{ Ad = $ad; Env = (Get-AdapterEnvironment $ad) }
+                Ensure-CampusPortalPath $ad
+                Shield-RouteMetrics $cCtx 'Captive'
+                Shield-Dns $cCtx 'Captive'
+
+                $creds = Get-PortalCredentials
+                if ($creds) {
+                    Write-SentinelLog 'TIER2' ("Captive portal detected! Stored credentials found for '{0}'. Executing autonomous headless login on {1}..." -f $creds.User, $ethIp)
+                    $loginOk = [bool](Invoke-WithLock -WaitMs 8000 {
+                        $auth = Invoke-HeadlessPortalLogin $state -Manual -SourceIp $ethIp
+                        if ($auth) {
+                            Complete-Authentication
+                            Save-State
+                        }
+                        $auth
+                    })
+                    if ($loginOk) {
+                        Write-SentinelLog 'OK' "Autonomous captive portal sign-in SUCCESSFUL! Restored high-speed Internet path."
+                        $script:DaemonConsecutiveFails = 0
+                        $script:SentinelStats.T2_Captive++
+                        $currentCadence = 3
                         if ($isConsole) { Show-SentinelHud $ad $linkHealth 'Online' $currentCadence }
                         Wait-SentinelCadence $currentCadence $isConsole $ad
                         continue

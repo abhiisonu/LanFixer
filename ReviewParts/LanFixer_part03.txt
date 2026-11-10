@@ -1,3 +1,14 @@
+        while ($true) {
+            $n = $zs.Read($buf, 0, $buf.Length)
+            if ($n -le 0) { break }
+            $total += $n
+            if ($total -gt $MaxBytes) { return , $Bytes }
+            $out.Write($buf, 0, $n)
+        }
+        return , ($out.ToArray())
+    } catch { return , $Bytes }
+    finally { foreach ($o in @($zs, $out, $in)) { if ($o) { try { $o.Dispose() } catch {} } } }
+}
 function ConvertFrom-HttpBytes([byte[]]$Raw) {
     $r = @{ Code = 0; Headers = @{}; Cookies = @(); Body = ''; Location = '' }
     if ($null -eq $Raw -or $Raw.Length -lt 12) { return $r }
@@ -787,14 +798,3 @@ function Get-StepperLines($Rows, [int]$Width) {
         }
     }
     return @(, $l1) + @(, $l2) + @(, $l3)
-}
-
-# ==============================================================================
-# DASHBOARD
-# ==============================================================================
-# Packs "key label" pairs into as many rows as the width needs (never wider than the terminal).
-function Get-LegendRows($Items, [string]$Rec, [int]$Width) {
-    $rows = New-Object System.Collections.ArrayList
-    $segs = @((Seg 'text' '  ')); $len = 2
-    foreach ($it in $Items) {
-        $keyTag = '[' + $it[0] + ']'

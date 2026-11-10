@@ -1,3 +1,20 @@
+    if ($u.UserInfo) { return '' }
+    if (-not (Test-TrustedPortalHost $u.Host)) { return '' }
+    return [string]$u.AbsoluteUri
+}
+# Dynamic first (survives a changed port / zone / path), configured anchor otherwise (already logged in, probe dropped, untrusted host).
+function Resolve-PortalUrl($Inet) {
+    $anchor = Get-ActivePortalUrl
+    if ($Inet.State -ne 'Captive' -or -not $Inet.Location) { return $anchor }
+    $live = Get-SafePortalUrl ([string]$Inet.Location)
+    if ($live) {
+        if ($live -ne $anchor) { try { Write-Log 'INFO' ('Using the login page the network just redirected to: ' + ([uri]$live).GetLeftPart([System.UriPartial]::Path)) } catch {} }
+        return $live
+    }
+    $rh = ''
+    try { $rh = ([uri][string]$Inet.Location).Host } catch {}
+    Write-Log 'WARN' ("The captive redirect points to '{0}', which is not on the campus domain or the configured portal, so it was NOT opened automatically. Opening the configured portal instead." -f $rh)
+    return $anchor
 }
 # ==============================================================================
 # DPAPI SECURE CREDENTIAL VAULT (Machine + Hardware Entropy, AES/DPAPI)
@@ -781,20 +798,3 @@ function Restore-Everything {
                 }
                 if ($snap.ContainsKey('ProxyEnable_CU')) {
                     $pe = [int]$snap['ProxyEnable_CU']
-                    [void](Invoke-Change 'WinINet user proxy restored' {
-                        Set-ItemProperty -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -Name ProxyEnable -Value $pe -Type DWord -Force -ErrorAction SilentlyContinue
-                    })
-                }
-                if ($snap.ContainsKey('ProxyEnable_LM')) {
-                    $pe = [int]$snap['ProxyEnable_LM']
-                    [void](Invoke-Change 'WinINet machine proxy restored' {
-                        Set-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings' -Name ProxyEnable -Value $pe -Type DWord -Force -ErrorAction SilentlyContinue
-                    })
-                }
-                if ($snap.ContainsKey('Llmnr')) {
-                    $lv = $snap['Llmnr']
-                    [void](Invoke-Change 'LLMNR setting restored' { Restore-Llmnr $lv })
-                }
-                if ($snap.ContainsKey('DisabledComponents')) {
-                    $dc = $snap['DisabledComponents']
-                    [void](Invoke-Change 'IPv6 prefix policy restored' {

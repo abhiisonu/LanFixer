@@ -1,3 +1,14 @@
+}
+
+# ==============================================================================
+# DASHBOARD
+# ==============================================================================
+# Packs "key label" pairs into as many rows as the width needs (never wider than the terminal).
+function Get-LegendRows($Items, [string]$Rec, [int]$Width) {
+    $rows = New-Object System.Collections.ArrayList
+    $segs = @((Seg 'text' '  ')); $len = 2
+    foreach ($it in $Items) {
+        $keyTag = '[' + $it[0] + ']'
         $cell = $keyTag.Length + 1 + $it[1].Length + 2
         if ($len + $cell -gt ($Width + 2) -and $len -gt 2) { [void]$rows.Add($segs); $segs = @((Seg 'text' '  ')); $len = 2 }
         $isRec = ($it[0].ToLower() -eq $Rec)
@@ -787,14 +798,3 @@ function Get-ProbeVerdict($P1, $P2) {
     if ($P1.Error -eq 'DnsFail' -and $P2.Error -eq 'DnsFail') { return 'NoDns' }
     foreach ($p in @($P1, $P2)) {
         $c = [int]$p.Code
-        if (($c -ge 300 -and $c -le 399) -or ($c -ge 200 -and $c -le 299) -or $c -eq 401 -or $c -eq 407 -or $c -eq 511 -or ($p.Location -and $p.Location -ne '')) { return 'Captive' }
-    }
-    return 'Offline'
-}
-function Get-PrimarySourceIp {
-    foreach ($a in @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })) {
-        $ip = Get-ValidIPv4 $a
-        if ($ip) { return [string]$ip }
-    }
-    return ''
-}

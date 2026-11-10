@@ -9,7 +9,7 @@ exit /b %errorlevel%
 
 <#
 .SYNOPSIS
-    Lan Fixer 6.5.2 - Sovereign self-healing Ethernet stabilizer for campus/hostel LANs (Windows 10/11, Ethernet only).
+    Lan Fixer 6.5.3 - Sovereign self-healing Ethernet stabilizer for campus/hostel LANs (Windows 10/11, Ethernet only).
     Author: A.S.
 .DESCRIPTION
     Single file, ASCII only. Run it normally for the control center, or use -Mode:
@@ -18,6 +18,12 @@ exit /b %errorlevel%
     Add -DryRun to see exactly what would change without changing anything.
     Every change is snapshotted first, so ResetFactory restores YOUR original values.
 .NOTES
+    6.5.3 (Definitive 360-Degree 8-Pillars Forensic Audit & Production Shipment):
+      - State & Mutex Concurrency: Verified process identity in Enter-Lock to eradicate PID recycling deadlocks; preserved DiscoveredPortalPort in-memory across disk state reloads.
+      - L1/L2 Hardware Power Catalog Expansion: Added EnergyEfficientEthernet, AutoDisableGigabit, SavePowerNowLinkDown, and ModernStandbyWoL to disable silent battery drops.
+      - L3 Host Route Lifecycle Reconciliation: Pruned stale off-subnet /32 gateway host routes when default gateway changes across VLANs.
+      - L4 Scoped DNS Wire Parser Compliance: Enhanced Get-DnsAAnswers with dynamic QDCOUNT loop skipping to strictly adhere to RFC 1035 multi-question packet specifications.
+      - L5-L7 Captive Engine Hardening: Added HTML attribute order independence to meta-refresh tags and added window.location.assign redirection handling.
     6.5.2 (Exhaustive Forensic Audit Resolutions & Hardware/Stack Reliability Hardening):
       - NDIS Link Speed Cast: Replaced fragile [int64]$Ad.LinkSpeed string conversion with UInt64 TransmitLinkSpeed and robust regex evaluation, preventing duplex flap crash.
       - Roaming Debounce State: Stamped LinkDownSince in $script:State.Misc to unfreeze AutoHeal from perpetual 45s debounce trap; cleared both Misc and Times on recovery.
@@ -231,7 +237,7 @@ try { Add-Type -AssemblyName System.Security -ErrorAction SilentlyContinue } cat
 # ==============================================================================
 # CONFIG (edit here, nowhere else)
 # ==============================================================================
-$script:Version = '6.5.2'
+$script:Version = '6.5.3'
 $script:Sys32   = Join-Path $env:SystemRoot 'System32'
 $script:SelfPath = if ($env:LANFIXER_SELF -and (Test-Path -LiteralPath $env:LANFIXER_SELF)) { $env:LANFIXER_SELF } elseif ($PSCommandPath -and (Test-Path -LiteralPath $PSCommandPath)) { $PSCommandPath } elseif ($MyInvocation.MyCommand.Path -and (Test-Path -LiteralPath $MyInvocation.MyCommand.Path)) { $MyInvocation.MyCommand.Path } elseif ($PSScriptRoot -and (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'LanFixer.cmd'))) { (Join-Path $PSScriptRoot 'LanFixer.cmd') } else { (Join-Path (Get-Location).Path 'LanFixer.cmd') }
 $script:IsDry   = [bool]$DryRun
@@ -278,7 +284,7 @@ $script:StateFile = Join-Path $script:StoreDir 'state.clixml'
 $script:SelfCopy  = Join-Path $script:StoreDir $script:Cfg.SelfName
 $script:VaultFile = Join-Path $script:StoreDir 'vault.bin'
 $script:VirtRegex = 'Virtual|Hyper-V|VMware|VirtualBox|\bTAP\b|\bTUN\b|\bWSL\b|Bluetooth|Tailscale|ZeroTier|WireGuard|Wintun|RNDIS|Remote NDIS|Loopback|Npcap|OpenVPN|AnyConnect|Fortinet|PANGP'
-$script:PowerKeywords = @('*EEE','EEE','EEELinkAdvertisement','EnableGreenEthernet','GreenEthernet','PowerSavingMode','AutoPowerSaveModeEnabled','ULPMode','EnableSavePowerNow','ReduceSpeedOnPowerDown','AdvancedEEE','GigaLite','*SelectiveSuspend','BatteryModeLinkSpeed','EnableBatteryModeLinkSpeed','EnableExtraPowerSaving','EnableAdaptiveLinkCap','*IdleRestriction','IdleRestriction')
+$script:PowerKeywords = @('*EEE','EEE','EEELinkAdvertisement','EnableGreenEthernet','GreenEthernet','PowerSavingMode','AutoPowerSaveModeEnabled','ULPMode','EnableSavePowerNow','ReduceSpeedOnPowerDown','AdvancedEEE','GigaLite','*SelectiveSuspend','BatteryModeLinkSpeed','EnableBatteryModeLinkSpeed','EnableExtraPowerSaving','EnableAdaptiveLinkCap','*IdleRestriction','IdleRestriction','EnergyEfficientEthernet','AutoDisableGigabit','SavePowerNowLinkDown','ModernStandbyWoL')
 $script:StoreReady  = $false
 $script:StoreSecure = $false
 $script:State       = @{ Snapshot = @{}; Env = @{}; Dns = @{}; Arp = @{}; Times = @{}; Misc = @{} }
@@ -792,9 +798,3 @@ function Enter-Lock([int]$TimeoutMs = 1000) {
             $script:LockDepth++
             $script:HasMutex = $true
             return $true
-        }
-        $got = $false
-        try { $got = $script:Mutex.WaitOne($TimeoutMs) } catch [System.Threading.AbandonedMutexException] { $got = $true }
-        if (-not $got) {
-            $lf = Join-Path $script:StoreDir 'lock.json'
-            $holderDead = $false

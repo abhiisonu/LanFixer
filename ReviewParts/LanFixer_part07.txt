@@ -1,3 +1,20 @@
+                }
+            }
+        }
+    }
+    if ($ok -and -not $script:IsDry) { (Get-SubTable 'Dns' $guid).Managed = $true; Clear-DnsClientCache -ErrorAction SilentlyContinue }
+    return $ok
+}
+function Set-AdapterDnsAutomatic($Ad) {
+    $guid = [string]$Ad.InterfaceGuid
+    $curNs = Get-StaticDnsString $guid
+    if ($curNs -eq '') { return $false }
+    Save-Original $guid 'DnsStatic' $curNs
+    $ok = Invoke-Change "DNS on $($Ad.Name) -> automatic (DHCP)" {
+        try {
+            Set-DnsClientServerAddress -InterfaceIndex $Ad.ifIndex -ResetServerAddresses -ErrorAction Stop
+        } catch {
+            $netsh = Get-SysExe 'netsh.exe'
             [void](Invoke-Native $netsh @('interface', 'ipv4', 'set', 'dnsservers', ("name={0}" -f $Ad.Name), 'dhcp') 5000)
         }
     }
@@ -781,20 +798,3 @@ function Shield-SystemStack([switch]$Aggressive) {
             }
         }
     }
-    # 1. Ensure Core Windows Network Services are alive (registry fallback for ACL-locked services)
-    foreach ($svcName in @('Dhcp','Dnscache','NlaSvc','netprofm','WlanSvc','BFE','mpssvc','iphlpsvc')) {
-        $sv = Get-Service -Name $svcName -ErrorAction SilentlyContinue
-        if ($sv) {
-            if ($sv.StartType -eq 'Disabled') {
-                [void](Invoke-Change "Re-enabled critical Windows service $svcName" {
-                    try { Set-Service -Name $svcName -StartupType Automatic -ErrorAction Stop }
-                    catch {
-                        $sk = "HKLM:\SYSTEM\CurrentControlSet\Services\$svcName"
-                        if (Test-Path -LiteralPath $sk) { Set-ItemProperty -LiteralPath $sk -Name Start -Value 2 -Type DWord -Force -ErrorAction SilentlyContinue }
-                    }
-                })
-            }
-            if ($sv.Status -ne 'Running') {
-                [void](Invoke-Change "Started critical Windows service $svcName" { Start-Service -Name $svcName -ErrorAction SilentlyContinue })
-            }
-        }

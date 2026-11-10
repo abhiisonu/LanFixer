@@ -1,3 +1,20 @@
+                # Deactivate rogue 3rd-party NDIS filter drivers (Npcap, VirtualBox, VPN, Antivirus packet drop traps)
+                try {
+                    $bindings = @(Get-NetAdapterBinding -Name $ad.Name -ErrorAction SilentlyContinue)
+                    foreach ($b in $bindings) {
+                        if ($b.ComponentID -notmatch '^(ms_|vms_)' -and $b.Enabled) {
+                            Write-Log 'WARN' "Deactivating 3rd-party NDIS filter trap '$($b.DisplayName)' ($($b.ComponentID)) on $($ad.Name)..."
+                            if (-not $script:State.Snapshot.ContainsKey('DeactivatedFilters')) {
+                                $script:State.Snapshot['DeactivatedFilters'] = @{}
+                            }
+                            if (-not $script:State.Snapshot['DeactivatedFilters'].ContainsKey($ad.Name)) {
+                                $script:State.Snapshot['DeactivatedFilters'][$ad.Name] = @()
+                            }
+                            if ($script:State.Snapshot['DeactivatedFilters'][$ad.Name] -notcontains $b.ComponentID) {
+                                $script:State.Snapshot['DeactivatedFilters'][$ad.Name] += $b.ComponentID
+                            }
+                            try { Disable-NetAdapterBinding -Name $ad.Name -ComponentID $b.ComponentID -ErrorAction SilentlyContinue } catch {}
+                        }
                     }
                 } catch {}
                 try {
@@ -781,20 +798,3 @@ function Get-SafePortalUrl([string]$Location) {
     try { $u = [uri]$Location } catch { return '' }
     if (-not $u.IsAbsoluteUri) { return '' }
     if ($u.Scheme -ne 'http' -and $u.Scheme -ne 'https') { return '' }
-    if ($u.UserInfo) { return '' }
-    if (-not (Test-TrustedPortalHost $u.Host)) { return '' }
-    return [string]$u.AbsoluteUri
-}
-# Dynamic first (survives a changed port / zone / path), configured anchor otherwise (already logged in, probe dropped, untrusted host).
-function Resolve-PortalUrl($Inet) {
-    $anchor = Get-ActivePortalUrl
-    if ($Inet.State -ne 'Captive' -or -not $Inet.Location) { return $anchor }
-    $live = Get-SafePortalUrl ([string]$Inet.Location)
-    if ($live) {
-        if ($live -ne $anchor) { try { Write-Log 'INFO' ('Using the login page the network just redirected to: ' + ([uri]$live).GetLeftPart([System.UriPartial]::Path)) } catch {} }
-        return $live
-    }
-    $rh = ''
-    try { $rh = ([uri][string]$Inet.Location).Host } catch {}
-    Write-Log 'WARN' ("The captive redirect points to '{0}', which is not on the campus domain or the configured portal, so it was NOT opened automatically. Opening the configured portal instead." -f $rh)
-    return $anchor

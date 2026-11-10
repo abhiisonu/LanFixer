@@ -1,3 +1,14 @@
+        if (($c -ge 300 -and $c -le 399) -or ($c -ge 200 -and $c -le 299) -or $c -eq 401 -or $c -eq 407 -or $c -eq 511 -or ($p.Location -and $p.Location -ne '')) { return 'Captive' }
+    }
+    return 'Offline'
+}
+function Get-PrimarySourceIp {
+    foreach ($a in @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })) {
+        $ip = Get-ValidIPv4 $a
+        if ($ip) { return [string]$ip }
+    }
+    return ''
+}
 # State: Online | Captive | NoDns | Offline  (+ Location of a captive redirect, when there is one)
 function Get-InternetState {
     param([switch]$NoCache, [string]$SourceIp)
@@ -787,14 +798,3 @@ function Shield-Dot3Svc($Ad) {
 function Wait-StpConvergence($Ad, [int]$MaxWaitSec = 45) {
     if (-not $Ad -or $script:IsDry) { return $true }
     Write-Log 'INFO' ("Evaluating switch-port STP convergence on {0} (up to {1}s)..." -f $Ad.Name, $MaxWaitSec)
-    $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    $converged = $false
-    while ($sw.Elapsed.TotalSeconds -lt $MaxWaitSec) {
-        $curAd = Get-NetAdapter -Name $Ad.Name -ErrorAction SilentlyContinue
-        if ($curAd -and $curAd.Status -eq 'Up') {
-            $ip = Get-ValidIPv4 $curAd
-            $hasV6 = @(Get-NetIPAddress -InterfaceIndex $curAd.ifIndex -AddressFamily IPv6 -ErrorAction SilentlyContinue | Where-Object { [string]$_.AddressState -eq 'Preferred' -and [string]$_.IPAddress -notmatch '^(fe80|::1)' }).Count -gt 0
-            if ($ip -or $hasV6) {
-                $gw = @(Get-GatewaysV4 $curAd) | Select-Object -First 1
-                if ($gw) {
-                    $chk = Test-GatewayAlive $curAd $gw
