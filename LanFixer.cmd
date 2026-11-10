@@ -4100,6 +4100,7 @@ function Test-DhcpLeaseUsable($Ad) {
     return (Test-GatewayAlive $Ad $gw).Alive
 }
 function Repair-Dhcp($Ad, [switch]$ForceRelease) {
+    if (-not $Ad -or -not $Ad.Name) { return $false }
     $guid = [string]$Ad.InterfaceGuid
     $ipconfig = Get-SysExe 'ipconfig.exe'
     Write-Log 'WARN' ("Starting DHCP recovery ladder on {0} ({1})." -f $Ad.Name, $(if ($ForceRelease) { 'gateway unreachable / stale lease' } else { 'APIPA / no valid IPv4' }))
@@ -6954,6 +6955,9 @@ function Invoke-ArmageddonReset([switch]$RebootNow) {
     if ($netcfgRes.Output) {
         Write-Log 'INFO' ("netcfg output: {0}" -f $netcfgRes.Output.Trim())
     }
+    if ($netcfgRes.ExitCode -ne 0) {
+        Write-Log 'WARN' ("netcfg returned exit code {0} or timed out. System reboot will complete driver cleanup." -f $netcfgRes.ExitCode)
+    }
 
     # Post-cleanup pass
     Write-Log 'STEP' 'STAGE 3/4 Running post-cleanup: resetting Winsock, Firewall & RadioManagement...'
@@ -9364,6 +9368,12 @@ function Invoke-LogicTests {
     $cfgHttpObj = [PSCustomObject]@{ PortalUrl = 'http://gateway.college.edu:8888/' }
     $cfgHttpRes = ConvertTo-CfgOverride $cfgHttpObj
     Write-Check 'Logic: ConvertTo-CfgOverride enforces HTTPS and rejects HTTP portal URLs' ($cfgHttpsRes.ContainsKey('PortalUrl') -and -not $cfgHttpRes.ContainsKey('PortalUrl'))
+    Write-Check 'Logic: Repair-Dhcp safely rejects null adapter parameter without exception' (-not (Repair-Dhcp $null))
+    $origDry = $script:IsDry
+    $script:IsDry = $true
+    $drySnapOk = Restore-PreflightSnapshot @{ ifIndex = 999; Name = 'DryTest'; Metric = 5; Dns = @('1.1.1.1') }
+    $script:IsDry = $origDry
+    Write-Check 'Logic: Restore-PreflightSnapshot honors DryRun without mutating network' $drySnapOk
 
     $mockUntrustedSid = 'S-1-5-21-999-999-999-1001'
     $ownerTrustedCheck = (@('S-1-5-18', 'S-1-5-32-544') -contains $mockUntrustedSid)
@@ -10109,6 +10119,7 @@ function Capture-PreflightSnapshot($Ad) {
 
 function Restore-PreflightSnapshot($Snapshot) {
     if (-not $Snapshot -or -not $Snapshot.ifIndex) { return $false }
+    if ($script:IsDry) { Write-Log 'DRY' ("Would rollback configuration on {0} to pre-flight snapshot" -f $Snapshot.Name); return $true }
     $ifIdx = [int]$Snapshot.ifIndex
     $adName = [string]$Snapshot.Name
     Write-Log 'WARN' ("Rolling back configuration on {0} to pre-flight snapshot..." -f $adName)

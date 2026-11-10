@@ -186,7 +186,7 @@ Ledger Standard: R5 (100% of 302 functions reviewed through Lenses L1..L10)
 | 160 | `Get-IPv4Interface` | L4029-L4031 | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] | Clean under audit | SelfTest / AST | Verified-by-Reasoning |
 | 161 | `Get-DhcpFailureDiagnosis` | L4031-L4032 | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] | Clean under audit | SelfTest / AST | Verified-by-Reasoning |
 | 162 | `Test-DhcpLeaseUsable` | L4032-L4039 | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] | Clean under audit | SelfTest / AST | Verified-by-Reasoning |
-| 163 | `Repair-Dhcp` | L4039-L4122 | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] | Clean under audit | SelfTest / AST | Verified-by-Reasoning |
+| 163 | `Repair-Dhcp` | L4039-L4122 | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] | Null adapter parameter guard against binding exception | verify.ps1 (SelfTest) | Verified-by-Test |
 | 164 | `Test-DadConflictEvidence` | L4122-L4129 | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] | Clean under audit | SelfTest / AST | Verified-by-Reasoning |
 | 165 | `Shield-DataLink` | L4129-L4241 | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] | Clean under audit | SelfTest / AST | Verified-by-Reasoning |
 | 166 | `Get-GatewayMacs` | L4241-L4267 | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] | Clean under audit | SelfTest / AST | Verified-by-Reasoning |
@@ -315,7 +315,7 @@ Ledger Standard: R5 (100% of 302 functions reviewed through Lenses L1..L10)
 | 289 | `Show-ResetMenu` | L9833-L9910 | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] | All 5 reset and recovery tiers confirmation | verify.ps1 (SelfTest) | Verified-by-Test |
 | 290 | `Write-HealSummary` | L9910-L9920 | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] | Clean under audit | SelfTest / AST | Verified-by-Reasoning |
 | 291 | `Capture-PreflightSnapshot` | L9920-L9966 | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] | Clean under audit | SelfTest / AST | Verified-by-Reasoning |
-| 292 | `Restore-PreflightSnapshot` | L9966-L9991 | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] | Clean under audit | SelfTest / AST | Verified-by-Reasoning |
+| 292 | `Restore-PreflightSnapshot` | L9966-L9991 | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] | Honors DryRun; guards network mutation | verify.ps1 (SelfTest) | Verified-by-Test |
 | 293 | `Invoke-AcidMutation` | L9991-L10033 | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] | Preflight snapshot and rollback verification | verify.ps1 (SelfTest) | Verified-by-Test |
 | 294 | `Write-SentinelLog` | L10033-L10054 | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] | Clean under audit | SelfTest / AST | Verified-by-Reasoning |
 | 295 | `New-SentinelTaskXml` | L10054-L10111 | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] | [x] | Clean under audit | SelfTest / AST | Verified-by-Reasoning |
