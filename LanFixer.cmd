@@ -316,9 +316,9 @@ $script:Cfg = @{
     TaskWatchdog    = 'LanFixer_Watchdog'
     TaskPortal      = 'LanFixer_Portal'
     PortalHost      = 'gateway.nitjsr.ac.in'
-    PortalPort      = 8003
+    PortalPort      = 8888
     PortalIp        = '10.114.0.5'
-    PortalUrl       = 'https://gateway.nitjsr.ac.in:8003/index.php?zone=nitjsr'
+    PortalUrl       = 'https://10.114.0.5:8888/'
     CampusDns       = '172.16.1.2'
     CampusDomain    = 'nitjsr.ac.in'
     GwRegex         = '^(10\.\d{1,3}\.\d{1,3}\.1|172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.1|192\.168\.\d{1,3}\.1|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.1)$'   # multi-subnet / campus / router gateway hint
@@ -403,6 +403,7 @@ function Write-Log {
         'FAIL'  { Out-Wrapped 'bad' $g.bad 'bad' $Message }
         'ALERT' { Out-Wrapped 'bad!' $g.bad 'bad!' $Message }
         'DRY'   { Out-Wrapped 'vio' $g.half 'vio' $Message }
+        'PLAN'  { Out-Wrapped 'info' $g.half 'info' $Message }
         default { Out-Line @((Seg 'text' ('    ' + $Message))) }
     }
 }
@@ -415,6 +416,7 @@ function Add-ChangeLedgerEntry {
         [string]$Description,
         [string]$MutationType = 'Generic',
         [string]$Target = '',
+        [string]$ValueName = '',
         $OldValue = $null,
         $NewValue = $null,
         [bool]$Success = $true,
@@ -446,6 +448,7 @@ function Add-ChangeLedgerEntry {
             Description    = [string]$Description
             MutationType   = [string]$MutationType
             Target         = [string]$Target
+            ValueName      = [string]$ValueName
             OldValue       = $OldValue
             NewValue       = $NewValue
             Success        = $Success
@@ -930,8 +933,9 @@ function Show-HistoryErrors([int]$Limit = 50, [switch]$NoColor) {
 
 function Get-HistoryWindowsEvents([int]$Limit = 50, [int]$Hours = 24) {
     $out = New-Object System.Collections.ArrayList
+    $halfLim = [Math]::Max(1, [int][Math]::Ceiling($Limit / 2.0))
     try {
-        $npEvents = @(Get-WinEvent -FilterHashtable @{ LogName = 'Microsoft-Windows-NetworkProfile/Operational'; StartTime = (Get-Date).AddHours(-$Hours) } -MaxEvents ($Limit / 2) -ErrorAction SilentlyContinue)
+        $npEvents = @(Get-WinEvent -FilterHashtable @{ LogName = 'Microsoft-Windows-NetworkProfile/Operational'; StartTime = (Get-Date).AddHours(-$Hours) } -MaxEvents $halfLim -ErrorAction SilentlyContinue)
         foreach ($e in $npEvents) {
             $desc = switch ($e.Id) {
                 10000 { "Network Connected" }
@@ -1153,6 +1157,7 @@ function Show-HistoryHeals([int]$Limit = 30, [switch]$NoColor) {
 
 function Get-HistoryTimeline([int]$Limit = 50) {
     $timeline = New-Object System.Collections.ArrayList
+    $halfLim = [Math]::Max(1, [int][Math]::Ceiling($Limit / 2.0))
     $ledgerFile = Join-Path $script:StoreDir 'change_ledger.jsonl'
     if (Test-Path -LiteralPath $ledgerFile) {
         $lines = @(Get-Content -LiteralPath $ledgerFile -ErrorAction SilentlyContinue)
@@ -1170,10 +1175,10 @@ function Get-HistoryTimeline([int]$Limit = 50) {
                     })
                 }
             } catch {}
-            if ($timeline.Count -ge ($Limit / 2)) { break }
+            if ($timeline.Count -ge $halfLim) { break }
         }
     }
-    $logs = Get-HistorySessionLogs -Limit ($Limit / 2)
+    $logs = Get-HistorySessionLogs -Limit $halfLim
     foreach ($l in $logs) {
         $cat = if ($l.Level -in @('FAIL', 'WARN')) { '[ERROR]' } elseif ($l.Level -eq 'STEP') { '[STEP]' } else { '[LOG]' }
         [void]$timeline.Add(@{
@@ -1183,7 +1188,7 @@ function Get-HistoryTimeline([int]$Limit = 50) {
             Event     = $l.Message
         })
     }
-    $win = Get-HistoryWindowsEvents -Limit ($Limit / 2)
+    $win = Get-HistoryWindowsEvents -Limit $halfLim
     foreach ($w in $win) {
         [void]$timeline.Add(@{
             Timestamp = $w.Timestamp
@@ -1246,7 +1251,7 @@ function Show-HistoryLiveStream([int]$RefreshSeconds = 2) {
     Out-Line @((Seg 'dim' '  [SPACE] Pause/Resume  |  [C] Clear Screen  |  [Q] Return to Menu'))
     Out-Line @()
     $paused = $false
-    $lastLineCount = 0
+    $lastSeenLine = ''
     try {
         while ($true) {
             if (Test-KeyAvailable) {
@@ -1265,21 +1270,25 @@ function Show-HistoryLiveStream([int]$RefreshSeconds = 2) {
             }
             if (-not $paused -and (Test-Path -LiteralPath $script:LogFile)) {
                 $allLines = @(Get-Content -LiteralPath $script:LogFile -Tail 20 -ErrorAction SilentlyContinue)
-                if ($allLines.Count -gt $lastLineCount) {
-                    $newCount = $allLines.Count - $lastLineCount
-                    $start = [Math]::Max(0, $allLines.Count - [Math]::Min(5, $newCount))
+                if ($allLines.Count -gt 0 -and $allLines[-1] -ne $lastSeenLine) {
+                    $start = [Math]::Max(0, $allLines.Count - 5)
+                    if ($lastSeenLine) {
+                        for ($li = $allLines.Count - 1; $li -ge 0; $li--) {
+                            if ($allLines[$li] -eq $lastSeenLine) { $start = $li + 1; break }
+                        }
+                    }
                     for ($idx = $start; $idx -lt $allLines.Count; $idx++) {
                         $line = $allLines[$idx]
                         $col = 'dim'
                         if ($line -match '\[OK\s*\]') { $col = 'ok' }
                         elseif ($line -match '\[WARN\s*\]') { $col = 'warn' }
-                        elseif ($line -match '\[FAIL\s*\]') { $col = 'bad' }
+                        elseif ($line -match '\[(FAIL|ALERT)\s*\]') { $col = 'bad' }
                         elseif ($line -match '\[STEP\s*\]') { $col = 'accent!' }
                         elseif ($line -match '\[INFO\s*\]') { $col = 'dim' }
                         Out-Line @((Seg $col ("  " + $line)))
                     }
+                    $lastSeenLine = $allLines[-1]
                 }
-                $lastLineCount = $allLines.Count
             }
             Start-Sleep -Milliseconds ($RefreshSeconds * 1000)
         }
@@ -1500,6 +1509,7 @@ function Invoke-Change {
         [switch]$FailOnFalse,
         [string]$MutationType = 'Generic',
         [string]$Target = '',
+        [string]$ValueName = '',
         $OldValue = $null,
         $NewValue = $null,
         [string]$UndoScript = '',
@@ -1527,12 +1537,12 @@ function Invoke-Change {
         if ($FailOnFalse -and $out.Count -gt 0 -and $out[-1] -is [bool] -and -not $out[-1]) { throw 'the action reported failure' }
         $script:ChangeCount++
         Write-Log 'OK' $Description
-        Add-ChangeLedgerEntry -Description $Description -MutationType $MutationType -Target $Target -OldValue $OldValue -NewValue $NewValue -Success $true -Reversible ([bool]($Reversible -or $UndoScript)) -UndoScript $UndoScript
+        Add-ChangeLedgerEntry -Description $Description -MutationType $MutationType -Target $Target -ValueName $ValueName -OldValue $OldValue -NewValue $NewValue -Success $true -Reversible ([bool]($Reversible -or $UndoScript)) -UndoScript $UndoScript
         return $true
     } catch {
         $script:FailCount++
         Write-Log 'FAIL' ("{0} -> {1}" -f $Description, $_.Exception.Message)
-        Add-ChangeLedgerEntry -Description $Description -MutationType $MutationType -Target $Target -OldValue $OldValue -NewValue $NewValue -Success $false -Reversible $false
+        Add-ChangeLedgerEntry -Description $Description -MutationType $MutationType -Target $Target -ValueName $ValueName -OldValue $OldValue -NewValue $NewValue -Success $false -Reversible $false
         return $false
     }
 }
@@ -1801,21 +1811,38 @@ function Import-UserConfig {
         if ($names.Count -gt 0) { Write-Log 'INFO' ('config.json applied: ' + (($names | Sort-Object) -join ', ')) }
     } catch { Write-Log 'WARN' ('config.json ignored: ' + $_.Exception.Message) }
 }
+$script:NitjsrCacheVal = $null
+$script:NitjsrCacheTicks = 0L
 function Test-IsNitjsrNetwork {
+    $nowTicks = [System.Diagnostics.Stopwatch]::GetTimestamp()
+    if ($null -ne $script:NitjsrCacheVal -and (($nowTicks - $script:NitjsrCacheTicks) / [System.Diagnostics.Stopwatch]::Frequency) -lt 15.0) {
+        return [bool]$script:NitjsrCacheVal
+    }
+    $verdict = $false
     try {
-        $dom = if ($script:State.Misc -and $script:State.Misc['DiscoveredDomain']) { [string]$script:State.Misc['DiscoveredDomain'] } else { '' }
-        if ($dom -and ($dom -eq 'nitjsr.ac.in' -or $dom.EndsWith('.nitjsr.ac.in'))) { return $true }
-        foreach ($a in @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' })) {
-            $sfx = (Get-DnsClient -InterfaceIndex $a.ifIndex -ErrorAction SilentlyContinue).ConnectionSpecificSuffix
-            if ($sfx -and ($sfx.ToLower() -eq 'nitjsr.ac.in' -or $sfx.ToLower().EndsWith('.nitjsr.ac.in'))) { return $true }
-            $dns = @(Get-DhcpDnsServers ([string]$a.InterfaceGuid))
-            if ($dns -contains '172.16.1.2') { return $true }
-            $np = Get-NetConnectionProfile -InterfaceIndex $a.ifIndex -ErrorAction SilentlyContinue
-            if ($np -and $np.Name -match 'nitjsr') { return $true }
+        $cDom = ([string]$script:Cfg.CampusDomain).Trim().Trim('.').ToLowerInvariant()
+        $dom = if ($script:State.Misc -and $script:State.Misc['DiscoveredDomain']) { ([string]$script:State.Misc['DiscoveredDomain']).ToLowerInvariant() } else { '' }
+        if ($dom -and $cDom -and ($dom -eq $cDom -or $dom.EndsWith('.' + $cDom))) { $verdict = $true }
+        if (-not $verdict) {
+            $anyPrivate10 = $false
+            foreach ($a in (@(Get-EthernetAdapters) + @(Get-OtherUplinkAdapters) | Where-Object { $_ -and $_.Status -eq 'Up' })) {
+                $sfx = [string](Get-DnsClient -InterfaceIndex $a.ifIndex -ErrorAction SilentlyContinue).ConnectionSpecificSuffix
+                if ($sfx -and $cDom -and ($sfx.ToLowerInvariant() -eq $cDom -or $sfx.ToLowerInvariant().EndsWith('.' + $cDom))) { $verdict = $true; break }
+                $dns = @(Get-DhcpDnsServers ([string]$a.InterfaceGuid))
+                if ($script:Cfg.CampusDns -and ($dns -contains [string]$script:Cfg.CampusDns)) { $verdict = $true; break }
+                $np = Get-NetConnectionProfile -InterfaceIndex $a.ifIndex -ErrorAction SilentlyContinue
+                if ($np -and $np.Name -match 'nitjsr') { $verdict = $true; break }
+                $ip4 = Get-ValidIPv4 $a
+                if ($ip4 -and $ip4 -notlike '192.168.*') { $anyPrivate10 = $true }
+            }
+            if (-not $verdict -and $anyPrivate10 -and (Test-TcpPort ([string]$script:Cfg.PortalIp) ([int]$script:Cfg.PortalPort) 250)) {
+                $verdict = $true
+            }
         }
-        if (Test-TcpPort '10.114.0.5' 8003 250) { return $true }
     } catch {}
-    return $false
+    $script:NitjsrCacheVal = $verdict
+    $script:NitjsrCacheTicks = $nowTicks
+    return $verdict
 }
 function Invoke-NetworkAutoDiscovery {
     param([switch]$Force)
@@ -1868,19 +1895,17 @@ function Invoke-NetworkAutoDiscovery {
             }
         }
 
-        # 3. Discover Active Web Services on Gateway
-        if ($primaryGw -and (-not $script:State.Misc['DiscoveredPortalUrl']) -and -not $script:IsDry) {
-            $gwPorts = @(80, 443, 8080, 8003, 8443, 8888)
+        # 3. Discover Active Captive Portal Services on Gateway (dedicated portal ports on non-NITJSR networks)
+        if ($primaryGw -and (-not $script:State.Misc['DiscoveredPortalUrl']) -and -not $script:IsDry -and (-not (Test-IsNitjsrNetwork))) {
+            $gwPorts = @(8003, 8888, 8443, 8080)
             foreach ($p in $gwPorts) {
                 if (Test-TcpPort $primaryGw $p 250) {
                     $script:State.Misc['DiscoveredPortalPort'] = $p
                     $script:State.Misc['DiscoveredPortalIp'] = $primaryGw
                     $proto = if ($p -eq 443 -or $p -eq 8443) { 'https' } else { 'http' }
                     $portStr = if ($p -eq 80 -or $p -eq 443) { '' } else { ":$p" }
-                    if (-not (Test-IsNitjsrNetwork)) {
-                        $script:State.Misc['DiscoveredPortalUrl'] = ($proto + '://' + $primaryGw + $portStr + '/')
-                        $script:State.Misc['DiscoveredPortalHost'] = $primaryGw
-                    }
+                    $script:State.Misc['DiscoveredPortalUrl'] = ($proto + '://' + $primaryGw + $portStr + '/')
+                    $script:State.Misc['DiscoveredPortalHost'] = $primaryGw
                     break
                 }
             }
@@ -1911,13 +1936,15 @@ function Get-ActivePortalUrl {
         if ($safe) { return $safe }
     }
     if (-not (Test-IsNitjsrNetwork) -and -not (Test-Path -LiteralPath (Join-Path $script:StoreDir 'config.json'))) {
-        $gws = @(Get-GatewaysV4) | Where-Object { $_ }
-        if ($gws.Count -gt 0) {
-            $gw = [string]$gws[0]
-            $p = if ($script:State.Misc -and $script:State.Misc['DiscoveredPortalPort']) { [int]$script:State.Misc['DiscoveredPortalPort'] } else { Find-ActivePortalPort $gw 80 }
-            $proto = if ($p -eq 443 -or $p -eq 8443) { 'https' } else { 'http' }
-            $portStr = if ($p -eq 80 -or $p -eq 443) { '' } else { ":$p" }
-            return ($proto + '://' + $gw + $portStr + '/')
+        if ($script:State.Misc -and $script:State.Misc['DiscoveredPortalPort']) {
+            $p = [int]$script:State.Misc['DiscoveredPortalPort']
+            $gws = @(Get-GatewaysV4) | Where-Object { $_ }
+            if ($gws.Count -gt 0) {
+                $gw = [string]$gws[0]
+                $proto = if ($p -eq 443 -or $p -eq 8443) { 'https' } else { 'http' }
+                $portStr = if ($p -eq 80 -or $p -eq 443) { '' } else { ":$p" }
+                return ($proto + '://' + $gw + $portStr + '/')
+            }
         }
     }
     return [string]$script:Cfg.PortalUrl
@@ -1930,7 +1957,7 @@ function Find-ActivePortalPort([string]$HostOrIp, [int]$DefaultPort = 8003) {
             if (Test-TcpPort $HostOrIp $savedPort 250) { return $savedPort }
         }
     }
-    $probePorts = @([int]$DefaultPort, 8003, 8888, 8443, 8080, 443, 80) | Select-Object -Unique
+    $probePorts = @(8888, [int]$DefaultPort, 8003, 8443, 8080, 443, 80) | Select-Object -Unique
     foreach ($p in $probePorts) {
         if (Test-TcpPort $HostOrIp $p 300) {
             if ($script:State.Misc) { $script:State.Misc['DiscoveredPortalPort'] = $p }
@@ -2088,6 +2115,12 @@ function Initialize-Store {
                 [void][System.Management.Automation.Language.Parser]::ParseFile($script:SelfPath, [ref]$null, [ref]$parseErrs)
                 if ($null -eq $parseErrs -or $parseErrs.Count -eq 0) {
                     Copy-Item -LiteralPath $script:SelfPath -Destination $script:SelfCopy -Force -ErrorAction Stop
+        try {
+            $icacls = Get-SysExe 'icacls.exe'
+            if ($icacls -and (Test-Path -LiteralPath $script:SelfCopy)) {
+                [void](Invoke-Native $icacls @($script:SelfCopy, '/inheritance:r', '/grant:r', 'SYSTEM:(F)', 'Administrators:(F)') 3000)
+            }
+        } catch {}
                     [void](Set-ScriptAuthorization $script:SelfCopy)
                 } else {
                     Write-Log 'WARN' 'Refused to overwrite protected watchdog copy because current script has syntax errors.'
@@ -2198,16 +2231,15 @@ function Enter-Lock([int]$TimeoutMs = 1000) {
             } catch {}
             $memMisc = @{}
             if ($script:State -is [hashtable] -and $script:State.Misc -is [hashtable]) {
-                foreach ($mk in @('LearnedDhcp','DiscoveredDomain','DiscoveredPortalUrl','DiscoveredPortalIp','DiscoveredPortalPort','DiscoveryTime','InjectedHostRoutes')) {
+                foreach ($mk in @('LearnedDhcp','DiscoveredDomain','DiscoveredPortalUrl','DiscoveredPortalIp','DiscoveredPortalPort','DiscoveredPortalHost','DiscoveredDns','DiscoveryTime','InjectedHostRoutes')) {
                     if ($script:State.Misc.ContainsKey($mk)) { $memMisc[$mk] = $script:State.Misc[$mk] }
                 }
             }
             $memEnv = if ($script:State -is [hashtable] -and $script:State.Env -is [hashtable]) { $script:State.Env.Clone() } else { @{} }
             $script:State = Get-State
             if ($memMisc['LearnedDhcp'] -and -not $script:State.Misc['LearnedDhcp']) { $script:State.Misc['LearnedDhcp'] = $memMisc['LearnedDhcp'] }
-            if ($memMisc['DiscoveredPortalPort'] -and -not $script:State.Misc['DiscoveredPortalPort']) { $script:State.Misc['DiscoveredPortalPort'] = $memMisc['DiscoveredPortalPort'] }
             if ($memMisc['DiscoveryTime'] -and ([string]$memMisc['DiscoveryTime'] -ge [string]$script:State.Misc['DiscoveryTime'])) {
-                foreach ($mk in @('DiscoveredDomain','DiscoveredPortalUrl','DiscoveredPortalIp','DiscoveryTime')) {
+                foreach ($mk in @('DiscoveredDomain','DiscoveredPortalUrl','DiscoveredPortalIp','DiscoveredPortalPort','DiscoveredPortalHost','DiscoveredDns','DiscoveryTime')) {
                     if ($memMisc.ContainsKey($mk)) { $script:State.Misc[$mk] = $memMisc[$mk] }
                     else { $script:State.Misc.Remove($mk) }
                 }
@@ -2488,7 +2520,7 @@ function Get-DnsVerdictDecision([bool]$HasGlobalV6, [bool]$HasV6Route, [int]$V6D
 }
 
 function Get-AdapterDnsVerdict($Ad) {
-    if (-not $Ad -or -not $Ad.ifIndex) { return 'Neutralize' }
+    if (-not $Ad -or -not $Ad.ifIndex) { return @{ Action = 'None'; HasGlobalV6 = $false; HasV6Route = $false; V6DnsCount = 0; IsSinkhole = $false } }
     $hasGlobalV6 = $false
     $hasV6Route = $false
     $v6Dns = @()
@@ -3544,14 +3576,14 @@ function Set-UiGlyphs([bool]$Unicode) {
             ok = [string][char]0x2713; bad = [string][char]0x2715; warn = [string][char]0x25B2
             mid = [string][char]0x00B7; arr = [string][char]0x25B8; rule = [string][char]0x2500
             link = [string][char]0x2501; miss = [string][char]0x00D7; ell = [string][char]0x2026
-            prompt = [string][char]0x203A
+            cross = [string][char]0x2715; dash = [string][char]0x2500; prompt = [string][char]0x203A
             spark = @(0x2581, 0x2582, 0x2583, 0x2584, 0x2585, 0x2586, 0x2587, 0x2588 | ForEach-Object { [string][char]$_ })
             spin = @(0x280B, 0x2819, 0x2839, 0x2838, 0x283C, 0x2834, 0x2826, 0x2827, 0x2807, 0x280F | ForEach-Object { [string][char]$_ })
         }
     } else {
         $script:G = @{
             dot = '*'; ring = 'o'; half = '~'; ok = '+'; bad = 'x'; warn = '!'; mid = '.'; arr = '>'; rule = '-'; link = '='
-            miss = 'x'; ell = '...'; prompt = '>'
+            miss = 'x'; cross = 'x'; dash = '-'; ell = '...'; prompt = '>'
             spark = @('_', '.', ',', '-', '~', '^', '"', '#')
             spin = @('|', '/', '-', '\')
         }
@@ -5766,9 +5798,13 @@ function Set-UsbSuspendOff {
     $ac = Get-PowerSettingIndex $scheme 'ac'
     $dc = Get-PowerSettingIndex $scheme 'dc'
     if ($null -eq $ac -and $null -eq $dc) { return }                        # unreadable: never write blind
-    if (($null -eq $ac -or $ac -eq 0) -and ($null -eq $dc -or $dc -eq 0)) { return }   # already off
-    Save-Original 'Global' 'UsbSuspend' @{ Scheme = $scheme; Ac = $ac; Dc = $dc }
     $bat = Get-BatteryHealthAndEfficiency
+    if ($bat.IsOnBattery) {
+        if ($null -eq $ac -or $ac -eq 0) { return }                         # on battery we only touch AC; AC is already 0
+    } else {
+        if (($null -eq $ac -or $ac -eq 0) -and ($null -eq $dc -or $dc -eq 0)) { return }   # already off
+    }
+    Save-Original 'Global' 'UsbSuspend' @{ Scheme = $scheme; Ac = $ac; Dc = $dc }
     [void](Invoke-Change 'USB selective suspend configured for low-latency Ethernet on AC power (preserves battery efficiency)' {
         [void](Invoke-Native $pcfg @('/setacvalueindex', $scheme, $script:UsbSub, $script:UsbSet, '0') 5000)
         if (-not $bat.IsOnBattery) {
@@ -5891,7 +5927,7 @@ function Get-InternetState {
                     if ([System.Net.IPAddress]::TryParse($lu.Host, [ref]$tmpIp) -and (Test-AllowedPortalIp $lu.Host)) {
                         $script:State.Misc['DiscoveredPortalIp'] = $lu.Host
                     } else {
-                        $resIp = Resolve-HostBounded $lu.Host 1500
+                        $resIp = Resolve-HostBounded $lu.Host 1500 $SourceIp
                         if ($resIp -and (Test-AllowedPortalIp $resIp)) {
                             $script:State.Misc['DiscoveredPortalIp'] = $resIp
                         }
@@ -6055,7 +6091,15 @@ function Get-DhcpCaptiveUrl([string]$Guid) {
     }
     return $null
 }
-function Get-GatewaysV4($Ad) {
+function Get-GatewaysV4($Ad = $null) {
+    if ($PSBoundParameters.Count -eq 0) {
+        $allGws = @()
+        foreach ($a in (@(Get-EthernetAdapters) + @(Get-OtherUplinkAdapters) | Where-Object { $_ -and $_.Status -eq 'Up' })) {
+            $allGws += @(Get-NetRoute -InterfaceIndex $a.ifIndex -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue |
+                Where-Object { $_.NextHop -and $_.NextHop -ne '0.0.0.0' } | ForEach-Object { [string]$_.NextHop })
+        }
+        return @($allGws | Where-Object { $_ } | Select-Object -Unique)
+    }
     if (-not $Ad -or -not $Ad.ifIndex) { return @() }
     return @(Get-NetRoute -InterfaceIndex $Ad.ifIndex -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue |
         Where-Object { $_.NextHop -and $_.NextHop -ne '0.0.0.0' } | ForEach-Object { [string]$_.NextHop } | Select-Object -Unique)
@@ -6148,13 +6192,14 @@ function Get-AdapterEnvironment {
         $score += 1; [void]$ev.Add("dedicated DHCP server $dhcpSrv")
     }
     if ($score -lt $cfg.CampusThreshold -and $ip) {
-        $targetPortalIp = if ($script:State.Misc -and $script:State.Misc['DiscoveredPortalIp']) { [string]$script:State.Misc['DiscoveredPortalIp'] } elseif ($gws.Count -gt 0 -and $cfg.PortalIp -ne $gws[0]) { [string]$gws[0] } else { $cfg.PortalIp }
-        if ($targetPortalIp) {
+        $discP = if ($script:State.Misc -and $script:State.Misc['DiscoveredPortalIp']) { [string]$script:State.Misc['DiscoveredPortalIp'] } else { '' }
+        $targetPortalIp = if ($discP) { $discP } else { [string]$cfg.PortalIp }
+        if ($targetPortalIp -and ($ip -notlike '192.168.*' -or $discP -or ($cfg.PortalIp -like '192.168.*'))) {
             $detectedPort = Find-ActivePortalPort $targetPortalIp ([int]$cfg.PortalPort)
-            if (Test-TcpPort $targetPortalIp $detectedPort 700) { $score += 2; $portalHit = $true; [void]$ev.Add(("portal {0}:{1} open" -f $targetPortalIp, $detectedPort)) }
-            if ($null -ne (Test-Ping $targetPortalIp 700)) { $score += 1; $portalHit = $true; [void]$ev.Add("portal firewall answers ping") }
+            if (Test-TcpPort $targetPortalIp $detectedPort 700) { $score += 2; if ($targetPortalIp -eq $cfg.PortalIp) { $portalHit = $true }; [void]$ev.Add(("portal {0}:{1} open" -f $targetPortalIp, $detectedPort)) }
+            if ($null -ne (Test-Ping $targetPortalIp 700)) { $score += 1; if ($targetPortalIp -eq $cfg.PortalIp) { $portalHit = $true }; [void]$ev.Add("portal firewall answers ping") }
+            if ($cfg.CampusDns -and $null -ne (Test-Ping $cfg.CampusDns 700)) { $score += 1; [void]$ev.Add("campus DNS answers ping") }
         }
-        if ($cfg.CampusDns -and $null -ne (Test-Ping $cfg.CampusDns 700)) { $score += 1; [void]$ev.Add("campus DNS answers ping") }
         if ($score -lt $cfg.CampusThreshold) {
             $probeEnv = Get-InternetState -SourceIp $ip
             if ($probeEnv.State -eq 'Captive') {
@@ -6205,9 +6250,9 @@ function Get-AdapterEnvironment {
         $h.Time = (Get-Date).ToString('o')
         if (-not $script:IsDry) {
             if ($envName -eq 'Other') {
-                $script:State.Misc.Remove('DiscoveredPortalIp')
-                $script:State.Misc.Remove('DiscoveredPortalUrl')
-                $script:State.Misc.Remove('DiscoveredDomain')
+                foreach ($dk in @('DiscoveredPortalIp','DiscoveredPortalUrl','DiscoveredPortalPort','DiscoveredPortalHost','DiscoveredDomain','DiscoveredDns')) {
+                    $script:State.Misc.Remove($dk)
+                }
                 $script:State.Misc['DiscoveryTime'] = (Get-Date).ToString('o')
             }
         }
@@ -6244,7 +6289,7 @@ function Wait-LinkSettling([int]$MaxMs = 12000) {
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $minWait = if ($MaxMs -gt 12000) { 2000 } else { 500 }
     while ($sw.ElapsedMilliseconds -lt $MaxMs) {
-        $ups = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' -and $_.LinkSpeed -and $_.LinkSpeed -notmatch '^(0\s*bps)?$' })
+        $ups = @(Get-EthernetAdapters -NoCache | Where-Object { $_.Status -eq 'Up' -and $_.LinkSpeed -and $_.LinkSpeed -notmatch '^(0\s*bps)?$' })
         if ($ups.Count -gt 0 -and $sw.ElapsedMilliseconds -ge $minWait) { break }
         Start-Sleep -Milliseconds 150
     }
@@ -6305,6 +6350,7 @@ function Reset-PhysicalAdapterHardware($Ad) {
             }
         }
     }
+    $script:EthernetAdaptersCache = $null
     return $restarted
 }
 
@@ -7194,7 +7240,11 @@ function Shield-DefaultRoutes($Ctx) {
     foreach ($gw in $gws) {
         # a gateway under OUR ARP lock has an unknowable liveness here (its entry is permanent): never prune it on that basis
         $locked = Get-NetNeighbor -InterfaceIndex $ad.ifIndex -IPAddress $gw -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { [string]$_.State -eq 'Permanent' } | Select-Object -First 1
-        if ($locked) { $aliveGws += $gw; continue }
+        if ($locked) {
+            $checkLocked = Test-GatewayAlive $ad $gw
+            if ($checkLocked.Alive) { $aliveGws += $gw } else { $deadGws += $gw }
+            continue
+        }
         $check = Test-GatewayAlive $ad $gw
         if ($check.Alive) { $aliveGws += $gw } else { $deadGws += $gw }
     }
@@ -7243,8 +7293,11 @@ function Get-RouteMetricPlan([string]$EnvName, [string]$ConnState, [int]$OtherCo
         # Branch 2b: nothing to protect and nothing verified: leave the system exactly as the user had it.
         return @{ Mode = 'Restore'; Ethernet = 0; Others = 0; CampusRoutes = $false; Why = 'Ethernet not online and no secondary uplink active' }
     }
-    # Branch 3: campus link verified online: Ethernet first, the rest behind it.
-    return @{ Mode = 'Promote'; Ethernet = 10; Others = 40; CampusRoutes = $false; Why = 'Campus link verified online: Ethernet first' }
+    # Branch 3: Only promote Ethernet if Ethernet itself has verified WAN reachability. If not, restore automatic metrics so Wi-Fi/Hotspots are never choked.
+    if ($ConnState -eq 'Online') {
+        return @{ Mode = 'Promote'; Ethernet = 10; Others = 40; CampusRoutes = $false; Why = 'Campus link verified online: Ethernet first' }
+    }
+    return @{ Mode = 'Restore'; Ethernet = 0; Others = 0; CampusRoutes = $false; Why = 'Ethernet not confirmed online: automatic metrics preserved' }
 }
 function Shield-RouteMetrics($Ctx, [string]$ConnState) {
     if (-not $script:Cfg.ManageMetrics) { return }
