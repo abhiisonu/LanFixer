@@ -4,7 +4,7 @@ A lightweight, single-file Windows network repair utility and captive portal aut
 
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-0078D6?style=flat-square&logo=windows)](https://github.com/abhiisonu/LanFixer)
 [![Release](https://img.shields.io/badge/Release-v7.0.0-blue?style=flat-square)](https://github.com/abhiisonu/LanFixer/releases/latest)
-[![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
+[![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)](https://opensource.org/licenses/MIT)
 [![PowerShell](https://img.shields.io/badge/PowerShell-5.1%2B-5391FE?style=flat-square&logo=powershell)](https://github.com/abhiisonu/LanFixer)
 
 ---
@@ -159,4 +159,4 @@ LanFixer is built as a self-contained polyglot script:
 
 Engineered and maintained by **[Abhishek Sonu](https://github.com/abhiisonu)**.
 
-Released under the [MIT License](LICENSE).
+Released under the MIT License.
