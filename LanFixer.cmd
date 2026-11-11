@@ -1326,7 +1326,7 @@ function Export-HistoryForensicBundle([string]$OutFile = '', [switch]$Json) {
     } else {
         $sb = New-Object System.Text.StringBuilder
         [void]$sb.AppendLine('=' * 80)
-        [void]$sb.AppendLine('             LANFIXER SUPREME FORENSIC HISTORY EXPORT BUNDLE')
+        [void]$sb.AppendLine('             LANFIXER SYSTEM HISTORY EXPORT BUNDLE')
         [void]$sb.AppendLine('=' * 80)
         [void]$sb.AppendLine("Timestamp: $($bundle.GeneratedAt) | Host: $($bundle.MachineName) | User: $($bundle.User)")
         [void]$sb.AppendLine("OS: $($bundle.OSVersion) | PowerShell: $($bundle.PSVersion)")
@@ -1356,7 +1356,7 @@ function Export-HistoryForensicBundle([string]$OutFile = '', [switch]$Json) {
 function Show-HistoryMenu {
     while ($true) {
         Clear-Screen; Show-Cursor $true
-        Write-Banner 'LANFIXER SUPREME HISTORY & FORENSIC SUITE'
+        Write-Banner 'LANFIXER SYSTEM HISTORY & AUDIT'
         Out-Line @((Seg 'text' '  Unified multi-dimensional audit of all system mutations, logs, errors, and events:'))
         Out-Line @()
         $sections = @(
@@ -8638,6 +8638,33 @@ function Test-PriorResetJournal {
                     Write-Log 'WARN' ("Prior reset operation '{0}' was interrupted at Stage {1}/{2} ({3})." -f $jObj.Tier, $jObj.Stage, $jObj.TotalStages, $jObj.StageDesc)
                     return $jObj
                 } elseif ($jObj.Status -eq 'PendingReboot') {
+                    $bootTime = [datetime]::MinValue
+                    try {
+                        $os = Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction SilentlyContinue
+                        if ($os -and $os.LastBootUpTime) { $bootTime = $os.LastBootUpTime }
+                    } catch {}
+                    $journalTime = [datetime]::MinValue
+                    try {
+                        if ($jObj.LastUpdated) {
+                            $journalTime = [datetime]::Parse([string]$jObj.LastUpdated, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind)
+                        } elseif ($jObj.UpdatedTime) {
+                            $journalTime = [datetime]::Parse([string]$jObj.UpdatedTime, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind)
+                        } elseif ($jObj.StartTime) {
+                            $journalTime = [datetime]::Parse([string]$jObj.StartTime, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind)
+                        }
+                    } catch {}
+                    if ($bootTime -gt [datetime]::MinValue -and $journalTime -gt [datetime]::MinValue -and $bootTime -gt $journalTime) {
+                        Write-Log 'OK' ("System reboot verified (Boot: {0:yyyy-MM-dd HH:mm:ss} > Reset: {1:yyyy-MM-dd HH:mm:ss}). Completing reset recovery..." -f $bootTime, $journalTime)
+                        Restore-WlanProfiles
+                        if ($script:State -is [hashtable] -and ($script:State.Misc -is [hashtable])) {
+                            $script:State.Misc.Remove('PendingReboot')
+                            $script:State.Misc.Remove('PendingRebootTime')
+                            Save-State
+                        }
+                        Complete-ResetJournal -Success $true
+                        Write-Log 'OK' ("Reset operation '{0}' completed successfully following system restart." -f $jObj.Tier)
+                        return $null
+                    }
                     Write-Log 'WARN' ("Prior reset operation '{0}' is awaiting system reboot to complete driver re-installation." -f $jObj.Tier)
                     if ($jObj.VerifyScriptPath -and (Test-Path -LiteralPath $jObj.VerifyScriptPath)) {
                         $vPath = [string]$jObj.VerifyScriptPath
@@ -9043,6 +9070,7 @@ function Invoke-UltraSystemReset([switch]$Confirmed) {
             Write-Log 'DRY' 'Would execute 64-bit and 32-bit: netsh winsock reset catalog & netsh winsock reset'
             Write-Log 'DRY' 'Would reset Winsock AutodialFlags to 0 in registry'
         } else {
+            Update-ResetJournal -Stage 2 -StageDesc 'Dual Winsock Wipe'
             # 64-bit System32 Winsock Catalog Reset
             [void](Invoke-Native (Get-SysExe 'netsh.exe') @('winsock', 'reset', 'catalog') 8000)
             [void](Invoke-Native (Get-SysExe 'netsh.exe') @('winsock', 'reset') 5000)
@@ -9073,6 +9101,7 @@ function Invoke-UltraSystemReset([switch]$Confirmed) {
             Write-Log 'DRY' 'Would disable transition tunnels: Teredo, ISATAP, 6to4'
             Write-Log 'DRY' 'Would flush HTTP driver log buffers'
         } else {
+            Update-ResetJournal -Stage 3 -StageDesc 'TCP/IP Factory Reset'
             $ipLog = Join-Path $env:TEMP ('netsh_ip_reset_' + [Guid]::NewGuid().ToString('N').Substring(0,8) + '.log')
             $ipv6Log = Join-Path $env:TEMP ('netsh_ipv6_reset_' + [Guid]::NewGuid().ToString('N').Substring(0,8) + '.log')
             try {
@@ -9117,6 +9146,7 @@ function Invoke-UltraSystemReset([switch]$Confirmed) {
             Write-Log 'DRY' 'Would destroy accidental network bridges via netsh bridge'
             Write-Log 'DRY' 'Would execute: netsh advfirewall reset & enable all profiles'
         } else {
+            Update-ResetJournal -Stage 4 -StageDesc 'Routing Table & Firewall Purge'
             # Purge all non-interface, non-loopback routes
             [void](Invoke-Native (Get-SysExe 'route.exe') @('-f') 5000)
 
@@ -9163,6 +9193,7 @@ function Invoke-UltraSystemReset([switch]$Confirmed) {
             Write-Log 'DRY' 'Would cancel all active BITS transfer jobs via Get-BitsTransfer'
             Write-Log 'DRY' 'Would sanitize WinINet user/machine proxies and flush SSL session cache'
         } else {
+            Update-ResetJournal -Stage 5 -StageDesc 'Encrypted DNS & Proxy Reset'
             # Reset Windows 11 encrypted DNS (DoH, DoT, DDR) globally to factory defaults
             [void](Invoke-Native (Get-SysExe 'netsh.exe') @('dnsclient', 'delete', 'global', 'all') 5000)
 
@@ -9201,6 +9232,7 @@ function Invoke-UltraSystemReset([switch]$Confirmed) {
             Write-Log 'DRY' 'Would execute: klist purge & net use * /delete /y'
             Write-Log 'DRY' 'Would purge orphaned unmanaged NLM network signatures'
         } else {
+            Update-ResetJournal -Stage 6 -StageDesc 'NCSI & Kerberos Purge'
             # Calibrate NCSI active web and DNS probing parameters to Microsoft standard endpoints
             try {
                 $ncsiKey = 'HKLM:\SYSTEM\CurrentControlSet\Services\NlaSvc\Parameters\Internet'
@@ -9240,6 +9272,7 @@ function Invoke-UltraSystemReset([switch]$Confirmed) {
             Write-Log 'DRY' 'Would execute: nbtstat -R & nbtstat -RR'
             Write-Log 'DRY' 'Would execute: ipconfig /flushdns, Clear-DnsClientCache, and clear suffix search list'
         } else {
+            Update-ResetJournal -Stage 7 -StageDesc 'ARP & DNS Resolver Flush'
             # Low-level ARP & neighbor cache deletion across all interfaces
             [void](Invoke-Native (Get-SysExe 'netsh.exe') @('interface', 'ip', 'delete', 'arpcache') 5000)
             [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'ip', 'delete', 'neighbors') 5000)
@@ -9262,6 +9295,7 @@ function Invoke-UltraSystemReset([switch]$Confirmed) {
         # STAGE 8/10: PHY HARDWARE TRANSCEIVER HARD CYCLE, PROTOCOL BINDINGS & DRIVER POWER LOCK
         # ----------------------------------------------------------------------
         Write-Log 'STEP' 'STAGE 8/10  Cycling PHY hardware, locking driver power profiles & rebuilding NDIS bindings'
+        if (-not $script:IsDry) { Update-ResetJournal -Stage 8 -StageDesc 'Hardware Transceiver & Power Lock' }
         Shield-Aspm
         Set-UsbSuspendOff
         foreach ($ea in @(Get-EthernetAdapters)) {
@@ -9296,6 +9330,7 @@ function Invoke-UltraSystemReset([switch]$Confirmed) {
         # STAGE 9/10: DHCP LEASE REGISTRY OBLITERATION & RFC 2131 BROADCAST FLAG ENFORCEMENT
         # ----------------------------------------------------------------------
         Write-Log 'STEP' 'STAGE 9/10  Zeroing DHCP lease registry & enforcing RFC 2131 broadcast flag'
+        if (-not $script:IsDry) { Update-ResetJournal -Stage 9 -StageDesc 'DHCP Lease Registry Zeroing' }
         foreach ($ea in @(Get-EthernetAdapters)) {
             if ($script:IsDry) {
                 Write-Log 'DRY' "Would zero DHCP lease registry, set DhcpConnForceBroadcastFlag, and reset MTU/DNS on $($ea.Name)"
@@ -9337,6 +9372,7 @@ function Invoke-UltraSystemReset([switch]$Confirmed) {
             Write-Log 'DRY' 'Would await 802.1D Spanning Tree Protocol (STP) switch convergence'
             Write-Log 'DRY' 'Would run 7-layer heal pipeline and verify dual-endpoint reachability'
         } else {
+            Update-ResetJournal -Stage 10 -StageDesc 'Service Resuscitation & Dual Verify'
             $upSvcs = @('BFE', 'mpssvc', 'CryptSvc', 'Dhcp', 'Dnscache', 'iphlpsvc', 'dot3svc', 'WlanSvc', 'NlaSvc', 'netprofm', 'BITS')
             foreach ($s in $upSvcs) {
                 try { Start-Service -Name $s -ErrorAction SilentlyContinue } catch {}
@@ -9476,6 +9512,7 @@ function Invoke-DoomsdayReset([switch]$Confirmed) {
             Write-Log 'DRY' 'Would cycle all physical adapters and deactivate rogue 3rd-party NDIS filter drivers'
             Write-Log 'DRY' 'Would issue hardware PnP bus restart (pnputil /restart-device) to wake PHY silicon'
         } else {
+            Update-ResetJournal -Stage 2 -StageDesc 'NDIS Filter & Silicon Cycle'
             # Teardown Wi-Fi hosted networks & re-enable Wi-Fi AutoConfig
             [void](Invoke-Native (Get-SysExe 'netsh.exe') @('wlan', 'stop', 'hostednetwork') 5000)
             [void](Invoke-Native (Get-SysExe 'netsh.exe') @('wlan', 'set', 'hostednetwork', 'mode=disallow') 5000)
@@ -9538,6 +9575,7 @@ function Invoke-DoomsdayReset([switch]$Confirmed) {
             Write-Log 'DRY' 'Would execute 64-bit and 32-bit: netsh winsock reset catalog & netsh winsock reset'
             Write-Log 'DRY' 'Would reset Winsock AutodialFlags to 0 in registry'
         } else {
+            Update-ResetJournal -Stage 3 -StageDesc 'Dual Winsock Wipe'
             [void](Invoke-Native (Get-SysExe 'netsh.exe') @('winsock', 'reset', 'catalog') 8000)
             [void](Invoke-Native (Get-SysExe 'netsh.exe') @('winsock', 'reset') 5000)
             $wowNetsh = Join-Path $env:SystemRoot 'SysWOW64\netsh.exe'
@@ -9562,6 +9600,7 @@ function Invoke-DoomsdayReset([switch]$Confirmed) {
             Write-Log 'DRY' 'Would execute: netsh int tcp reset & normalize autotuning/RSS/RSC/timestamps'
             Write-Log 'DRY' 'Would disable transition tunnels: Teredo, ISATAP, 6to4'
         } else {
+            Update-ResetJournal -Stage 4 -StageDesc 'TCP/IP Stack Rebuild'
             $ipLog = Join-Path $env:TEMP ('netsh_ip_reset_' + [Guid]::NewGuid().ToString('N').Substring(0,8) + '.log')
             $ipv6Log = Join-Path $env:TEMP ('netsh_ipv6_reset_' + [Guid]::NewGuid().ToString('N').Substring(0,8) + '.log')
             try {
@@ -9604,6 +9643,7 @@ function Invoke-DoomsdayReset([switch]$Confirmed) {
             Write-Log 'DRY' 'Would destroy accidental network bridges via netsh bridge'
             Write-Log 'DRY' 'Would execute: netsh advfirewall reset & set firewallpolicy blockinbound,allowoutbound'
         } else {
+            Update-ResetJournal -Stage 5 -StageDesc 'Route Purge & Ghost GUID Scrub'
             [void](Invoke-Native (Get-SysExe 'route.exe') @('-f') 5000)
             [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'ip', 'delete', 'destinationcache') 5000)
             [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'ipv6', 'delete', 'destinationcache') 5000)
@@ -9662,6 +9702,7 @@ function Invoke-DoomsdayReset([switch]$Confirmed) {
             Write-Log 'DRY' 'Would reset WinHTTP proxy/autoproxy/tracing'
             Write-Log 'DRY' 'Would cancel all active BITS transfers'
         } else {
+            Update-ResetJournal -Stage 6 -StageDesc 'Encrypted DNS & BITS Purge'
             [void](Invoke-Native (Get-SysExe 'netsh.exe') @('dnsclient', 'delete', 'global', 'all') 5000)
             foreach ($ad in @(Get-NetAdapter -ErrorAction SilentlyContinue)) {
                 try {
@@ -9684,6 +9725,7 @@ function Invoke-DoomsdayReset([switch]$Confirmed) {
             Write-Log 'DRY' 'Would purge ProxyEnable, ProxyServer, AutoConfigURL across HKCU, HKLM, and HKU'
             Write-Log 'DRY' 'Would clear process, user, and system proxy environment variables'
         } else {
+            Update-ResetJournal -Stage 7 -StageDesc 'Universal Proxy & VPN Sweep'
             Shield-Proxies
             try {
                 $hkuProfiles = @(Get-ChildItem -LiteralPath 'Registry::HKEY_USERS' -ErrorAction SilentlyContinue | Where-Object { $_.PSChildName -notmatch '_Classes$' })
@@ -9709,6 +9751,7 @@ function Invoke-DoomsdayReset([switch]$Confirmed) {
         # STAGE 8/12: HOSTS FILE SANITIZATION, SYSTEM-WIDE NRPT WIPE & WFP DEFEAT
         # ----------------------------------------------------------------------
         Write-Log 'STEP' 'STAGE 8/12 Sanitizing hosts file, eradicating all NRPT rules & neutralizing rogue WFP filters'
+        if (-not $script:IsDry) { Update-ResetJournal -Stage 8 -StageDesc 'Hosts File & NRPT Sanitization' }
         Remove-LegacyHostsEntries
         Remove-CampusNrpt
         try {
@@ -9730,6 +9773,7 @@ function Invoke-DoomsdayReset([switch]$Confirmed) {
             Write-Log 'DRY' 'Would execute: klist purge & net use * /delete /y'
             Write-Log 'DRY' 'Would purge unmanaged NLM signatures'
         } else {
+            Update-ResetJournal -Stage 9 -StageDesc 'NCSI Calibration & Kerberos Purge'
             try {
                 $ncsiKey = 'HKLM:\SYSTEM\CurrentControlSet\Services\NlaSvc\Parameters\Internet'
                 if (Test-Path -LiteralPath $ncsiKey) {
@@ -9764,6 +9808,7 @@ function Invoke-DoomsdayReset([switch]$Confirmed) {
             Write-Log 'DRY' 'Would execute: nbtstat -R & nbtstat -RR'
             Write-Log 'DRY' 'Would execute: ipconfig /flushdns, Clear-DnsClientCache, and clear suffix search list'
         } else {
+            Update-ResetJournal -Stage 10 -StageDesc 'ARP/NDP Cache & DNS Flush'
             [void](Invoke-Native (Get-SysExe 'netsh.exe') @('interface', 'ip', 'delete', 'arpcache') 5000)
             [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'ip', 'delete', 'neighbors') 5000)
             [void](Invoke-Native (Get-SysExe 'netsh.exe') @('int', 'ipv6', 'delete', 'neighbors') 5000)
@@ -9783,6 +9828,7 @@ function Invoke-DoomsdayReset([switch]$Confirmed) {
         # STAGE 11/12: STATIC IP CONFLICT PURGE, DHCP ENFORCEMENT, MTU 1500 & LEASE ZEROING
         # ----------------------------------------------------------------------
         Write-Log 'STEP' 'STAGE 11/12 Purging static IP conflicts, enforcing DHCP, MTU 1500 & broadcast flag on ALL media'
+        if (-not $script:IsDry) { Update-ResetJournal -Stage 11 -StageDesc 'DHCP Enforcement & Lease Zeroing' }
         Shield-Aspm
         Set-UsbSuspendOff
         $allAdapters = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object {
@@ -9866,6 +9912,7 @@ function Invoke-DoomsdayReset([switch]$Confirmed) {
             Write-Log 'DRY' 'Would execute: ipconfig /release *, /renew *, /registerdns'
             Write-Log 'DRY' 'Would await STP convergence and execute 7-layer heal pipeline'
         } else {
+            Update-ResetJournal -Stage 12 -StageDesc 'Service Resuscitation & Verify'
             $upSvcs = @('BFE', 'mpssvc', 'CryptSvc', 'RmSvc', 'WlanSvc', 'dot3svc', 'bthserv', 'WwanSvc', 'Dhcp', 'Dnscache', 'iphlpsvc', 'NlaSvc', 'netprofm', 'BITS')
             foreach ($s in $upSvcs) {
                 try {
@@ -11091,7 +11138,7 @@ function Invoke-AutoHeal {
         $rebootMark = [datetime]::MinValue
         try {
             if ($script:State.Misc['PendingRebootTime']) {
-                $rebootMark = [datetime]::Parse([string]$script:State.Misc['PendingRebootTime'])
+                $rebootMark = [datetime]::Parse([string]$script:State.Misc['PendingRebootTime'], [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind)
             }
         } catch {}
         if ($bootTime -gt $rebootMark) {
@@ -14694,6 +14741,19 @@ HttpProbeUrl = "http://connectivitycheck.gstatic.com/generate_204"
 
         $stg = Stage-PostRebootVerification
         Write-Check 'Logic: Stage-PostRebootVerification stages secured script with SHA256' ($null -ne $stg -and (Test-Path -LiteralPath $stg.Path) -and $stg.Hash.Length -eq 64)
+
+        # Test simulated post-reboot resolution in Test-PriorResetJournal
+        Update-ResetJournal -Stage 4 -StageDesc 'Pending Reboot Journal Stamped' -Status 'PendingReboot'
+        $jPending = ConvertFrom-Json (Get-Content -LiteralPath $jPath -Raw)
+        Write-Check 'Logic: ResetJournal records PendingReboot status' ($jPending.Status -eq 'PendingReboot')
+        $pastIso = [DateTime]::UtcNow.AddDays(-1).ToString('o')
+        $jPending.LastUpdated = $pastIso
+        $jPending.StartTime = $pastIso
+        Set-Content -LiteralPath $jPath -Value (ConvertTo-Json $jPending) -Encoding ASCII -Force
+        $jResolved = Test-PriorResetJournal
+        Write-Check 'Logic: Test-PriorResetJournal resolves and completes pending reboot after boot' ($null -eq $jResolved)
+        $jDone = ConvertFrom-Json (Get-Content -LiteralPath $jPath -Raw)
+        Write-Check 'Logic: ResetJournal marked Completed after boot detection' ($jDone.Status -eq 'Completed')
     } finally {
         $script:IsDry = $origIsDryReset
         $script:StoreDir = $origStoreForReset
@@ -15692,7 +15752,7 @@ function Start-AutonomousDaemon([int]$IntervalSec = 10, [switch]$Headless) {
     }
 
     Write-Banner "Daemon Mode (Autonomous Sentinel)"
-    Write-SentinelLog 'INFO' ("Supreme Autonomous Sentinel Daemon activated (Interval: {0}s, Breaker: {1}, Mode: {2})." -f $IntervalSec, $script:Cfg.BreakerFails, $(if ($isConsole) { 'Interactive Cockpit' } else { 'Headless Background' }))
+    Write-SentinelLog 'INFO' ("Autonomous Sentinel Daemon activated (Interval: {0}s, Breaker: {1}, Mode: {2})." -f $IntervalSec, $script:Cfg.BreakerFails, $(if ($isConsole) { 'Interactive Cockpit' } else { 'Headless Background' }))
     if ($isConsole) {
         Write-Log 'OK' ("Autonomous Sentinel active. Press 'q' to stop, 'r' to force scan, 'l' to view log.")
     }
