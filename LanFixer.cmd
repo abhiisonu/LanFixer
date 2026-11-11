@@ -1895,18 +1895,47 @@ function Invoke-NetworkAutoDiscovery {
             }
         }
 
-        # 3. Discover Active Captive Portal Services on Gateway (dedicated portal ports on non-NITJSR networks)
-        if ($primaryGw -and (-not $script:State.Misc['DiscoveredPortalUrl']) -and -not $script:IsDry -and (-not (Test-IsNitjsrNetwork))) {
-            $gwPorts = @(8888, 8003, 8443, 8080)
-            foreach ($p in $gwPorts) {
-                if (Test-TcpPort $primaryGw $p 250) {
-                    $script:State.Misc['DiscoveredPortalPort'] = $p
-                    $script:State.Misc['DiscoveredPortalIp'] = $primaryGw
-                    $proto = if ($p -eq 443 -or $p -eq 8443) { 'https' } else { 'http' }
-                    $portStr = if ($p -eq 80 -or $p -eq 443) { '' } else { ":$p" }
-                    $script:State.Misc['DiscoveredPortalUrl'] = ($proto + '://' + $primaryGw + $portStr + '/')
-                    $script:State.Misc['DiscoveredPortalHost'] = $primaryGw
-                    break
+        # 3. Dynamic Captive Portal Autodiscovery: RFC HTTP 3xx Redirect & Multi-Port Matrix
+        if (-not $script:State.Misc['DiscoveredPortalUrl'] -and -not $script:IsDry) {
+            $candIps = @()
+            if ($primaryGw) { $candIps += $primaryGw }
+            if ($script:Cfg.PortalIp -and $candIps -notcontains [string]$script:Cfg.PortalIp) { $candIps += [string]$script:Cfg.PortalIp }
+
+            # 3a. Intercept HTTP 301/302/307 Redirect on Port 80 (Gateway & Portal Target)
+            foreach ($cIp in $candIps) {
+                if (-not $script:State.Misc['DiscoveredPortalUrl']) {
+                    $probeRes = Invoke-HttpProbe $cIp '/' 1200 '' 80
+                    if ($probeRes.Location -and $probeRes.Location -match '^https?://') {
+                        $script:State.Misc['DiscoveredPortalUrl'] = [string]$probeRes.Location
+                        try {
+                            $pUri = [uri]$probeRes.Location
+                            $script:State.Misc['DiscoveredPortalHost'] = ([string]$pUri.Host).ToLowerInvariant()
+                            if ($pUri.Port -gt 0) { $script:State.Misc['DiscoveredPortalPort'] = [int]$pUri.Port }
+                            $script:State.Misc['DiscoveredPortalIp'] = $cIp
+                            Write-Log 'OK' ("Dynamically autodiscovered captive portal via HTTP redirect: {0}" -f $probeRes.Location)
+                        } catch {}
+                        break
+                    }
+                }
+            }
+
+            # 3b. Autonomous Multi-Port Matrix Probing (8888, 8003, 8090, 8443, 8080, 443, 80)
+            if (-not $script:State.Misc['DiscoveredPortalUrl']) {
+                $gwPorts = @(8888, 8003, 8090, 8443, 8080, 443, 80)
+                foreach ($cIp in $candIps) {
+                    foreach ($p in $gwPorts) {
+                        if (Test-TcpPort $cIp $p 250) {
+                            $script:State.Misc['DiscoveredPortalPort'] = $p
+                            $script:State.Misc['DiscoveredPortalIp'] = $cIp
+                            $proto = if ($p -eq 443 -or $p -eq 8443) { 'https' } else { 'http' }
+                            $portStr = if ($p -eq 80 -or $p -eq 443) { '' } else { ":$p" }
+                            $script:State.Misc['DiscoveredPortalUrl'] = ($proto + '://' + $cIp + $portStr + '/')
+                            $script:State.Misc['DiscoveredPortalHost'] = $cIp
+                            Write-Log 'OK' ("Dynamically autodiscovered active portal service on {0}:{1}" -f $cIp, $p)
+                            break
+                        }
+                    }
+                    if ($script:State.Misc['DiscoveredPortalUrl']) { break }
                 }
             }
         }
