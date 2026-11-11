@@ -1844,6 +1844,26 @@ function Test-IsNitjsrNetwork {
     $script:NitjsrCacheTicks = $nowTicks
     return $verdict
 }
+function Test-PortSupportsTls([string]$Ip, [int]$Port, [int]$TimeoutMs = 600) {
+    $sock = $null; $ssl = $null
+    try {
+        $sock = New-Object System.Net.Sockets.Socket([System.Net.Sockets.AddressFamily]::InterNetwork, [System.Net.Sockets.SocketType]::Stream, [System.Net.Sockets.ProtocolType]::Tcp)
+        $iar = $sock.BeginConnect([System.Net.IPAddress]::Parse($Ip), $Port, $null, $null)
+        if (-not $iar.AsyncWaitHandle.WaitOne($TimeoutMs, $false)) { return $false }
+        $sock.EndConnect($iar)
+        $ns = New-Object System.Net.Sockets.NetworkStream($sock, $false)
+        $ns.ReadTimeout = $TimeoutMs; $ns.WriteTimeout = $TimeoutMs
+        $cb = { param($s, $c, $ch, $e) return $true }
+        $ssl = New-Object System.Net.Security.SslStream($ns, $false, $cb)
+        $ssl.AuthenticateAsClient($Ip)
+        return $true
+    } catch {
+        return $false
+    } finally {
+        if ($ssl) { try { $ssl.Close() } catch {} }
+        if ($sock) { try { $sock.Close() } catch {} }
+    }
+}
 function Invoke-NetworkAutoDiscovery {
     param([switch]$Force)
     if (-not $Force -and $script:State.Misc -and $script:State.Misc['DiscoveryTime']) {
@@ -1927,11 +1947,12 @@ function Invoke-NetworkAutoDiscovery {
                         if (Test-TcpPort $cIp $p 250) {
                             $script:State.Misc['DiscoveredPortalPort'] = $p
                             $script:State.Misc['DiscoveredPortalIp'] = $cIp
-                            $proto = if ($p -eq 443 -or $p -eq 8443) { 'https' } else { 'http' }
-                            $portStr = if ($p -eq 80 -or $p -eq 443) { '' } else { ":$p" }
+                            $isTls = if ($p -eq 443 -or $p -eq 8443) { $true } else { Test-PortSupportsTls $cIp $p 600 }
+                            $proto = if ($isTls) { 'https' } else { 'http' }
+                            $portStr = if (($proto -eq 'http' -and $p -eq 80) -or ($proto -eq 'https' -and $p -eq 443)) { '' } else { ":$p" }
                             $script:State.Misc['DiscoveredPortalUrl'] = ($proto + '://' + $cIp + $portStr + '/')
                             $script:State.Misc['DiscoveredPortalHost'] = $cIp
-                            Write-Log 'OK' ("Dynamically autodiscovered active portal service on {0}:{1}" -f $cIp, $p)
+                            Write-Log 'OK' ("Dynamically autodiscovered active {0} portal service on {1}:{2}" -f $proto.ToUpper(), $cIp, $p)
                             break
                         }
                     }
@@ -2962,7 +2983,8 @@ function Test-AllowedPortalIp([string]$Ip, $Ad = $null) {
     if ($Ad) {
         foreach ($g in @(Get-GatewaysV4 $Ad)) { if ($g -eq $Ip) { return $true } }
     } else {
-        foreach ($a in @(Get-EthernetAdapters)) {
+        $allCheckAds = @(@(Get-EthernetAdapters) + @(Get-AllWirelessAdapters) + @(Get-OtherUplinkAdapters) | Where-Object { $_ })
+        foreach ($a in $allCheckAds) {
             foreach ($g in @(Get-GatewaysV4 $a)) { if ($g -eq $Ip) { return $true } }
         }
     }
@@ -5421,10 +5443,17 @@ function Start-Repair([string]$Title = 'quick heal') {
                 if ($signedHeadless) { Write-Log 'OK' 'Signed in automatically using stored vault credentials.' }
             }
             if (-not $signedHeadless) {
-                [void](Invoke-WithLock { [void](Open-Portal); Save-State })
+                Out-Line @((Seg 'warn!' ('  ' + $script:G.warn + ' ')), (Seg 'text!' 'Campus captive portal authentication required for Internet access.'))
+                Out-Line @((Seg 'dim' '  Opening campus login page in default browser...'))
+                [void](Invoke-WithLock { [void](Open-Portal -Force -SourceIp $portalSrc); Save-State })
                 if ((Get-InternetState -NoCache).State -eq 'Captive') {
-                    Out-Line @((Seg 'dim' '  Sign in on the page that opened; the fast DNS path is applied for you afterwards.'))
-                    if (Wait-ForAuthentication 180) { [void](Invoke-WithLock { Complete-Authentication }); Write-Log 'OK' 'Signed in. Post-login DNS applied.' }
+                    Out-Line @((Seg 'dim' '  Please sign in on the page that opened; LanFixer will detect sign-in and configure high-speed routes & DNS.'))
+                    if (Wait-ForAuthentication 180) {
+                        [void](Invoke-WithLock { Complete-Authentication })
+                        Write-Log 'OK' 'Authentication verified! Full Internet connectivity active.'
+                    } else {
+                        Write-Log 'WARN' 'Authentication wait timed out or stopped by keypress. Run Quick Heal again after signing in.'
+                    }
                 }
             }
         }
@@ -5875,6 +5904,103 @@ function Get-PrimarySourceIp {
     return ''
 }
 # State: Online | Captive | NoDns | Offline  (+ Location of a captive redirect, when there is one)
+function Test-IsPortalDemandingAuth([string]$PortalUrl = '') {
+    if (-not $PortalUrl) { return $false }
+    $u = $null
+    try { $u = [uri]$PortalUrl } catch { return $false }
+    $sock = $null; $ssl = $null
+    try {
+        $sock = New-Object System.Net.Sockets.Socket([System.Net.Sockets.AddressFamily]::InterNetwork, [System.Net.Sockets.SocketType]::Stream, [System.Net.Sockets.ProtocolType]::Tcp)
+        $iar = $sock.BeginConnect([System.Net.IPAddress]::Parse($u.Host), [int]$u.Port, $null, $null)
+        if (-not $iar.AsyncWaitHandle.WaitOne(1200, $false)) { return $false }
+        $sock.EndConnect($iar)
+        $ns = New-Object System.Net.Sockets.NetworkStream($sock, $false)
+        $ns.ReadTimeout = 1500; $ns.WriteTimeout = 1500
+        $stream = $ns
+        if ($u.Scheme -eq 'https') {
+            $cb = { param($s, $c, $ch, $e) return $true }
+            $ssl = New-Object System.Net.Security.SslStream($ns, $false, $cb)
+            $ssl.AuthenticateAsClient($u.Host)
+            $stream = $ssl
+        }
+        $req = "GET $($u.PathAndQuery) HTTP/1.0`r`nHost: $($u.Host)`r`nConnection: close`r`n`r`n"
+        $hb = [System.Text.Encoding]::ASCII.GetBytes($req)
+        $stream.Write($hb, 0, $hb.Length)
+        $stream.Flush()
+        $sr = New-Object System.IO.StreamReader($stream)
+        $html = $sr.ReadToEnd()
+        if ($html -match 'type=["'']password["'']' -or $html -match 'name=["'']auth_pass["'']' -or $html -match 'name=["'']password["'']' -or $html -match 'action=.*portal') {
+            return $true
+        }
+    } catch {
+        return $false
+    } finally {
+        if ($ssl) { try { $ssl.Close() } catch {} }
+        if ($sock) { try { $sock.Close() } catch {} }
+    }
+    return $false
+}
+function Test-HttpsWanProbe([string]$SourceIp = '', [int]$TimeoutMs = 2000) {
+    $res = @{ Ok = $false; IsCaptive = $false; Error = ''; CertSubject = '' }
+    $actUrl = Get-ActivePortalUrl
+    if ($actUrl -and (Test-IsPortalDemandingAuth $actUrl)) {
+        $res.IsCaptive = $true
+        $res.Error = 'PortalDemandsAuth'
+        return $res
+    }
+    $req = $null; $resp = $null
+    try {
+        $req = [System.Net.HttpWebRequest]::Create('https://1.1.1.1/cdn-cgi/trace')
+        $req.Timeout = $TimeoutMs
+        $req.ReadWriteTimeout = $TimeoutMs
+        $req.AllowAutoRedirect = $false
+        $req.Proxy = $null
+        $req.UserAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) LanFixer-Probe'
+        $req.ServerCertificateValidationCallback = {
+            param($sender, $cert, $chain, $sslErrors)
+            if ($cert) { $script:LastProbeCertSubject = [string]$cert.Subject }
+            return ($sslErrors -eq [System.Net.Security.SslPolicyErrors]::None)
+        }
+        if ($SourceIp) {
+            $ipObj = $null
+            if ([System.Net.IPAddress]::TryParse($SourceIp, [ref]$ipObj)) {
+                $req.ServicePoint.BindIPEndPointDelegate = {
+                    param($servicePoint, $remoteEndPoint)
+                    return New-Object System.Net.IPEndPoint($ipObj, 0)
+                }
+            }
+        }
+        $resp = $req.GetResponse() -as [System.Net.HttpWebResponse]
+        if ($resp -and [int]$resp.StatusCode -eq 200) {
+            $res.Ok = $true
+        } else {
+            $res.IsCaptive = $true
+            $res.Error = "Http_$([int]$resp.StatusCode)"
+        }
+    } catch [System.Net.WebException] {
+        $wex = $_.Exception
+        $res.Error = $wex.Message
+        if ($wex.Status -eq [System.Net.WebExceptionStatus]::TrustFailure) {
+            $res.IsCaptive = $true
+            $res.CertSubject = [string]$script:LastProbeCertSubject
+        } elseif ($wex.Response) {
+            $wResp = $wex.Response -as [System.Net.HttpWebResponse]
+            if ($wResp) {
+                $c = [int]$wResp.StatusCode
+                if (($c -ge 300 -and $c -le 399) -or $c -eq 401 -or $c -eq 407 -or $c -eq 511) {
+                    $res.IsCaptive = $true
+                }
+            }
+        } elseif ($wex.Status -eq [System.Net.WebExceptionStatus]::Timeout -or $wex.Status -eq [System.Net.WebExceptionStatus]::ConnectFailure) {
+            $res.IsCaptive = $true
+        }
+    } catch {
+        $res.Error = $_.Exception.Message
+    } finally {
+        if ($resp) { try { $resp.Close() } catch {} }
+    }
+    return $res
+}
 function Get-InternetState {
     param([switch]$NoCache, [string]$SourceIp)
     $explicit = $PSBoundParameters.ContainsKey('SourceIp')
@@ -5898,7 +6024,16 @@ function Get-InternetState {
         if ($pApple.Code -ne 0) { $p2 = $pApple }
     }
     $state = Get-ProbeVerdict $p1 $p2
-    $via = 'link'
+    if ($state -eq 'Online') {
+        $httpsCheck = Test-HttpsWanProbe $SourceIp 2000
+        if (-not $httpsCheck.Ok) {
+            $state = 'Captive'
+            if (-not $p1.Location -and -not $p2.Location) {
+                $p1 = @{ Code = 302; Location = (Get-ActivePortalUrl) }
+            }
+        }
+    }
+    $via = 'link' 
     if (-not $explicit -and ($state -eq 'Offline' -or $state -eq 'NoDns') -and (Test-AllowSystemFallback $explicit $state (Test-OtherUplinkActive))) {
         $u1 = $none
         if ($SourceIp) { $u1 = Invoke-HttpProbe 'connectivitycheck.gstatic.com' '/generate_204' 2000 '' }
@@ -10681,12 +10816,18 @@ function Invoke-HealPipeline([switch]$SkipSystemStack) {
     Wait-LinkSettling $(if ($didHwRestart) { ([int]$script:Cfg.StpMaxSec * 1000) } else { 12000 })
     $ups = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })
     if ($ups.Count -eq 0) {
-        Write-Log 'WARN' 'Ethernet link is down: plug in the cable / wall port, then run again.'
-        $res.Problem = 'NoLink'
-        foreach ($a in $ads) { (Get-SubTable 'Env' ([string]$a.InterfaceGuid)).Up = $false }
-        Invoke-RoamingCleanup
-        Save-State
-        return $res
+        $wirelessUps = @(@(Get-OtherUplinkAdapters) + @(Get-AllWirelessAdapters) | Where-Object { $_.Status -eq 'Up' } | Sort-Object ifIndex -Unique)
+        if ($wirelessUps.Count -gt 0) {
+            Write-Log 'INFO' ("Physical Ethernet link is down. Active wireless uplink detected: {0}. Switching 7-layer heal pipeline to wireless." -f (($wirelessUps | ForEach-Object { $_.Name }) -join ', '))
+            $ups = $wirelessUps
+        } else {
+            Write-Log 'WARN' 'No active physical or wireless network link detected: connect Ethernet or Wi-Fi, then run again.'
+            $res.Problem = 'NoLink'
+            foreach ($a in $ads) { (Get-SubTable 'Env' ([string]$a.InterfaceGuid)).Up = $false }
+            Invoke-RoamingCleanup
+            Save-State
+            return $res
+        }
     }
     $res.AnyUp = $true
     if ($script:State.Misc -and $script:State.Misc['LinkDownSince']) { $script:State.Misc.Remove('LinkDownSince'); if ($script:State.Times) { $script:State.Times.Remove('LinkDownSince') } }
@@ -11105,7 +11246,7 @@ function Open-Portal {
     $inet = if ($SourceIp) { Get-InternetState -NoCache -SourceIp $SourceIp } else { Get-InternetState -NoCache }
     $st = $inet.State
     $url = Resolve-PortalUrl $inet
-    if (-not $Force -and $st -eq 'Online') { Write-Log 'OK' 'Internet is already authenticated; no login needed.'; return $false }
+    if (-not $Force -and $st -eq 'Online' -and (Test-HttpsWanProbe $SourceIp 1500).Ok) { Write-Log 'OK' 'Internet is already authenticated; no login needed.'; return $false }
     if (-not $Force -and (Invoke-HeadlessPortalLogin $inet -SourceIp $SourceIp)) { return $true }
     if (Test-IsSystem) {
         $u = $null
@@ -11245,7 +11386,10 @@ function Invoke-AutoHeal {
     $watch = $false
     try {
         $ups = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })
-        if ($ups.Count -eq 0) { Wait-LinkSettling 6000; $ups = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' }) }
+        if ($ups.Count -eq 0) { Wait-LinkSettling 2000; $ups = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' }) }
+        if ($ups.Count -eq 0) {
+            $ups = @(@(Get-OtherUplinkAdapters) + @(Get-AllWirelessAdapters) | Where-Object { $_.Status -eq 'Up' } | Sort-Object ifIndex -Unique)
+        }
         if ($ups.Count -eq 0) {
             foreach ($a in @(Get-EthernetAdapters)) { (Get-SubTable 'Env' ([string]$a.InterfaceGuid)).Up = $false }
             Invoke-RoamingCleanup
@@ -15856,8 +16000,11 @@ function Start-AutonomousDaemon([int]$IntervalSec = 10, [switch]$Headless) {
             # Phase 1: Physical Link & Dormant PnP Health
             $ads = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })
             if ($ads.Count -eq 0) {
+                $ads = @(@(Get-OtherUplinkAdapters) + @(Get-AllWirelessAdapters) | Where-Object { $_.Status -eq 'Up' } | Sort-Object ifIndex -Unique)
+            }
+            if ($ads.Count -eq 0) {
                 if ((Get-Date) - $script:DaemonLastHwCheck -gt [TimeSpan]::FromSeconds(60)) {
-                    Write-SentinelLog 'WARN' "No active Ethernet link. Checking for dormant or crashed PnP hardware..."
+                    Write-SentinelLog 'WARN' "No active network link. Checking for dormant hardware..."
                     [void](Invoke-WithLock -WaitMs 3000 { Rescue-DormantEthernetPnp })
                     $script:DaemonLastHwCheck = Get-Date
                 }
