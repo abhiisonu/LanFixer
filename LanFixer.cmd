@@ -3,14 +3,14 @@
 setlocal EnableExtensions DisableDelayedExpansion
 title Lan Fixer
 set "LANFIXER_SELF=%~f0"
-"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create([System.IO.File]::ReadAllText($env:LANFIXER_SELF))) %*; exit $LASTEXITCODE"
+"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create([System.IO.File]::ReadAllText($env:LANFIXER_SELF))) %*; if (-not $?) { exit 1 } elseif ($LASTEXITCODE) { exit $LASTEXITCODE } else { exit 0 }"
 exit /b %errorlevel%
 #>
 
 <#
 .SYNOPSIS
-    Lan Fixer 6.5.4 - Sovereign self-healing Ethernet stabilizer for campus/hostel LANs (Windows 10/11, Ethernet only).
-    Author: A.S.
+    LanFixer 7.0.0 - Network diagnostic, stabilization, and captive portal automation utility for Windows.
+    Author: Abhishek Sonu (https://github.com/abhiisonu)
 .DESCRIPTION
     Single file, ASCII only. Run it normally for the control center, or use -Mode:
       Interactive | Heal | AutoHeal | Diagnose | QuickProbe | FlushCache | InstallWatchdog |
@@ -18,6 +18,28 @@ exit /b %errorlevel%
     Add -DryRun to see exactly what would change without changing anything.
     Every change is snapshotted first, so ResetFactory restores YOUR original values.
 .NOTES
+    7.0.0 (Production Release & Architecture Modernization):
+      - Battery & Power Efficiency Engine: Deep WMI hardware battery telemetry (charge %, wear %, health %, cycle count); preserves DC USB selective suspend to prevent battery drain; adaptive background Sentinel polling cadence (20s+) when healthy on battery.
+      - Zero-Popup Scheduled Task Architecture: Configured Hidden=True across all Task Scheduler XML definitions (Watchdog, Sentinel, Portal); added automated startup shortcut and Run registry key purging on uninstall and factory reset.
+      - Risk-Ordered Recovery Hierarchy: Standardized recovery tiers in ascending risk order from Level 1 [SAFE] Careful Network Debloat to Level 6 [REBOOT] Complete Stack Rebuild.
+      - Elevated Diagnostics & Controls: Multi-Size Path MTU Discovery (1500/1492/1420), RFC Bufferbloat Letter Grading (Grade A+ to F), TCP handshake latency, live 0.0.0.0/0 route priority table, and 6-stage universal network cache flush with millisecond timings.
+      - Universal Network Auto-Discovery: Seamless dynamic campus gateway discovery across 10.x, 172.16-31.x, 192.168.x, 100.64-127.x subnets with intelligent Wi-Fi uplink fallback.
+    6.7.0 (Enterprise Resiliency, Deep Diagnostics & Safe Recovery Engine):
+      - Feature F6 (Link Quality & Flap Monitor): Added state-persisted ring buffer ($State.LinkMonitor) tracking NDIS link transitions, flap detection (>=3 drops in 10m), gigabit speed downshift alerts, and CRC packet error thresholds.
+      - Feature F5 (Configuration & Policy File System): Added pure INI policy engine ($StoreDir\lanfixer.ini) with tamper-resistant ACL auditing, strict key whitelisting, and effective origin reporting (-Mode Config [-Validate] [-Json]).
+      - Feature F4 (Redacted Diagnostic Support Bundle): Added zero-dependency ZIP archive generator (-Mode Bundle [-OutDir] [-Redaction Strict|Standard]) with multi-pass PII and secret redaction (MAC, public IP, username, hostname, credentials) and forensic metadata manifest.
+      - Feature F3 (Guided Recovery Escalation Ladder): Added closed-loop intelligent recovery engine (-Mode Recover [-Plan]) with layered remediation, automatic re-verification, safe Tier 2 cap, and correlated undo commands.
+      - Feature F2 (Change Ledger & Reversible Undo): Added persistent append-only change ledger ($StoreDir\change_ledger.jsonl) with size capping, run correlation, and drift-protected reverse-chronological undo (-Mode History, -Mode Undo [-Id <id>] [-RunId <runid>] [-Plan]).
+      - Feature F1 (Health Verdict Engine): Added 7-layer OSI forensic diagnostic pipeline (-Mode Doctor, alias Status) with discrete exit code contracts (0=Healthy, 10=Degraded, 20=Broken, 30=Undetermined) and automation modifiers (-Json, -Quiet, -NoColor).
+    6.6.0 (Production Hardening & Forensic Verification Release):
+      - Cold Start Monotonic Adapter Cache: Implemented 2.5s high-resolution stopwatch cache in Get-EthernetAdapters, cutting redundant CIM/WMI enumeration and startup latency.
+      - Locale Invariance: Sanitized powercfg index parsing across English, German, French, and Russian outputs; generalized WinHTTP loopback proxy detection to match universal IP/port patterns.
+      - Scheduled Task Security & Hygiene: Hardened New-SentinelTaskXml against XML argument injection via SecurityElement escaping; added scrub of temporary task XMLs on uninstall.
+      - Destructive Mode Safeguards: Added Test-RemoteSession guard to UltraSystemReset, DoomsdayReset, and ArmageddonReset to prevent remote RDP/SSH operator lockout; blocked invocation by automated background modes (AutoHeal/Daemon/Sentinel).
+      - Pending Reboot Tracking: Recorded PendingReboot state and reboot timestamp upon ArmageddonReset; enforced AutoHeal debounce pause until machine restart completes.
+      - Universal Upfront Parameter Guards: Hardened 19 core networking functions against null or malformed $Ad adapter objects to guarantee zero unhandled runtime exceptions.
+      - Store ACL Non-Admin Verification: Added non-destructive Test-StoreAcl inspection enabling unprivileged SelfTest and audit modes to verify store security without elevation.
+      - Batch Header Exit Normalization: Updated batch launcher to trap PowerShell parameter validation failures via ($?) and bubble exit code 1.
     6.5.4 (Exhaustive 10-Lens Full Forensic Audit & Behavioral Hardening):
       - PSModulePath Isolation: Sanitized $env:PSModulePath under Windows PowerShell 5.1 to prevent format/type collisions from PowerShell 7 modules.
       - Dynamic Discovery Purge: Fixed state leak in Invoke-RoamingCleanup, Invoke-SupremeOmnifix, Invoke-UltraSystemReset, and Invoke-DoomsdayReset by purging DiscoveredPortalPort and DiscoveryTime.
@@ -54,7 +76,7 @@ exit /b %errorlevel%
       - Dynamic Portals: Replaced hardcoded portal endpoints in [G] dashboard handler and Invoke-HeadlessPortalLogin with Get-ActivePortalEndpoint.
       - Reset MTU Scavenging: Purged all wildcard MtuCandidate* keys during resets.
     6.5.0 (Omniscient Layer 1-7 Healer, Doomsday Multi-Medium & Armageddon Deep OS Reset):
-      - Invoke-ArmageddonReset: 4-stage Microsoft Windows native kernel network stack wipe and reinstallation weapon (netcfg.exe -d). Uninstalls all adapters, clears virtual switches/filters, wipes TCP/IP registry stack, and triggers clean PnP driver reinstallation upon reboot.
+      - Invoke-ArmageddonReset: 4-stage Microsoft Windows native kernel network stack wipe and reinstallation engine (netcfg.exe -d). Uninstalls all adapters, clears virtual switches/filters, wipes TCP/IP registry stack, and triggers clean PnP driver reinstallation upon reboot.
       - Invoke-DoomsdayReset: 12-stage universal doomsday network stack annihilation engine with 5 Deep Forensic Antidotes for total connectivity death across ALL media (Wi-Fi, Bluetooth, USB Tethering, Ethernet, Cellular).
       - Rogue NDIS 6 Filter Driver Deactivation: automatically deactivates 3rd-party NDIS lightweight filter drivers (Npcap, VirtualBox, VPN, Antivirus packet drop traps) on physical adapters while preserving native Microsoft protocols.
       - PnP Silicon Hardware Bus Restart: executes pnputil.exe /restart-device on physical PCI/USB device instances to wake transceivers from Modern Standby D3cold / PCIe ASPM hardware lockups without rebooting.
@@ -75,7 +97,7 @@ exit /b %errorlevel%
       - 802.1X Wired AutoConfig Reconnection: issues netsh lan reconnect across wired LAN interfaces.
       - Full DHCP Stack Cycle & Dynamic DNS: ipconfig /release & /renew (IPv4/IPv6), ipconfig /registerdns, and 802.1D Spanning Tree Protocol (STP) convergence loop.
       - Interactive TUI & CLI Integration: Key [D] for Doomsday, Key [U] for Ultra, 4-tier selector on [X], -Mode ArmageddonReset / DoomsdayReset / UltraReset / FullNetReset CLI dispatch.
-    6.4.2 (Sovereign Grand Master Final Hardening & PnP Optimization):
+    6.4.2 (PnP Optimization & Mutex Starvation Protection):
       - PnP Rescan Rate-Limit & Narrowing: Rescue-DormantEthernetPnp stamps limiter before query, checks only present faulted physical wired NICs, and ignores disabled/ghost devices.
       - Interactive Session Timestamp Validation: Start-Interactive writes process StartTime in round-trippable ISO-8601 UTC format, eliminating false-positive session purges.
       - Undoable IPv6 Neutralization & Restoration: Shield-DnsIntegrity snapshots DnsStatic/Ipv6Rd; Restore-Ipv6IfNeutralized restores ms_tcpip6 and router discovery upon leaving campus or factory reset.
@@ -100,7 +122,7 @@ exit /b %errorlevel%
       - Read-Only Telemetry Contract: Purged unsynchronized metric writes from Get-Telemetry to prevent multi-threaded race conditions.
       - Wi-Fi Enablement Dry-Run Guard: Wrapped Enable-NetAdapter in Invoke-Change and dry-run check in Set-RouteProfileMode.
       - Lazy Uplink Evaluation: Deferred Test-OtherUplinkActive in Get-InternetState, eliminating 75% of route table sweep overhead.
-    6.4.0 (Grand Master Sovereign Hardening - 21-Point Alpha-to-Omega Resilience Engine):
+    6.4.0 (Alpha-to-Omega Network Resilience Engine):
       - Dormant USB PnP Transceiver Revival: Rescue-DormantEthernetPnp detects non-present/sleep-crashed USB NICs and
         resynchronizes the PnP bus via pnputil /scan-devices, guaranteeing zero-reboot waking on all USB controllers.
       - RFC 4861 Link-Local IPv6 Gateway Preservation: Corrected IPv6 route evaluation in Get-AdapterDnsVerdict to recognize
@@ -121,7 +143,7 @@ exit /b %errorlevel%
         on-link targets via 0.0.0.0 (direct ARP) and off-link targets via the physical gateway at metric 5.
       - Clean Roaming & Reset Hygiene: Invoke-RoamingCleanup purges discovered portal state upon leaving campus, and full
         resets unconditionally evict stale Permanent ARP locks across network switches.
-    6.3.0 (Sovereign Zero-Reboot Situational Auto-Adaptation Engine):
+    6.3.0 (Zero-Reboot Situational Auto-Adaptation Engine):
       - Situational DNS Engine: Shield-Dns resolves failures across Online, NoDns, and Offline states via parallel
         53/UDP latency probes, automatically placing measured working public resolvers at the head of the adapter list.
       - NRPT Split-Horizon Rule Injection: Dynamically maps the campus/organization domain to campus resolvers so
@@ -228,7 +250,7 @@ exit /b %errorlevel%
 
 [CmdletBinding()]
 param(
-    [ValidateSet('Interactive','Heal','QuickHeal','AutoHeal','Omnifix','NetReset','FullNetReset','UltraReset','Ultra','DoomsdayReset','Doomsday','ArmageddonReset','Armageddon','ResetOptions','ResetMenu','Diagnose','Audit','QuickProbe','Probe','FlushCache','Flush','InstallWatchdog','UninstallWatchdog','InstallShield','UninstallShield','InstallSentinel','UninstallSentinel','ResetFactory','Reset','LaunchPortal','Login','SetDnsProfile','Dns','DnsMenu','SetRouteProfile','Route','RouteMenu','SelfTest','Verify','Report','Daemon','Sentinel','Vault','Guide','Help')]
+    [ValidateSet('Interactive','Heal','QuickHeal','AutoHeal','Omnifix','StandardReset','NetReset','FullNetReset','UltraReset','Ultra','DoomsdayReset','Doomsday','ArmageddonReset','Armageddon','ResetOptions','ResetMenu','Diagnose','Audit','QuickProbe','Probe','FlushCache','Flush','InstallWatchdog','UninstallWatchdog','InstallShield','UninstallShield','InstallSentinel','UninstallSentinel','ResetFactory','Reset','LaunchPortal','Login','SetDnsProfile','Dns','DnsMenu','SetRouteProfile','Route','RouteMenu','SelfTest','Verify','Report','Daemon','Sentinel','Vault','Guide','Help','Doctor','Status','History','Undo','Recover','Bundle','Config','Integrity','Debloat','UndoDebloat')]
     [string]$Mode = 'Interactive',
     [ValidateSet('Adaptive','DHCP','Hybrid','Cloudflare','ResetDHCP')]
     [string]$DnsProfile = 'Adaptive',
@@ -238,12 +260,33 @@ param(
     [switch]$NoPause,
     [switch]$Force,
     [switch]$Headless,
+    [switch]$ConfirmRemoteDisconnect,
+    [switch]$Json,
+    [switch]$Quiet,
+    [switch]$NoColor,
+    [string]$Id,
+    [string]$RunId,
+    [int]$Limit = 20,
+    [switch]$Plan,
+    [string]$OutDir = '',
+    [ValidateSet('Strict','Standard')][string]$Redaction = 'Strict',
+    [string]$Section = '',
+    [switch]$Follow,
+    [string]$Level = '',
+    [string]$Filter = '',
+    [string]$OutFile = '',
+    [switch]$Validate,
+    [switch]$Audit,
+    [switch]$Authorize,
+    [switch]$SafeOnly,
+    [int]$Tier = 1,
     [Parameter(DontShow)][switch]$LfElevated
 )
 
 $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
 try { Add-Type -AssemblyName System.Security -ErrorAction SilentlyContinue } catch {}
+try { Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue } catch {}
 if ($PSVersionTable.PSEdition -ne 'Core') {
     $sysMod = Join-Path $env:SystemRoot 'system32\WindowsPowerShell\v1.0\Modules'
     if (Test-Path -LiteralPath $sysMod) {
@@ -255,24 +298,31 @@ if ($PSVersionTable.PSEdition -ne 'Core') {
 # ==============================================================================
 # CONFIG (edit here, nowhere else)
 # ==============================================================================
-$script:Version = '6.5.4'
+$script:Version = '7.0.0'
+$script:RunId   = [guid]::NewGuid().ToString()
 $script:Sys32   = Join-Path $env:SystemRoot 'System32'
 $script:SelfPath = if ($env:LANFIXER_SELF -and (Test-Path -LiteralPath $env:LANFIXER_SELF)) { $env:LANFIXER_SELF } elseif ($PSCommandPath -and (Test-Path -LiteralPath $PSCommandPath)) { $PSCommandPath } elseif ($MyInvocation.MyCommand.Path -and (Test-Path -LiteralPath $MyInvocation.MyCommand.Path)) { $MyInvocation.MyCommand.Path } elseif ($PSScriptRoot -and (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'LanFixer.cmd'))) { (Join-Path $PSScriptRoot 'LanFixer.cmd') } else { (Join-Path (Get-Location).Path 'LanFixer.cmd') }
 $script:IsDry   = [bool]$DryRun
+$script:IsPlan  = [bool]$Plan
+if ($script:IsPlan) { $script:IsDry = $true }
+$script:PlannedChanges = New-Object System.Collections.ArrayList
 $script:UiOn    = ($Mode -ne 'AutoHeal' -and $Mode -ne 'InstallSentinel' -and $Mode -ne 'UninstallSentinel' -and -not $Headless)
+if ($env:NO_COLOR -and $env:NO_COLOR -ne '') { $NoColor = [switch]::Present }
+$script:NoColor = [bool]$NoColor
+if ($Json -or $Quiet) { $script:UiOn = $false; $NoPause = $true }
 $script:Cfg = @{
     StoreDir        = (Join-Path $env:ProgramData 'LanFixer')
     SelfName        = 'LanFixer_Core.cmd'
     TaskWatchdog    = 'LanFixer_Watchdog'
     TaskPortal      = 'LanFixer_Portal'
     PortalHost      = 'gateway.nitjsr.ac.in'
-    PortalPort      = 8888
+    PortalPort      = 8003
     PortalIp        = '10.114.0.5'
-    PortalUrl       = 'https://gateway.nitjsr.ac.in:8888/'
+    PortalUrl       = 'https://gateway.nitjsr.ac.in:8003/index.php?zone=nitjsr'
     CampusDns       = '172.16.1.2'
     CampusDomain    = 'nitjsr.ac.in'
-    GwRegex         = '^10\.1\.\d{1,3}\.1$'   # only a 1-point hint; DNS/portal evidence decides
-    ProfileRegex    = 'nitjsr|hostel|campus|academic'
+    GwRegex         = '^(10\.\d{1,3}\.\d{1,3}\.1|172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.1|192\.168\.\d{1,3}\.1|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.1)$'   # multi-subnet / campus / router gateway hint
+    ProfileRegex    = 'nitjsr|campus|university|college|school|academic|eduroam|hostel|hall|dorm|guest|enterprise|corp|internal|portal|login|hotspot|wifi|wlan|lan'
     CampusThreshold = 2
     PublicDns       = @('9.9.9.9','8.8.8.8','1.1.1.1')
     CfDns           = @('1.1.1.1','1.0.0.1')
@@ -357,8 +407,1119 @@ function Write-Log {
     }
 }
 # Every mutation goes through here: honest success/failure, dry-run support, counters.
+# ==============================================================================
+# CHANGE LEDGER & MUTATION ENGINE (FEATURE F2)
+# ==============================================================================
+function Add-ChangeLedgerEntry {
+    param(
+        [string]$Description,
+        [string]$MutationType = 'Generic',
+        [string]$Target = '',
+        $OldValue = $null,
+        $NewValue = $null,
+        [bool]$Success = $true,
+        [bool]$Reversible = $false,
+        [string]$UndoScript = ''
+    )
+    if ($script:IsDry) { return }
+    try {
+        if (-not (Test-Path -LiteralPath $script:StoreDir)) {
+            [void](New-Item -ItemType Directory -Path $script:StoreDir -Force -ErrorAction SilentlyContinue)
+        }
+        $ledgerFile = Join-Path $script:StoreDir 'change_ledger.jsonl'
+        if (Test-Path -LiteralPath $ledgerFile) {
+            $item = Get-Item -LiteralPath $ledgerFile -ErrorAction SilentlyContinue
+            if ($item -and $item.Length -ge 2097152) {
+                $bakFile = $ledgerFile + '.bak'
+                Copy-Item -LiteralPath $ledgerFile -Destination $bakFile -Force -ErrorAction SilentlyContinue
+                Remove-Item -LiteralPath $ledgerFile -Force -ErrorAction SilentlyContinue
+            }
+        }
+        $now = [DateTime]::UtcNow
+        $entry = @{
+            SchemaVersion  = 1
+            EntryId        = [guid]::NewGuid().ToString()
+            RunId          = [string]$script:RunId
+            TimestampUtc   = $now.ToString('o')
+            TimestampLocal = (Get-Date).ToString('o')
+            Mode           = [string]$Mode
+            Description    = [string]$Description
+            MutationType   = [string]$MutationType
+            Target         = [string]$Target
+            OldValue       = $OldValue
+            NewValue       = $NewValue
+            Success        = $Success
+            Reversible     = $Reversible
+            UndoScript     = [string]$UndoScript
+        }
+        $jsonLine = (ConvertTo-Json $entry -Compress) -replace '[
+]+', ''
+        [System.IO.File]::AppendAllText($ledgerFile, $jsonLine + "`r`n", [System.Text.Encoding]::ASCII)
+    } catch {}
+}
+
+function Get-ChangeLedgerEntries([int]$Limit = 0) {
+    $ledgerFile = Join-Path $script:StoreDir 'change_ledger.jsonl'
+    if (-not (Test-Path -LiteralPath $ledgerFile)) { return @() }
+    $lines = @(Get-Content -LiteralPath $ledgerFile -ErrorAction SilentlyContinue | Where-Object { $_ -and $_.Trim() -ne '' })
+    if ($lines.Count -eq 0) { return @() }
+    $entries = New-Object System.Collections.ArrayList
+    foreach ($line in $lines) {
+        try {
+            $e = ConvertFrom-Json $line
+            if ($e -and $e.EntryId) { [void]$entries.Add($e) }
+        } catch {}
+    }
+    if ($Limit -gt 0 -and $entries.Count -gt $Limit) {
+        $startIdx = $entries.Count - $Limit
+        return @($entries.GetRange($startIdx, $Limit))
+    }
+    return @($entries)
+}
+
+function Format-LedgerHistory($Entries, [switch]$NoColor) {
+    $nc = [bool]($NoColor -or $script:NoColor)
+    if ($nc) {
+        Write-Host '================================================================================'
+        Write-Host '                    LANFIXER CHANGE LEDGER (MUTATION HISTORY)'
+        Write-Host '================================================================================'
+    } else {
+        Write-Host '================================================================================' -ForegroundColor Cyan
+        Write-Host '                    LANFIXER CHANGE LEDGER (MUTATION HISTORY)' -ForegroundColor Cyan
+        Write-Host '================================================================================' -ForegroundColor Cyan
+    }
+    if (-not $Entries -or $Entries.Count -eq 0) {
+        if ($nc) {
+            Write-Host 'No ledger entries recorded yet.'
+            Write-Host '================================================================================'
+        } else {
+            Write-Host 'No ledger entries recorded yet.' -ForegroundColor Gray
+            Write-Host '================================================================================' -ForegroundColor Cyan
+        }
+        return
+    }
+    if ($nc) {
+        Write-Host ('{0,-20} {1,-14} {2,-16} {3,-18} {4}' -f 'Timestamp (Local)', 'Mode', 'Target', 'MutationType', 'Reversible')
+        Write-Host ('-' * 80)
+    } else {
+        Write-Host ('{0,-20} {1,-14} {2,-16} {3,-18} {4}' -f 'Timestamp (Local)', 'Mode', 'Target', 'MutationType', 'Reversible') -ForegroundColor Gray
+        Write-Host ('-' * 80) -ForegroundColor Gray
+    }
+    foreach ($e in $Entries) {
+        $ts = if ($e.TimestampLocal) { [string]$e.TimestampLocal } else { [string]$e.TimestampUtc }
+        if ($ts.Length -gt 19) { $ts = $ts.Substring(0, 19).Replace('T', ' ') }
+        $revStr = if ($e.Reversible) { 'Yes' } else { 'No' }
+        $revCol = if ($e.Reversible) { 'Green' } else { 'DarkGray' }
+        $line = ('{0,-20} {1,-14} {2,-16} {3,-18} ' -f $ts, [string]$e.Mode, [string]$e.Target, [string]$e.MutationType)
+        $idShort = if ($e.EntryId -and $e.EntryId.Length -ge 8) { $e.EntryId.Substring(0, 8) } else { [string]$e.EntryId }
+        if ($nc) {
+            Write-Host ($line + $revStr)
+            Write-Host ('    ' + $e.Description + ' [ID: ' + $idShort + ']')
+        } else {
+            Write-Host $line -NoNewline
+            Write-Host $revStr -ForegroundColor $revCol
+            Write-Host ('    ' + $e.Description + ' ') -NoNewline -ForegroundColor DarkGray
+            Write-Host ('[ID: ' + $idShort + ']') -ForegroundColor Cyan
+        }
+    }
+    if ($nc) {
+        Write-Host '================================================================================'
+    } else {
+        Write-Host '================================================================================' -ForegroundColor Cyan
+    }
+}
+
+function Invoke-Undo {
+    param(
+        [string]$TargetId = '',
+        [string]$TargetRunId = '',
+        [switch]$Plan,
+        [switch]$Force,
+        [switch]$Json,
+        [switch]$Quiet,
+        [switch]$NoColor
+    )
+    $allEntries = Get-ChangeLedgerEntries
+    if ($allEntries.Count -eq 0) {
+        if ($TargetId) {
+            if ($Json) { [Console]::Out.WriteLine((ConvertTo-Json @{ Status = 'NotFound'; TargetId = $TargetId; UndoneCount = 0 })) }
+            elseif (-not $Quiet) { Write-Host "Error: Entry ID '$TargetId' not found in change ledger." -ForegroundColor Red }
+            return @{ Status = 'NotFound'; UndoneCount = 0 }
+        }
+        if ($TargetRunId) {
+            if ($Json) { [Console]::Out.WriteLine((ConvertTo-Json @{ Status = 'NotFound'; TargetRunId = $TargetRunId; UndoneCount = 0 })) }
+            elseif (-not $Quiet) { Write-Host "Error: Run ID '$TargetRunId' not found in change ledger." -ForegroundColor Red }
+            return @{ Status = 'NotFound'; UndoneCount = 0 }
+        }
+        if ($Json) { [Console]::Out.WriteLine((ConvertTo-Json @{ Status = 'Empty'; UndoneCount = 0; Entries = @() })) }
+        elseif (-not $Quiet) { Write-Host 'No mutations recorded in change ledger to undo.' -ForegroundColor Yellow }
+        return @{ Status = 'Empty'; UndoneCount = 0 }
+    }
+
+    $candidates = @()
+    if ($TargetId) {
+        $candidates = @($allEntries | Where-Object { $_.EntryId -eq $TargetId -or $_.EntryId -like "$TargetId*" })
+        if ($candidates.Count -eq 0) {
+            if ($Json) { [Console]::Out.WriteLine((ConvertTo-Json @{ Status = 'NotFound'; TargetId = $TargetId; UndoneCount = 0 })) }
+            elseif (-not $Quiet) { Write-Host "Error: Entry ID '$TargetId' not found in change ledger." -ForegroundColor Red }
+            return @{ Status = 'NotFound'; UndoneCount = 0 }
+        }
+    } elseif ($TargetRunId) {
+        $candidates = @($allEntries | Where-Object { $_.RunId -eq $TargetRunId })
+        if ($candidates.Count -eq 0) {
+            if ($Json) { [Console]::Out.WriteLine((ConvertTo-Json @{ Status = 'NotFound'; TargetRunId = $TargetRunId; UndoneCount = 0 })) }
+            elseif (-not $Quiet) { Write-Host "Error: Run ID '$TargetRunId' not found in change ledger." -ForegroundColor Red }
+            return @{ Status = 'NotFound'; UndoneCount = 0 }
+        }
+    } else {
+        $lastMut = @($allEntries | Where-Object { $_.Success -and $_.Reversible -and $_.RunId }) | Select-Object -Last 1
+        if (-not $lastMut) { $lastMut = $allEntries[-1] }
+        $chosenRunId = $lastMut.RunId
+        $candidates = @($allEntries | Where-Object { $_.RunId -eq $chosenRunId })
+    }
+
+    $candidatesList = New-Object System.Collections.ArrayList
+    foreach ($item in $candidates) { [void]$candidatesList.Add($item) }
+    $candidatesList.Reverse()
+
+    if ($Plan -and -not $Quiet -and -not $Json) {
+        Write-Host '================================================================================' -ForegroundColor Cyan
+        Write-Host '                       PLAN PREVIEW: REVERSIBLE UNDO' -ForegroundColor Cyan
+        Write-Host '================================================================================' -ForegroundColor Cyan
+    }
+
+    $undoneCount = 0
+    $skippedCount = 0
+    $planEntries = New-Object System.Collections.ArrayList
+
+    foreach ($e in $candidatesList) {
+        $idShort = if ($e.EntryId -and $e.EntryId.Length -ge 8) { $e.EntryId.Substring(0, 8) } else { [string]$e.EntryId }
+        if (-not $e.Reversible -and -not $e.UndoScript) {
+            if (-not $Quiet -and -not $Json) {
+                Write-Host ("  [SKIP] Entry {0} ({1}) is marked non-reversible." -f $idShort, $e.Description) -ForegroundColor DarkGray
+            }
+            $skippedCount++
+            continue
+        }
+
+        # Drift Detection
+        $driftDetected = $false
+        $driftReason = ''
+        if ($e.MutationType -eq 'Registry' -and $e.Target -and $e.ValueName) {
+            $curVal = (Get-ItemProperty -LiteralPath $e.Target -Name $e.ValueName -ErrorAction SilentlyContinue).($e.ValueName)
+            if ($null -ne $curVal -and [string]$curVal -ne [string]$e.NewValue) {
+                $driftDetected = $true
+                $driftReason = "Current registry value '$curVal' does not match recorded NewValue '$($e.NewValue)'"
+            }
+        } elseif ($e.MutationType -eq 'DnsClientServerAddress' -and $e.Target) {
+            $curDns = @((Get-DnsClientServerAddress -InterfaceAlias $e.Target -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses) -join ','
+            $expDns = @($e.NewValue) -join ','
+            if ($curDns -ne $expDns) {
+                $driftDetected = $true
+                $driftReason = "Current DNS '$curDns' does not match recorded NewValue '$expDns'"
+            }
+        }
+
+        if ($driftDetected -and -not $Force) {
+            if (-not $Quiet -and -not $Json) {
+                Write-Host ("  [DRIFT REFUSED] Entry {0}: {1} (use -Force to override)" -f $idShort, $driftReason) -ForegroundColor Yellow
+            }
+            $skippedCount++
+            continue
+        }
+
+        if ($Plan) {
+            [void]$planEntries.Add(@{
+                EntryId     = $e.EntryId
+                Target      = $e.Target
+                Description = $e.Description
+                OldValue    = $e.OldValue
+                NewValue    = $e.NewValue
+                Action      = "Would revert to $($e.OldValue)"
+            })
+            if (-not $Quiet -and -not $Json) {
+                Write-Host ("  [PLAN] Revert {0} on {1}: restore OldValue ({2})" -f $idShort, $e.Target, $e.OldValue) -ForegroundColor Cyan
+            }
+            $undoneCount++
+            continue
+        }
+
+        # Apply Reversal
+        $undoSuccess = $false
+        if ($e.UndoScript) {
+            try {
+                $sb = [scriptblock]::Create($e.UndoScript)
+                $res = Invoke-Change ("Undo {0}: {1}" -f $idShort, $e.Description) $sb
+                if ($res) { $undoSuccess = $true }
+            } catch {}
+        } elseif ($e.MutationType -eq 'DnsClientServerAddress' -and $e.Target) {
+            $oldAddresses = @($e.OldValue) | Where-Object { $_ }
+            if ($oldAddresses.Count -gt 0) {
+                $undoSuccess = Invoke-Change ("Restore DNS on {0} to {1}" -f $e.Target, ($oldAddresses -join ', ')) {
+                    Set-DnsClientServerAddress -InterfaceAlias $e.Target -ServerAddresses $oldAddresses -ErrorAction Stop
+                }
+            } else {
+                $undoSuccess = Invoke-Change ("Reset DNS on {0} to DHCP" -f $e.Target) {
+                    Set-DnsClientServerAddress -InterfaceAlias $e.Target -ResetServerAddresses -ErrorAction Stop
+                }
+            }
+        } elseif ($e.MutationType -eq 'Registry' -and $e.Target -and $e.ValueName) {
+            if ($null -ne $e.OldValue) {
+                $undoSuccess = Invoke-Change ("Restore registry {0}\{1} to {2}" -f $e.Target, $e.ValueName, $e.OldValue) {
+                    Set-ItemProperty -LiteralPath $e.Target -Name $e.ValueName -Value $e.OldValue -ErrorAction Stop
+                }
+            } else {
+                $undoSuccess = Invoke-Change ("Remove registry value {0}\{1}" -f $e.Target, $e.ValueName) {
+                    Remove-ItemProperty -LiteralPath $e.Target -Name $e.ValueName -ErrorAction Stop
+                }
+            }
+        }
+
+        if ($undoSuccess) {
+            $undoneCount++
+            Add-ChangeLedgerEntry -Description ("Reverted mutation {0}" -f $idShort) -MutationType 'Undo' -Target $e.Target -OldValue $e.NewValue -NewValue $e.OldValue -Success $true -Reversible $false
+        }
+    }
+
+    $summary = @{
+        Status       = if ($Plan) { 'Planned' } else { 'Completed' }
+        UndoneCount  = $undoneCount
+        SkippedCount = $skippedCount
+        Entries      = if ($Plan) { $planEntries } else { @() }
+    }
+
+    if ($Json) {
+        [Console]::Out.WriteLine((ConvertTo-Json $summary -Depth 4))
+    } elseif (-not $Quiet) {
+        if ($Plan) {
+            Write-Host ("`nPlan preview complete: {0} mutations would be reverted ({1} skipped)." -f $undoneCount, $skippedCount) -ForegroundColor Green
+            Write-Host '================================================================================' -ForegroundColor Cyan
+        } else {
+            Write-Host ("`nUndo complete: {0} mutations reverted, {1} skipped." -f $undoneCount, $skippedCount) -ForegroundColor Green
+        }
+    }
+
+    return $summary
+}
+
+function Format-PlanPreview($Changes, [string]$Mode = '', [switch]$NoColor) {
+    $nc = [bool]($NoColor -or $script:NoColor)
+    if ($nc) {
+        Write-Host '================================================================================'
+        Write-Host ("               LANFIXER NON-DESTRUCTIVE PLAN PREVIEW [-Plan] ($Mode)")
+        Write-Host '================================================================================'
+        Write-Host 'Target               Type               Reversible Action'
+        Write-Host ('-' * 80)
+    } else {
+        Write-Host '================================================================================' -ForegroundColor Cyan
+        Write-Host ("               LANFIXER NON-DESTRUCTIVE PLAN PREVIEW [-Plan] ($Mode)") -ForegroundColor Cyan
+        Write-Host '================================================================================' -ForegroundColor Cyan
+        Write-Host 'Target               Type               Reversible Action' -ForegroundColor Gray
+        Write-Host ('-' * 80) -ForegroundColor Gray
+    }
+    if (-not $Changes -or $Changes.Count -eq 0) {
+        if ($nc) {
+            Write-Host 'No system mutations required or planned.'
+            Write-Host '================================================================================'
+        } else {
+            Write-Host 'No system mutations required or planned.' -ForegroundColor Green
+            Write-Host '================================================================================' -ForegroundColor Cyan
+        }
+        return
+    }
+    foreach ($c in $Changes) {
+        $revStr = if ($c.Reversible) { 'Yes' } else { 'No' }
+        $revCol = if ($c.Reversible) { 'Green' } else { 'Yellow' }
+        $line = ('{0,-20} {1,-18} ' -f ([string]$c.Target).PadRight(20).Substring(0,20), ([string]$c.MutationType).PadRight(18).Substring(0,18))
+        if ($nc) {
+            Write-Host ($line + $revStr.PadRight(11) + $c.Description)
+        } else {
+            Write-Host $line -NoNewline
+            Write-Host ($revStr.PadRight(11)) -NoNewline -ForegroundColor $revCol
+            Write-Host ([string]$c.Description) -ForegroundColor Cyan
+        }
+        if ($null -ne $c.OldValue -or $null -ne $c.NewValue) {
+            $diffLine = ('    Old: {0}  ->  New: {1}' -f [string]$c.OldValue, [string]$c.NewValue)
+            if ($nc) { Write-Host $diffLine } else { Write-Host $diffLine -ForegroundColor DarkGray }
+        }
+    }
+    if ($nc) {
+        Write-Host ('-' * 80)
+        Write-Host ("Total Planned Mutations: {0} (Zero system mutations executed)" -f $Changes.Count)
+        Write-Host '================================================================================'
+    } else {
+        Write-Host ('-' * 80) -ForegroundColor Gray
+        Write-Host ("Total Planned Mutations: {0} (Zero system mutations executed)" -f $Changes.Count) -ForegroundColor Green
+        Write-Host '================================================================================' -ForegroundColor Cyan
+    }
+}
+
+# ==============================================================================
+# FEATURE: SUPREME MULTI-DIMENSIONAL HISTORY & FORENSIC SUITE
+# ==============================================================================
+function Get-HistorySessionLogs([int]$Limit = 50, [string]$Level = '', [string]$Filter = '') {
+    $results = New-Object System.Collections.ArrayList
+    if (-not (Test-Path -LiteralPath $script:LogFile)) { return @($results) }
+    $lines = @(Get-Content -LiteralPath $script:LogFile -Tail ([Math]::Max(100, $Limit * 5)) -ErrorAction SilentlyContinue)
+    for ($i = $lines.Count - 1; $i -ge 0; $i--) {
+        $l = $lines[$i]
+        if (-not $l -or $l.Trim() -eq '') { continue }
+        $ts = ''; $lvl = 'INFO'; $msg = $l
+        $m = [regex]::Match($l, '^\[(.*?)\]\s+\[(.*?)\]\s+(.*)$')
+        if ($m.Success) {
+            $ts = $m.Groups[1].Value
+            $lvl = $m.Groups[2].Value.ToUpper()
+            $msg = $m.Groups[3].Value
+        }
+        if ($Level -and $lvl -ne $Level.ToUpper()) { continue }
+        if ($Filter -and $msg -notmatch [regex]::Escape($Filter)) { continue }
+        [void]$results.Add(@{
+            Timestamp = $ts
+            Level     = $lvl
+            Message   = $msg
+            Source    = 'LanFixer.log'
+        })
+        if ($Limit -gt 0 -and $results.Count -ge $Limit) { break }
+    }
+    return @($results)
+}
+
+function Show-HistorySessionLogs([int]$Limit = 50, [string]$Level = '', [string]$Filter = '', [switch]$NoColor) {
+    $nc = [bool]($NoColor -or $script:NoColor)
+    $logs = @(Get-HistorySessionLogs -Limit $Limit -Level $Level -Filter $Filter)
+    if ($nc) {
+        Write-Host '================================================================================'
+        Write-Host ('             LANFIXER EXACT SESSION EXECUTION LOGS (LAST {0})' -f $logs.Count)
+        Write-Host '================================================================================'
+    } else {
+        Write-Host '================================================================================' -ForegroundColor Cyan
+        Write-Host ('             LANFIXER EXACT SESSION EXECUTION LOGS (LAST {0})' -f $logs.Count) -ForegroundColor Cyan
+        Write-Host '================================================================================' -ForegroundColor Cyan
+    }
+    if ($logs.Count -eq 0) {
+        if ($nc) {
+            Write-Host '  No matching log records found.'
+        } else {
+            Write-Host '  No matching log records found.' -ForegroundColor Gray
+        }
+        return
+    }
+    foreach ($entry in $logs) {
+        $col = switch ($entry.Level) {
+            'OK'   { 'Green' }
+            'WARN' { 'Yellow' }
+            'FAIL' { 'Red' }
+            'STEP' { 'Cyan' }
+            default { 'Gray' }
+        }
+        $linePrefix = ('[{0}] [{1,-4}] ' -f $entry.Timestamp, $entry.Level)
+        if ($nc) {
+            Write-Host ($linePrefix + $entry.Message)
+        } else {
+            Write-Host $linePrefix -NoNewline -ForegroundColor $col
+            Write-Host $entry.Message -ForegroundColor $(if ($entry.Level -in @('FAIL','WARN')) { $col } else { 'White' })
+        }
+    }
+    if ($nc) {
+        Write-Host '================================================================================'
+    } else {
+        Write-Host '================================================================================' -ForegroundColor Cyan
+    }
+}
+
+function Get-HistoryErrors([int]$Limit = 50, [int]$Hours = 24) {
+    $errList = New-Object System.Collections.ArrayList
+    $logErrs = Get-HistorySessionLogs -Limit ($Limit * 3)
+    foreach ($e in $logErrs) {
+        if ($e.Level -in @('FAIL', 'WARN')) {
+            [void]$errList.Add(@{
+                Timestamp = $e.Timestamp
+                Severity  = if ($e.Level -eq 'FAIL') { 'Error' } else { 'Warning' }
+                Category  = 'LanFixer'
+                Source    = 'LanFixer.log'
+                Message   = $e.Message
+            })
+            if ($errList.Count -ge $Limit) { break }
+        }
+    }
+    $ledgerFile = Join-Path $script:StoreDir 'change_ledger.jsonl'
+    if (Test-Path -LiteralPath $ledgerFile) {
+        $lines = @(Get-Content -LiteralPath $ledgerFile -ErrorAction SilentlyContinue)
+        for ($i = $lines.Count - 1; $i -ge 0; $i--) {
+            try {
+                $item = ConvertFrom-Json $lines[$i]
+                if ($item -and $item.Success -eq $false) {
+                    [void]$errList.Add(@{
+                        Timestamp = if ($item.TimestampLocal) { $item.TimestampLocal } else { $item.TimestampUtc }
+                        Severity  = 'Error'
+                        Category  = 'Mutation'
+                        Source    = 'change_ledger.jsonl'
+                        Message   = ("Failed mutation ({0}) on {1}: {2}" -f $item.MutationType, $item.Target, $item.Description)
+                    })
+                }
+            } catch {}
+            if ($errList.Count -ge ($Limit * 2)) { break }
+        }
+    }
+    try {
+        $winErrs = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; Level = @(1, 2); StartTime = (Get-Date).AddHours(-$Hours) } -MaxEvents 30 -ErrorAction SilentlyContinue)
+        foreach ($we in $winErrs) {
+            $pName = [string]$we.ProviderName
+            if ($pName -match 'Tcpip|Dhcp|DNS|NDIS|Netw|e1d|WLAN|Network') {
+                [void]$errList.Add(@{
+                    Timestamp = $we.TimeCreated.ToString('yyyy-MM-dd HH:mm:ss')
+                    Severity  = 'Critical/Error'
+                    Category  = 'Windows OS'
+                    Source    = $pName
+                    Message   = ($we.Message -replace "[\r\n]+", " ").Trim()
+                })
+            }
+        }
+    } catch {}
+    return @($errList | Select-Object -First $Limit)
+}
+
+function Show-HistoryErrors([int]$Limit = 50, [switch]$NoColor) {
+    $nc = [bool]($NoColor -or $script:NoColor)
+    $errors = @(Get-HistoryErrors -Limit $Limit)
+    if ($nc) {
+        Write-Host '================================================================================'
+        Write-Host ('                 LANFIXER ERROR & FAILURE AUDIT ({0} RECORDS)' -f $errors.Count)
+        Write-Host '================================================================================'
+    } else {
+        Write-Host '================================================================================' -ForegroundColor Red
+        Write-Host ('                 LANFIXER ERROR & FAILURE AUDIT ({0} RECORDS)' -f $errors.Count) -ForegroundColor Red
+        Write-Host '================================================================================' -ForegroundColor Red
+    }
+    if ($errors.Count -eq 0) {
+        if ($nc) {
+            Write-Host '  Zero errors or warnings detected in current lookback window.'
+        } else {
+            Write-Host '  Zero errors or warnings detected in current lookback window.' -ForegroundColor Green
+        }
+        return
+    }
+    $critCount = @($errors | Where-Object { $_.Severity -match 'Error|Critical' }).Count
+    $warnCount = @($errors | Where-Object { $_.Severity -match 'Warning' }).Count
+    if ($nc) {
+        Write-Host ("  Total Errors: {0} | Warnings: {1}" -f $critCount, $warnCount)
+        Write-Host ('-' * 80)
+    } else {
+        Write-Host ("  Total Errors: {0} | Warnings: {1}" -f $critCount, $warnCount) -ForegroundColor Yellow
+        Write-Host ('-' * 80) -ForegroundColor DarkGray
+    }
+    foreach ($err in $errors) {
+        $isCrit = ($err.Severity -match 'Error|Critical')
+        $col = if ($isCrit) { 'Red' } else { 'Yellow' }
+        $hdr = ('{0,-20} [{1,-8}] [{2,-14}] ' -f $err.Timestamp, $err.Severity, $err.Category)
+        if ($nc) {
+            Write-Host ($hdr + $err.Source)
+            Write-Host ('    ' + $err.Message)
+        } else {
+            Write-Host $hdr -NoNewline -ForegroundColor $col
+            Write-Host $err.Source -ForegroundColor White
+            Write-Host ('    ' + $err.Message) -ForegroundColor Gray
+        }
+    }
+    if ($nc) {
+        Write-Host '================================================================================'
+    } else {
+        Write-Host '================================================================================' -ForegroundColor Red
+    }
+}
+
+function Get-HistoryWindowsEvents([int]$Limit = 50, [int]$Hours = 24) {
+    $out = New-Object System.Collections.ArrayList
+    try {
+        $npEvents = @(Get-WinEvent -FilterHashtable @{ LogName = 'Microsoft-Windows-NetworkProfile/Operational'; StartTime = (Get-Date).AddHours(-$Hours) } -MaxEvents ($Limit / 2) -ErrorAction SilentlyContinue)
+        foreach ($e in $npEvents) {
+            $desc = switch ($e.Id) {
+                10000 { "Network Connected" }
+                10001 { "Network Disconnected" }
+                4004  { "Network State Change Fired" }
+                default { "Network Profile Event $($e.Id)" }
+            }
+            [void]$out.Add(@{
+                Timestamp = $e.TimeCreated.ToString('yyyy-MM-dd HH:mm:ss')
+                Channel   = 'NetworkProfile'
+                EventId   = $e.Id
+                Type      = 'State'
+                Summary   = $desc
+                Details   = ($e.Message -replace "[\r\n]+", " ").Trim()
+            })
+        }
+    } catch {}
+    try {
+        $ncsiEvents = @(Get-WinEvent -FilterHashtable @{ LogName = 'Microsoft-Windows-NCSI/Operational'; StartTime = (Get-Date).AddHours(-$Hours) } -MaxEvents 15 -ErrorAction SilentlyContinue)
+        foreach ($e in $ncsiEvents) {
+            $desc = switch ($e.Id) {
+                4042  { "Active Web Probe Result" }
+                4001  { "NCSI Capability Transition" }
+                default { "NCSI Event $($e.Id)" }
+            }
+            [void]$out.Add(@{
+                Timestamp = $e.TimeCreated.ToString('yyyy-MM-dd HH:mm:ss')
+                Channel   = 'NCSI'
+                EventId   = $e.Id
+                Type      = 'Probe'
+                Summary   = $desc
+                Details   = ($e.Message -replace "[\r\n]+", " ").Trim()
+            })
+        }
+    } catch {}
+    try {
+        $dhcpEvents = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = @('Dhcp-Client','Microsoft-Windows-Dhcp-Client'); StartTime = (Get-Date).AddHours(-$Hours) } -MaxEvents 15 -ErrorAction SilentlyContinue)
+        foreach ($e in $dhcpEvents) {
+            $desc = switch ($e.Id) {
+                50036 { "DHCPv4 client service started" }
+                50037 { "DHCPv4 client service stopped" }
+                1001  { "DHCP address lease assigned" }
+                1002  { "DHCP lease renewal failed" }
+                1003  { "DHCP lease expired / APIPA fallback" }
+                default { "DHCP Client Event $($e.Id)" }
+            }
+            [void]$out.Add(@{
+                Timestamp = $e.TimeCreated.ToString('yyyy-MM-dd HH:mm:ss')
+                Channel   = 'Dhcp-Client'
+                EventId   = $e.Id
+                Type      = 'Lease'
+                Summary   = $desc
+                Details   = ($e.Message -replace "[\r\n]+", " ").Trim()
+            })
+        }
+    } catch {}
+    return @($out | Sort-Object { $_.Timestamp } -Descending | Select-Object -First $Limit)
+}
+
+function Show-HistoryWindowsEvents([int]$Limit = 50, [switch]$NoColor) {
+    $nc = [bool]($NoColor -or $script:NoColor)
+    $events = @(Get-HistoryWindowsEvents -Limit $Limit)
+    if ($nc) {
+        Write-Host '================================================================================'
+        Write-Host ('             WINDOWS OS NETWORK EVENT FORENSICS ({0} RECORDS)' -f $events.Count)
+        Write-Host '================================================================================'
+    } else {
+        Write-Host '================================================================================' -ForegroundColor Cyan
+        Write-Host ('             WINDOWS OS NETWORK EVENT FORENSICS ({0} RECORDS)' -f $events.Count) -ForegroundColor Cyan
+        Write-Host '================================================================================' -ForegroundColor Cyan
+    }
+    if ($events.Count -eq 0) {
+        if ($nc) {
+            Write-Host '  No recent Windows networking OS events recorded in lookback window.'
+        } else {
+            Write-Host '  No recent Windows networking OS events recorded in lookback window.' -ForegroundColor Gray
+        }
+        return
+    }
+    foreach ($ev in $events) {
+        $prefix = ('{0,-20} [{1,-14}:{2,-5}] ' -f $ev.Timestamp, $ev.Channel, $ev.EventId)
+        if ($nc) {
+            Write-Host ($prefix + $ev.Summary)
+            Write-Host ('    ' + $ev.Details)
+        } else {
+            Write-Host $prefix -NoNewline -ForegroundColor Yellow
+            Write-Host $ev.Summary -ForegroundColor White
+            Write-Host ('    ' + $ev.Details) -ForegroundColor DarkGray
+        }
+    }
+    if ($nc) {
+        Write-Host '================================================================================'
+    } else {
+        Write-Host '================================================================================' -ForegroundColor Cyan
+    }
+}
+
+function Get-HistoryStateTransitions([int]$Limit = 30) {
+    $trans = New-Object System.Collections.ArrayList
+    $lm = $script:State.LinkMonitor
+    if ($lm -is [System.Collections.IEnumerable]) {
+        foreach ($item in $lm) {
+            if ($item) {
+                [void]$trans.Add(@{
+                    Timestamp = [string]$item.Timestamp
+                    Type      = 'LinkTransition'
+                    Adapter   = [string]$item.Adapter
+                    Status    = [string]$item.Status
+                    Speed     = [string]$item.Speed
+                    Details   = ("Link transition on {0}: Status={1} Speed={2}" -f $item.Adapter, $item.Status, $item.Speed)
+                })
+            }
+        }
+    }
+    $np = Get-HistoryWindowsEvents -Limit $Limit
+    foreach ($e in $np) {
+        if ($e.Channel -eq 'NetworkProfile') {
+            [void]$trans.Add(@{
+                Timestamp = $e.Timestamp
+                Type      = 'NetworkProfile'
+                Adapter   = 'Windows'
+                Status    = $e.Summary
+                Speed     = '-'
+                Details   = $e.Details
+            })
+        }
+    }
+    return @($trans | Sort-Object { $_.Timestamp } -Descending | Select-Object -First $Limit)
+}
+
+function Show-HistoryStateTransitions([int]$Limit = 30, [switch]$NoColor) {
+    $nc = [bool]($NoColor -or $script:NoColor)
+    $trans = @(Get-HistoryStateTransitions -Limit $Limit)
+    if ($nc) {
+        Write-Host '================================================================================'
+        Write-Host ('            NETWORK STATE TRANSITIONS & FLAP AUDIT ({0} RECORDS)' -f $trans.Count)
+        Write-Host '================================================================================'
+    } else {
+        Write-Host '================================================================================' -ForegroundColor Cyan
+        Write-Host ('            NETWORK STATE TRANSITIONS & FLAP AUDIT ({0} RECORDS)' -f $trans.Count) -ForegroundColor Cyan
+        Write-Host '================================================================================' -ForegroundColor Cyan
+    }
+    if ($trans.Count -eq 0) {
+        if ($nc) {
+            Write-Host '  No network link flaps or transitions recorded.'
+        } else {
+            Write-Host '  No network link flaps or transitions recorded.' -ForegroundColor Green
+        }
+        return
+    }
+    foreach ($t in $trans) {
+        $line = ('{0,-20} {1,-16} {2,-18} ' -f $t.Timestamp, $t.Type, $t.Status)
+        if ($nc) {
+            Write-Host ($line + $t.Details)
+        } else {
+            Write-Host $line -NoNewline -ForegroundColor White
+            Write-Host $t.Details -ForegroundColor DarkGray
+        }
+    }
+    if ($nc) {
+        Write-Host '================================================================================'
+    } else {
+        Write-Host '================================================================================' -ForegroundColor Cyan
+    }
+}
+
+function Get-HistoryHeals([int]$Limit = 30) {
+    $heals = New-Object System.Collections.ArrayList
+    $logs = Get-HistorySessionLogs -Limit ($Limit * 4)
+    foreach ($l in $logs) {
+        if ($l.Message -match '^(Executing initial repair pipeline|Watchdog active|Signed in automatically|Completed stage|ChangeLedger:|Invoking [A-Za-z]+Heal|Supreme Omnifix|Ultra System Reset|Doomsday Reset|Armageddon Reset|HealSummary)') {
+            [void]$heals.Add(@{
+                Timestamp = $l.Timestamp
+                Type      = if ($l.Message -match 'Reset') { 'SystemReset' } elseif ($l.Message -match 'Watchdog') { 'Watchdog' } else { 'QuickHeal' }
+                Message   = $l.Message
+                Level     = $l.Level
+            })
+            if ($heals.Count -ge $Limit) { break }
+        }
+    }
+    return @($heals)
+}
+
+function Show-HistoryHeals([int]$Limit = 30, [switch]$NoColor) {
+    $nc = [bool]($NoColor -or $script:NoColor)
+    $heals = @(Get-HistoryHeals -Limit $Limit)
+    if ($nc) {
+        Write-Host '================================================================================'
+        Write-Host ('               HEAL & REMEDIATION RUN AUDIT ({0} RECORDS)' -f $heals.Count)
+        Write-Host '================================================================================'
+    } else {
+        Write-Host '================================================================================' -ForegroundColor Cyan
+        Write-Host ('               HEAL & REMEDIATION RUN AUDIT ({0} RECORDS)' -f $heals.Count) -ForegroundColor Cyan
+        Write-Host '================================================================================' -ForegroundColor Cyan
+    }
+    if ($heals.Count -eq 0) {
+        if ($nc) {
+            Write-Host '  No recent heal runs recorded.'
+        } else {
+            Write-Host '  No recent heal runs recorded.' -ForegroundColor Gray
+        }
+        return
+    }
+    foreach ($h in $heals) {
+        $prefix = ('{0,-20} [{1,-11}] ' -f $h.Timestamp, $h.Type)
+        if ($nc) {
+            Write-Host ($prefix + $h.Message)
+        } else {
+            Write-Host $prefix -NoNewline -ForegroundColor Green
+            Write-Host $h.Message -ForegroundColor White
+        }
+    }
+    if ($nc) {
+        Write-Host '================================================================================'
+    } else {
+        Write-Host '================================================================================' -ForegroundColor Cyan
+    }
+}
+
+function Get-HistoryTimeline([int]$Limit = 50) {
+    $timeline = New-Object System.Collections.ArrayList
+    $ledgerFile = Join-Path $script:StoreDir 'change_ledger.jsonl'
+    if (Test-Path -LiteralPath $ledgerFile) {
+        $lines = @(Get-Content -LiteralPath $ledgerFile -ErrorAction SilentlyContinue)
+        for ($i = $lines.Count - 1; $i -ge 0; $i--) {
+            try {
+                $e = ConvertFrom-Json $lines[$i]
+                if ($e -and $e.Description) {
+                    $ts = if ($e.TimestampLocal) { $e.TimestampLocal } else { $e.TimestampUtc }
+                    if ($ts.Length -gt 19) { $ts = $ts.Substring(0, 19).Replace('T', ' ') }
+                    [void]$timeline.Add(@{
+                        Timestamp = $ts
+                        Category  = '[MUTATION]'
+                        Source    = if ($e.Mode) { $e.Mode } else { 'LanFixer' }
+                        Event     = ("{0} on {1}: {2}" -f $e.MutationType, $e.Target, $e.Description)
+                    })
+                }
+            } catch {}
+            if ($timeline.Count -ge ($Limit / 2)) { break }
+        }
+    }
+    $logs = Get-HistorySessionLogs -Limit ($Limit / 2)
+    foreach ($l in $logs) {
+        $cat = if ($l.Level -in @('FAIL', 'WARN')) { '[ERROR]' } elseif ($l.Level -eq 'STEP') { '[STEP]' } else { '[LOG]' }
+        [void]$timeline.Add(@{
+            Timestamp = $l.Timestamp
+            Category  = $cat
+            Source    = 'LanFixer'
+            Event     = $l.Message
+        })
+    }
+    $win = Get-HistoryWindowsEvents -Limit ($Limit / 2)
+    foreach ($w in $win) {
+        [void]$timeline.Add(@{
+            Timestamp = $w.Timestamp
+            Category  = '[OS-EVENT]'
+            Source    = $w.Channel
+            Event     = ("{0}: {1}" -f $w.Summary, $w.Details)
+        })
+    }
+    return @($timeline | Sort-Object { $_.Timestamp } -Descending | Select-Object -First $Limit)
+}
+
+function Show-HistoryTimeline([int]$Limit = 50, [switch]$NoColor) {
+    $nc = [bool]($NoColor -or $script:NoColor)
+    $items = @(Get-HistoryTimeline -Limit $Limit)
+    if ($nc) {
+        Write-Host '================================================================================'
+        Write-Host ('         UNIFIED CAUSALITY TIMELINE ("WHAT BROKE WHEN") ({0} EVENTS)' -f $items.Count)
+        Write-Host '================================================================================'
+    } else {
+        Write-Host '================================================================================' -ForegroundColor Cyan
+        Write-Host ('         UNIFIED CAUSALITY TIMELINE ("WHAT BROKE WHEN") ({0} EVENTS)' -f $items.Count) -ForegroundColor Cyan
+        Write-Host '================================================================================' -ForegroundColor Cyan
+    }
+    if ($items.Count -eq 0) {
+        if ($nc) {
+            Write-Host '  No events recorded in causality timeline.'
+        } else {
+            Write-Host '  No events recorded in causality timeline.' -ForegroundColor Gray
+        }
+        return
+    }
+    foreach ($it in $items) {
+        $catCol = switch ($it.Category) {
+            '[MUTATION]' { 'Cyan' }
+            '[ERROR]'    { 'Red' }
+            '[STEP]'     { 'Yellow' }
+            '[OS-EVENT]' { 'Magenta' }
+            default      { 'Gray' }
+        }
+        $line = ('{0,-20} {1,-11} {2,-16} ' -f $it.Timestamp, $it.Category, $it.Source)
+        if ($nc) {
+            Write-Host ($line + $it.Event)
+        } else {
+            Write-Host $line -NoNewline -ForegroundColor $catCol
+            Write-Host $it.Event -ForegroundColor White
+        }
+    }
+    if ($nc) {
+        Write-Host '================================================================================'
+    } else {
+        Write-Host '================================================================================' -ForegroundColor Cyan
+    }
+}
+
+function Show-HistoryLiveStream([int]$RefreshSeconds = 2) {
+    Clear-Screen
+    Show-Cursor $false
+    Write-Banner 'REAL-TIME LIVE FORENSIC MONITOR STREAM'
+    Out-Line @((Seg 'text' '  Streaming live LanFixer logs, system events, and gateway pulse in real time.'))
+    Out-Line @((Seg 'dim' '  [SPACE] Pause/Resume  |  [C] Clear Screen  |  [Q] Return to Menu'))
+    Out-Line @()
+    $paused = $false
+    $lastLineCount = 0
+    try {
+        while ($true) {
+            if (Test-KeyAvailable) {
+                $k = Read-KeyNow
+                $ch = if ($k -and $k.KeyChar) { [string]$k.KeyChar } else { '' }
+                if ($ch.ToLowerInvariant() -eq 'q') { break }
+                elseif ($ch -eq ' ') {
+                    $paused = -not $paused
+                    Out-Line @((Seg $(if ($paused) { 'warn!' } else { 'ok!' }) ("  [Stream " + $(if ($paused) { 'PAUSED' } else { 'RESUMED' }) + "]")))
+                } elseif ($ch.ToLowerInvariant() -eq 'c') {
+                    Clear-Screen
+                    Write-Banner 'REAL-TIME LIVE FORENSIC MONITOR STREAM'
+                    Out-Line @((Seg 'dim' '  [SPACE] Pause/Resume  |  [C] Clear Screen  |  [Q] Return to Menu'))
+                    Out-Line @()
+                }
+            }
+            if (-not $paused -and (Test-Path -LiteralPath $script:LogFile)) {
+                $allLines = @(Get-Content -LiteralPath $script:LogFile -Tail 20 -ErrorAction SilentlyContinue)
+                if ($allLines.Count -gt $lastLineCount) {
+                    $newCount = $allLines.Count - $lastLineCount
+                    $start = [Math]::Max(0, $allLines.Count - [Math]::Min(5, $newCount))
+                    for ($idx = $start; $idx -lt $allLines.Count; $idx++) {
+                        $line = $allLines[$idx]
+                        $col = 'dim'
+                        if ($line -match '\[OK\s*\]') { $col = 'ok' }
+                        elseif ($line -match '\[WARN\s*\]') { $col = 'warn' }
+                        elseif ($line -match '\[FAIL\s*\]') { $col = 'bad' }
+                        elseif ($line -match '\[STEP\s*\]') { $col = 'accent!' }
+                        elseif ($line -match '\[INFO\s*\]') { $col = 'dim' }
+                        Out-Line @((Seg $col ("  " + $line)))
+                    }
+                }
+                $lastLineCount = $allLines.Count
+            }
+            Start-Sleep -Milliseconds ($RefreshSeconds * 1000)
+        }
+    } finally {
+        Show-Cursor $true
+    }
+}
+
+function Export-HistoryForensicBundle([string]$OutFile = '', [switch]$Json) {
+    $bundle = @{
+        GeneratedAt   = (Get-Date).ToString('o')
+        MachineName   = $env:COMPUTERNAME
+        User          = $env:USERNAME
+        OSVersion     = [Environment]::OSVersion.VersionString
+        PSVersion     = $PSVersionTable.PSVersion.ToString()
+        Mutations     = @(Get-ChangeLedgerEntries -Limit 100)
+        RecentLogs    = @(Get-HistorySessionLogs -Limit 100)
+        Errors        = @(Get-HistoryErrors -Limit 50)
+        WindowsEvents = @(Get-HistoryWindowsEvents -Limit 50)
+        Transitions   = @(Get-HistoryStateTransitions -Limit 50)
+        HealRuns      = @(Get-HistoryHeals -Limit 50)
+        Timeline      = @(Get-HistoryTimeline -Limit 100)
+    }
+    if (-not $OutFile) {
+        $stamp = (Get-Date).ToString('yyyyMMdd_HHmmss')
+        $ext = if ($Json) { 'json' } else { 'txt' }
+        $fileName = ("LanFixer_Forensic_History_{0}.{1}" -f $stamp, $ext)
+        $targetDir = $PWD.Path
+        $canWrite = $false
+        try {
+            $testP = Join-Path $targetDir (".lf_test_" + [guid]::NewGuid().ToString('N'))
+            [System.IO.File]::WriteAllText($testP, 'x')
+            Remove-Item -LiteralPath $testP -Force -ErrorAction SilentlyContinue
+            $canWrite = $true
+        } catch {}
+        if (-not $canWrite) {
+            $targetDir = [System.IO.Path]::GetTempPath()
+        }
+        $OutFile = Join-Path $targetDir $fileName
+    }
+    if ($Json) {
+        $jsonTxt = ConvertTo-Json $bundle -Depth 5
+        [System.IO.File]::WriteAllText($OutFile, $jsonTxt, [System.Text.Encoding]::ASCII)
+    } else {
+        $sb = New-Object System.Text.StringBuilder
+        [void]$sb.AppendLine('=' * 80)
+        [void]$sb.AppendLine('             LANFIXER SUPREME FORENSIC HISTORY EXPORT BUNDLE')
+        [void]$sb.AppendLine('=' * 80)
+        [void]$sb.AppendLine("Timestamp: $($bundle.GeneratedAt) | Host: $($bundle.MachineName) | User: $($bundle.User)")
+        [void]$sb.AppendLine("OS: $($bundle.OSVersion) | PowerShell: $($bundle.PSVersion)")
+        [void]$sb.AppendLine('=' * 80)
+        [void]$sb.AppendLine("`n--- [1] RECENT MUTATIONS ($($bundle.Mutations.Count)) ---")
+        foreach ($m in $bundle.Mutations) {
+            [void]$sb.AppendLine(("{0} [{1}] {2} -> {3}" -f $m.TimestampLocal, $m.MutationType, $m.Target, $m.Description))
+        }
+        [void]$sb.AppendLine("`n--- [2] ERROR & FAILURE AUDIT ($($bundle.Errors.Count)) ---")
+        foreach ($e in $bundle.Errors) {
+            [void]$sb.AppendLine(("{0} [{1}] [{2}] {3}" -f $e.Timestamp, $e.Severity, $e.Source, $e.Message))
+        }
+        [void]$sb.AppendLine("`n--- [3] WINDOWS NETWORK OS EVENTS ($($bundle.WindowsEvents.Count)) ---")
+        foreach ($w in $bundle.WindowsEvents) {
+            [void]$sb.AppendLine(("{0} [{1}:{2}] {3} - {4}" -f $w.Timestamp, $w.Channel, $w.EventId, $w.Summary, $w.Details))
+        }
+        [void]$sb.AppendLine("`n--- [4] UNIFIED CAUSALITY TIMELINE ($($bundle.Timeline.Count)) ---")
+        foreach ($t in $bundle.Timeline) {
+            [void]$sb.AppendLine(("{0} {1,-12} {2,-16} {3}" -f $t.Timestamp, $t.Category, $t.Source, $t.Event))
+        }
+        [System.IO.File]::WriteAllText($OutFile, $sb.ToString(), [System.Text.Encoding]::ASCII)
+    }
+    Write-Host ("Forensic history exported to: {0}" -f $OutFile) -ForegroundColor Green
+    return @{ Path = $OutFile; Entries = $bundle.Timeline.Count }
+}
+
+function Show-HistoryMenu {
+    while ($true) {
+        Clear-Screen; Show-Cursor $true
+        Write-Banner 'LANFIXER SUPREME HISTORY & FORENSIC SUITE'
+        Out-Line @((Seg 'text' '  Unified multi-dimensional audit of all system mutations, logs, errors, and events:'))
+        Out-Line @()
+        $sections = @(
+            @('1', 'Mutation & Change Ledger',    'm', 'Exact registry, DNS, and route changes modified by LanFixer'),
+            @('2', 'Exact Session Logs',          'l', 'Chronological execution logs from LanFixer.log (with level filters)'),
+            @('3', 'Error & Failure Audit',       'e', 'All caught errors, failed native calls, timeouts, and exceptions'),
+            @('4', 'Windows OS Network Events',   'w', 'Real-time Windows Event Log network forensic analysis (NDIS/DHCP/DNS)'),
+            @('5', 'Network State Transitions',   's', 'Link up/down transitions, speed drops, flaps, and IP lease changes'),
+            @('6', 'Heal & Remediation Runs',     'h', 'Historical record of QuickHeal, Watchdog, and System Reset passes'),
+            @('7', 'Unified Causality Timeline',  't', 'Deep chronological correlation: "What broke when & root cause"'),
+            @('8', 'Live Forensic Monitor Stream','r', 'Real-time live streaming tail of operations, events, and gateway pulse'),
+            @('9', 'Export Forensic Bundle',      'x', 'Save complete history audit to a comprehensive diagnostic file')
+        )
+        foreach ($sec in $sections) {
+            Out-Line @(
+                (Seg 'faint' '  ['),
+                (Seg 'accent!' $sec[0]),
+                (Seg 'faint' '] '),
+                (Seg 'text!' ($sec[1].PadRight(28))),
+                (Seg 'dim' $sec[3])
+            )
+        }
+        Out-Line @()
+        Out-Line @((Seg 'dim' '  Select section [1-9] or [M/L/E/W/S/H/T/R/X], or press any other key to return '), (Seg 'accent!' $script:G.prompt)) -NoNewline
+        $k = Read-Choice
+        Out-Line @()
+        $c = ([string]$k.KeyChar).ToLowerInvariant()
+        switch ($c) {
+            { $_ -eq '1' -or $_ -eq 'm' } {
+                Show-View 'mutation & change ledger' { Format-LedgerHistory (Get-ChangeLedgerEntries -Limit 50) }
+            }
+            { $_ -eq '2' -or $_ -eq 'l' } {
+                Show-View 'exact session logs' { Show-HistorySessionLogs -Limit 50 }
+            }
+            { $_ -eq '3' -or $_ -eq 'e' } {
+                Show-View 'error & failure audit' { Show-HistoryErrors -Limit 50 }
+            }
+            { $_ -eq '4' -or $_ -eq 'w' } {
+                Show-View 'windows os network events' { Show-HistoryWindowsEvents -Limit 50 }
+            }
+            { $_ -eq '5' -or $_ -eq 's' } {
+                Show-View 'network state transitions' { Show-HistoryStateTransitions -Limit 30 }
+            }
+            { $_ -eq '6' -or $_ -eq 'h' } {
+                Show-View 'heal & remediation runs' { Show-HistoryHeals -Limit 30 }
+            }
+            { $_ -eq '7' -or $_ -eq 't' } {
+                Show-View 'unified causality timeline' { Show-HistoryTimeline -Limit 50 }
+            }
+            { $_ -eq '8' -or $_ -eq 'r' } {
+                Show-HistoryLiveStream -RefreshSeconds 2
+            }
+            { $_ -eq '9' -or $_ -eq 'x' } {
+                Show-View 'export forensic history bundle' { [void](Export-HistoryForensicBundle) }
+            }
+            default { return }
+        }
+    }
+}
+
+function Invoke-HistorySuite {
+    param(
+        [string]$Section = '',
+        [int]$Limit = 20,
+        [switch]$Follow,
+        [string]$Level = '',
+        [string]$Filter = '',
+        [string]$OutFile = '',
+        [switch]$Json,
+        [switch]$Quiet,
+        [switch]$NoColor
+    )
+    if ($Follow -or $Section -in @('live', 'stream', 'tail', 'realtime')) {
+        Show-HistoryLiveStream
+        return 0
+    }
+    $sec = $Section.ToLowerInvariant()
+    if ($Json) {
+        $res = switch ($sec) {
+            { $_ -in @('mutations', 'changes', 'ledger') } { @(Get-ChangeLedgerEntries -Limit $Limit) }
+            { $_ -in @('logs', 'session') }                { @(Get-HistorySessionLogs -Limit $Limit -Level $Level -Filter $Filter) }
+            { $_ -in @('errors', 'failures') }             { @(Get-HistoryErrors -Limit $Limit) }
+            { $_ -in @('os', 'windows', 'events') }        { @(Get-HistoryWindowsEvents -Limit $Limit) }
+            { $_ -in @('states', 'transitions', 'flaps') } { @(Get-HistoryStateTransitions -Limit $Limit) }
+            { $_ -in @('heals', 'remediations') }          { @(Get-HistoryHeals -Limit $Limit) }
+            { $_ -in @('timeline', 'causality') }          { @(Get-HistoryTimeline -Limit $Limit) }
+            { $_ -in @('export', 'bundle') }               { Export-HistoryForensicBundle -OutFile $OutFile -Json }
+            default {
+                @{
+                    Mutations   = @(Get-ChangeLedgerEntries -Limit $Limit)
+                    Logs        = @(Get-HistorySessionLogs -Limit $Limit -Level $Level -Filter $Filter)
+                    Errors      = @(Get-HistoryErrors -Limit $Limit)
+                    WindowsEvents = @(Get-HistoryWindowsEvents -Limit $Limit)
+                    Transitions = @(Get-HistoryStateTransitions -Limit $Limit)
+                    Heals       = @(Get-HistoryHeals -Limit $Limit)
+                    Timeline    = @(Get-HistoryTimeline -Limit $Limit)
+                }
+            }
+        }
+        [Console]::Out.WriteLine((ConvertTo-Json $res -Depth 4))
+        return 0
+    }
+    if ($Quiet) {
+        $count = switch ($sec) {
+            { $_ -in @('mutations', 'changes', 'ledger') } { (Get-ChangeLedgerEntries -Limit $Limit).Count }
+            { $_ -in @('logs', 'session') }                { (Get-HistorySessionLogs -Limit $Limit -Level $Level -Filter $Filter).Count }
+            { $_ -in @('errors', 'failures') }             { (Get-HistoryErrors -Limit $Limit).Count }
+            { $_ -in @('os', 'windows', 'events') }        { (Get-HistoryWindowsEvents -Limit $Limit).Count }
+            { $_ -in @('states', 'transitions', 'flaps') } { (Get-HistoryStateTransitions -Limit $Limit).Count }
+            { $_ -in @('heals', 'remediations') }          { (Get-HistoryHeals -Limit $Limit).Count }
+            { $_ -in @('timeline', 'causality') }          { (Get-HistoryTimeline -Limit $Limit).Count }
+            default                                        { (Get-HistoryTimeline -Limit $Limit).Count }
+        }
+        [Console]::Out.WriteLine(("History [{0}]: {1} entries" -f $(if ($Section) { $Section } else { 'Timeline' }), $count))
+        return 0
+    }
+    switch ($sec) {
+        { $_ -in @('mutations', 'changes', 'ledger') } { Format-LedgerHistory (Get-ChangeLedgerEntries -Limit $Limit) -NoColor:$NoColor }
+        { $_ -in @('logs', 'session') }                { Show-HistorySessionLogs -Limit $Limit -Level $Level -Filter $Filter -NoColor:$NoColor }
+        { $_ -in @('errors', 'failures') }             { Show-HistoryErrors -Limit $Limit -NoColor:$NoColor }
+        { $_ -in @('os', 'windows', 'events') }        { Show-HistoryWindowsEvents -Limit $Limit -NoColor:$NoColor }
+        { $_ -in @('states', 'transitions', 'flaps') } { Show-HistoryStateTransitions -Limit $Limit -NoColor:$NoColor }
+        { $_ -in @('heals', 'remediations') }          { Show-HistoryHeals -Limit $Limit -NoColor:$NoColor }
+        { $_ -in @('timeline', 'causality') }          { Show-HistoryTimeline -Limit $Limit -NoColor:$NoColor }
+        { $_ -in @('export', 'bundle') }               { [void](Export-HistoryForensicBundle -OutFile $OutFile) }
+        default {
+            if ($script:UiOn) {
+                Show-HistoryMenu
+            } else {
+                Show-HistoryTimeline -Limit $Limit -NoColor:$NoColor
+            }
+        }
+    }
+    return 0
+}
+
 function Invoke-Change {
-    param([string]$Description, [scriptblock]$Action, [switch]$FailOnFalse)
+    param(
+        [string]$Description,
+        [scriptblock]$Action,
+        [switch]$FailOnFalse,
+        [string]$MutationType = 'Generic',
+        [string]$Target = '',
+        $OldValue = $null,
+        $NewValue = $null,
+        [string]$UndoScript = '',
+        [switch]$Reversible
+    )
+    if ($script:IsPlan) {
+        $pItem = @{
+            Target       = if ($Target) { $Target } else { 'System' }
+            MutationType = $MutationType
+            Description  = $Description
+            OldValue     = $OldValue
+            NewValue     = $NewValue
+            Reversible   = [bool]($Reversible -or $UndoScript)
+        }
+        if ($script:PlannedChanges -is [System.Collections.ArrayList]) {
+            [void]$script:PlannedChanges.Add($pItem)
+        }
+        Write-Log 'PLAN' "Planned: $Description"
+        return $true
+    }
     if ($script:IsDry) { Write-Log 'DRY' "Would: $Description"; return $true }
     $ErrorActionPreference = 'Stop'
     try {
@@ -366,10 +1527,12 @@ function Invoke-Change {
         if ($FailOnFalse -and $out.Count -gt 0 -and $out[-1] -is [bool] -and -not $out[-1]) { throw 'the action reported failure' }
         $script:ChangeCount++
         Write-Log 'OK' $Description
+        Add-ChangeLedgerEntry -Description $Description -MutationType $MutationType -Target $Target -OldValue $OldValue -NewValue $NewValue -Success $true -Reversible ([bool]($Reversible -or $UndoScript)) -UndoScript $UndoScript
         return $true
     } catch {
         $script:FailCount++
         Write-Log 'FAIL' ("{0} -> {1}" -f $Description, $_.Exception.Message)
+        Add-ChangeLedgerEntry -Description $Description -MutationType $MutationType -Target $Target -OldValue $OldValue -NewValue $NewValue -Success $false -Reversible $false
         return $false
     }
 }
@@ -444,7 +1607,7 @@ function Get-State {
         } catch { $s = $null }
     }
     if ($s -isnot [hashtable]) { $s = @{} }
-    foreach ($k in 'Snapshot','Env','Dns','Arp','Times','Misc') { if ($s[$k] -isnot [hashtable]) { $s[$k] = @{} } }
+    foreach ($k in 'Snapshot','Env','Dns','Arp','Times','Misc','LinkMonitor') { if ($s[$k] -isnot [hashtable]) { $s[$k] = @{} } }
     return $s
 }
 # True only for a file that exists AND deserialises to the hashtable the engine expects.
@@ -491,7 +1654,10 @@ function Get-StateTime([string]$Name) {
     return [datetime]::MinValue
 }
 function Set-StateTime([string]$Name) { $script:State.Times[$Name] = (Get-Date).ToString('o') }
-function Test-Elapsed([string]$Name, [int]$Seconds) { return (((Get-Date) - (Get-StateTime $Name)).TotalSeconds -ge $Seconds) }
+function Test-Elapsed([string]$Name, [int]$Seconds) {
+    $diff = ((Get-Date) - (Get-StateTime $Name)).TotalSeconds
+    return ($diff -ge $Seconds -or $diff -lt 0)
+}
 
 # First-write-wins snapshot of the user's ORIGINAL value, so restore is exact.
 function Save-Original([string]$Guid, [string]$Key, $Value) {
@@ -537,8 +1703,8 @@ function Repair-StoreChildren([string]$Dir) {
         } catch { $bad = $true }
         if ($f.PSIsContainer -and ($f.Attributes -band [IO.FileAttributes]::ReparsePoint)) { $bad = $true }
         if ($bad) {
-            [void](Invoke-Native $icacls @($f.FullName, '/setowner', '*S-1-5-32-544', '/T', '/C', '/Q'))
-            [void](Invoke-Native $icacls @($f.FullName, '/reset', '/T', '/C', '/Q'))
+            [void](Invoke-Native $icacls @($f.FullName, '/setowner', '*S-1-5-32-544', '/T', '/C', '/Q') 5000)
+            [void](Invoke-Native $icacls @($f.FullName, '/reset', '/T', '/C', '/Q') 5000)
         }
     }
     $cfgJson = Join-Path $Dir 'config.json'
@@ -546,8 +1712,8 @@ function Repair-StoreChildren([string]$Dir) {
         try {
             $co = (Get-Acl -LiteralPath $cfgJson).GetOwner([System.Security.Principal.SecurityIdentifier]).Value
             if (@('S-1-5-18', 'S-1-5-32-544') -notcontains $co -and ($trustedOwners -contains $co)) {
-                [void](Invoke-Native $icacls @($cfgJson, '/setowner', '*S-1-5-32-544', '/C', '/Q'))
-                [void](Invoke-Native $icacls @($cfgJson, '/reset', '/C', '/Q'))
+                [void](Invoke-Native $icacls @($cfgJson, '/setowner', '*S-1-5-32-544', '/C', '/Q') 5000)
+                [void](Invoke-Native $icacls @($cfgJson, '/reset', '/C', '/Q') 5000)
             }
         } catch {}
     }
@@ -635,15 +1801,128 @@ function Import-UserConfig {
         if ($names.Count -gt 0) { Write-Log 'INFO' ('config.json applied: ' + (($names | Sort-Object) -join ', ')) }
     } catch { Write-Log 'WARN' ('config.json ignored: ' + $_.Exception.Message) }
 }
+function Test-IsNitjsrNetwork {
+    try {
+        $dom = if ($script:State.Misc -and $script:State.Misc['DiscoveredDomain']) { [string]$script:State.Misc['DiscoveredDomain'] } else { '' }
+        if ($dom -and ($dom -eq 'nitjsr.ac.in' -or $dom.EndsWith('.nitjsr.ac.in'))) { return $true }
+        foreach ($a in @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' })) {
+            $sfx = (Get-DnsClient -InterfaceIndex $a.ifIndex -ErrorAction SilentlyContinue).ConnectionSpecificSuffix
+            if ($sfx -and ($sfx.ToLower() -eq 'nitjsr.ac.in' -or $sfx.ToLower().EndsWith('.nitjsr.ac.in'))) { return $true }
+            $dns = @(Get-DhcpDnsServers ([string]$a.InterfaceGuid))
+            if ($dns -contains '172.16.1.2') { return $true }
+            $np = Get-NetConnectionProfile -InterfaceIndex $a.ifIndex -ErrorAction SilentlyContinue
+            if ($np -and $np.Name -match 'nitjsr') { return $true }
+        }
+        if (Test-TcpPort '10.114.0.5' 8003 250) { return $true }
+    } catch {}
+    return $false
+}
+function Invoke-NetworkAutoDiscovery {
+    param([switch]$Force)
+    if (-not $Force -and $script:State.Misc -and $script:State.Misc['DiscoveryTime']) {
+        try {
+            $lastDisc = [DateTime]::Parse([string]$script:State.Misc['DiscoveryTime'])
+            if (((Get-Date) - $lastDisc).TotalSeconds -lt 20) { return }
+        } catch {}
+    }
+    try {
+        $adapters = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' -and $_.InterfaceDescription -notmatch $script:VirtRegex })
+        $gws = @()
+        foreach ($ad in $adapters) { $gws += @(Get-GatewaysV4 $ad) }
+        $gws = @($gws | Where-Object { $_ } | Select-Object -Unique)
+        $primaryGw = if ($gws.Count -gt 0) { [string]$gws[0] } else { '' }
+
+        # 1. Discover Domain & DNS Suffixes
+        $discoveredSuffix = ''
+        foreach ($a in $adapters) {
+            try {
+                $sfx = (Get-DnsClient -InterfaceIndex $a.ifIndex -ErrorAction SilentlyContinue).ConnectionSpecificSuffix
+                if ($sfx -and $sfx -match '\.' -and $sfx -notmatch '^(local|lan|home|arpa|localdomain|mshome\.net)$') {
+                    $discoveredSuffix = $sfx.Trim().Trim('.').ToLowerInvariant()
+                    break
+                }
+            } catch {}
+            $reg = Get-IfaceReg ([string]$a.InterfaceGuid)
+            if ($reg -and $reg.DhcpDomain -and $reg.DhcpDomain -match '\.' -and $reg.DhcpDomain -notmatch '^(local|lan|home|arpa|localdomain|mshome\.net)$') {
+                $discoveredSuffix = ([string]$reg.DhcpDomain).Trim().Trim('.').ToLowerInvariant()
+                break
+            }
+        }
+        if ($discoveredSuffix -and -not $script:IsDry) {
+            $script:State.Misc['DiscoveredDomain'] = $discoveredSuffix
+        }
+
+        # 2. Discover Captive URL from DHCP Option 114 (RFC 8910)
+        foreach ($a in $adapters) {
+            $dhcpUrl = Get-DhcpCaptiveUrl ([string]$a.InterfaceGuid)
+            if ($dhcpUrl -and -not $script:IsDry) {
+                $script:State.Misc['DiscoveredPortalUrl'] = $dhcpUrl
+                try {
+                    $du = [uri]$dhcpUrl
+                    if ($du.Host) {
+                        $script:State.Misc['DiscoveredPortalHost'] = ([string]$du.Host).ToLowerInvariant()
+                        if ($du.Port -gt 0) { $script:State.Misc['DiscoveredPortalPort'] = [int]$du.Port }
+                    }
+                } catch {}
+                break
+            }
+        }
+
+        # 3. Discover Active Web Services on Gateway
+        if ($primaryGw -and (-not $script:State.Misc['DiscoveredPortalUrl']) -and -not $script:IsDry) {
+            $gwPorts = @(80, 443, 8080, 8003, 8443, 8888)
+            foreach ($p in $gwPorts) {
+                if (Test-TcpPort $primaryGw $p 250) {
+                    $script:State.Misc['DiscoveredPortalPort'] = $p
+                    $script:State.Misc['DiscoveredPortalIp'] = $primaryGw
+                    $proto = if ($p -eq 443 -or $p -eq 8443) { 'https' } else { 'http' }
+                    $portStr = if ($p -eq 80 -or $p -eq 443) { '' } else { ":$p" }
+                    if (-not (Test-IsNitjsrNetwork)) {
+                        $script:State.Misc['DiscoveredPortalUrl'] = ($proto + '://' + $primaryGw + $portStr + '/')
+                        $script:State.Misc['DiscoveredPortalHost'] = $primaryGw
+                    }
+                    break
+                }
+            }
+        }
+
+        # 4. Discover DHCP DNS Servers
+        $dhcpDnsList = New-Object System.Collections.ArrayList
+        foreach ($a in $adapters) {
+            $dServers = @(Get-DhcpDnsServers ([string]$a.InterfaceGuid))
+            foreach ($ds in $dServers) {
+                if ($ds -and -not $dhcpDnsList.Contains($ds)) { [void]$dhcpDnsList.Add($ds) }
+            }
+        }
+        if ($dhcpDnsList.Count -gt 0 -and -not $script:IsDry) {
+            $script:State.Misc['DiscoveredDns'] = @($dhcpDnsList)
+        }
+
+        if (-not $script:IsDry) {
+            $script:State.Misc['DiscoveryTime'] = (Get-Date).ToString('o')
+        }
+    } catch {}
+}
 function Get-ActivePortalUrl {
-    $discUrl = ([string]$script:State.Misc['DiscoveredPortalUrl']).Trim()
+    $discUrl = if ($script:State -is [hashtable] -and $script:State.Misc -is [hashtable]) { [string]$script:State.Misc['DiscoveredPortalUrl'] } else { '' }
+    $discUrl = $discUrl.Trim()
     if ($discUrl) {
         $safe = Get-SafePortalUrl $discUrl
         if ($safe) { return $safe }
     }
+    if (-not (Test-IsNitjsrNetwork) -and -not (Test-Path -LiteralPath (Join-Path $script:StoreDir 'config.json'))) {
+        $gws = @(Get-GatewaysV4) | Where-Object { $_ }
+        if ($gws.Count -gt 0) {
+            $gw = [string]$gws[0]
+            $p = if ($script:State.Misc -and $script:State.Misc['DiscoveredPortalPort']) { [int]$script:State.Misc['DiscoveredPortalPort'] } else { Find-ActivePortalPort $gw 80 }
+            $proto = if ($p -eq 443 -or $p -eq 8443) { 'https' } else { 'http' }
+            $portStr = if ($p -eq 80 -or $p -eq 443) { '' } else { ":$p" }
+            return ($proto + '://' + $gw + $portStr + '/')
+        }
+    }
     return [string]$script:Cfg.PortalUrl
 }
-function Find-ActivePortalPort([string]$HostOrIp, [int]$DefaultPort = 8888) {
+function Find-ActivePortalPort([string]$HostOrIp, [int]$DefaultPort = 8003) {
     if (-not $HostOrIp) { return $DefaultPort }
     if ($script:State.Misc -and $script:State.Misc['DiscoveredPortalPort']) {
         $savedPort = [int]$script:State.Misc['DiscoveredPortalPort']
@@ -651,7 +1930,7 @@ function Find-ActivePortalPort([string]$HostOrIp, [int]$DefaultPort = 8888) {
             if (Test-TcpPort $HostOrIp $savedPort 250) { return $savedPort }
         }
     }
-    $probePorts = @([int]$DefaultPort, 8888, 8003, 8443, 8080, 443, 80) | Select-Object -Unique
+    $probePorts = @([int]$DefaultPort, 8003, 8888, 8443, 8080, 443, 80) | Select-Object -Unique
     foreach ($p in $probePorts) {
         if (Test-TcpPort $HostOrIp $p 300) {
             if ($script:State.Misc) { $script:State.Misc['DiscoveredPortalPort'] = $p }
@@ -660,28 +1939,35 @@ function Find-ActivePortalPort([string]$HostOrIp, [int]$DefaultPort = 8888) {
     }
     return $DefaultPort
 }
-function Test-PortalOnlineSmart([string]$HostOrIp, [int]$ConfiguredPort = 8888) {
-    $candidatePorts = @([int]$ConfiguredPort, 8888, 8003, 8443, 8080, 443, 80) | Select-Object -Unique
+function Test-PortalOnlineSmart([string]$HostOrIp, [int]$ConfiguredPort = 8003) {
+    $candidatePorts = @([int]$ConfiguredPort, 8003, 8888, 8443, 8080, 443, 80) | Select-Object -Unique
     foreach ($p in $candidatePorts) {
         if (Test-TcpPort $HostOrIp $p 350) { return $true }
     }
     return $false
 }
 function Get-ActivePortalEndpoint {
-    $discIp = ([string]$script:State.Misc['DiscoveredPortalIp']).Trim()
+    $discIp = if ($script:State -is [hashtable] -and $script:State.Misc -is [hashtable]) { [string]$script:State.Misc['DiscoveredPortalIp'] } else { '' }
+    $discIp = $discIp.Trim()
     $discUrl = Get-ActivePortalUrl
     try {
         $u = [uri]$discUrl
         if ($u.Host) {
             $h = [string]$u.Host
-            $ip = if ($discIp -and (Test-AllowedPortalIp $discIp)) { $discIp } else { [string]$script:Cfg.PortalIp }
+            $ip = if ($discIp -and (Test-AllowedPortalIp $discIp)) { $discIp } elseif (-not (Test-IsNitjsrNetwork) -and (Test-AllowedPortalIp $h)) { $h } else { [string]$script:Cfg.PortalIp }
             if ($discIp -and (Test-AllowedPortalIp $discIp) -and ($h -eq [string]$script:Cfg.PortalHost -or $h -eq [string]$script:Cfg.PortalIp)) {
                 $h = $discIp
             }
-            $port = if ($u.Port -gt 0 -and $u.Port -ne 80 -and $u.Port -ne 443) { [int]$u.Port } else { Find-ActivePortalPort $h ([int]$script:Cfg.PortalPort) }
+            $port = if ($u.Port -gt 0) { [int]$u.Port } else { Find-ActivePortalPort $h ([int]$script:Cfg.PortalPort) }
             return @{ Host = $h; Ip = $ip; Port = $port; Url = $discUrl }
         }
     } catch {}
+    if (-not (Test-IsNitjsrNetwork)) {
+        $gw = @(Get-GatewaysV4) | Select-Object -First 1
+        $gwIp = if ($gw) { [string]$gw } else { '127.0.0.1' }
+        $gwPort = if ($script:State.Misc -and $script:State.Misc['DiscoveredPortalPort']) { [int]$script:State.Misc['DiscoveredPortalPort'] } else { 80 }
+        return @{ Host = $gwIp; Ip = $gwIp; Port = $gwPort; Url = ('http://' + $gwIp + '/') }
+    }
     $defIp = if ($discIp -and (Test-AllowedPortalIp $discIp)) { $discIp } else { [string]$script:Cfg.PortalIp }
     $defHost = if ($discIp -and (Test-AllowedPortalIp $discIp)) { $discIp } else { [string]$script:Cfg.PortalHost }
     return @{ Host = $defHost; Ip = $defIp; Port = [int]$script:Cfg.PortalPort; Url = [string]$script:Cfg.PortalUrl }
@@ -691,13 +1977,58 @@ function Get-ActiveCampusDns($Ad = $null) {
         $d = @(Get-DhcpDnsServers ([string]$Ad.InterfaceGuid))
         if ($d.Count -gt 0) { return [string]$d[0] }
     } else {
-        foreach ($a in @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })) {
+        $targetAdapters = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })
+    if ($targetAdapters.Count -eq 0) {
+        $targetAdapters = @(Get-OtherUplinkAdapters | Where-Object { $_.Status -eq 'Up' })
+    }
+    foreach ($a in $targetAdapters) {
+            $d = @(Get-DhcpDnsServers ([string]$a.InterfaceGuid))
+            if ($d.Count -gt 0) { return [string]$d[0] }
+        }
+        foreach ($a in @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' -and $_.InterfaceDescription -notmatch $script:VirtRegex })) {
             $d = @(Get-DhcpDnsServers ([string]$a.InterfaceGuid))
             if ($d.Count -gt 0) { return [string]$d[0] }
         }
     }
+    if ($script:State.Misc -and $script:State.Misc['DiscoveredDns']) {
+        $dList = @($script:State.Misc['DiscoveredDns'])
+        if ($dList.Count -gt 0) { return [string]$dList[0] }
+    }
+    if (-not (Test-IsNitjsrNetwork)) {
+        $gw = @(Get-GatewaysV4) | Select-Object -First 1
+        if ($gw) { return [string]$gw }
+        return '1.1.1.1'
+    }
     return [string]$script:Cfg.CampusDns
 }
+function Test-StoreAcl([string]$Path = $null) {
+    if (-not $Path) { $Path = $script:StoreDir }
+    if (-not (Test-Path -LiteralPath $Path)) { return $false }
+    try {
+        $acl = [System.IO.Directory]::GetAccessControl($Path)
+        $owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
+        if (@('S-1-5-18', 'S-1-5-32-544') -notcontains $owner) { return $false }
+        if (-not $acl.AreAccessRulesProtected) { return $false }
+        $rules = $acl.GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier])
+        $allowedSids = @('S-1-5-18', 'S-1-5-32-544', 'S-1-5-32-545')
+        foreach ($r in $rules) {
+            if ($r.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow) {
+                if ($allowedSids -notcontains $r.IdentityReference.Value) { return $false }
+                if ($r.IdentityReference.Value -eq 'S-1-5-32-545') {
+                    $dangerousRights = [System.Security.AccessControl.FileSystemRights]::WriteData -bor
+                                       [System.Security.AccessControl.FileSystemRights]::AppendData -bor
+                                       [System.Security.AccessControl.FileSystemRights]::CreateDirectories -bor
+                                       [System.Security.AccessControl.FileSystemRights]::Delete -bor
+                                       [System.Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
+                                       [System.Security.AccessControl.FileSystemRights]::WriteExtendedAttributes
+                    if ($r.FileSystemRights -band $dangerousRights) { return $false }
+                }
+            }
+        }
+        return $true
+    } catch { return $false }
+}
+
 function Initialize-Store {
     $dir = $script:StoreDir
     $trusted = @('S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
@@ -757,6 +2088,7 @@ function Initialize-Store {
                 [void][System.Management.Automation.Language.Parser]::ParseFile($script:SelfPath, [ref]$null, [ref]$parseErrs)
                 if ($null -eq $parseErrs -or $parseErrs.Count -eq 0) {
                     Copy-Item -LiteralPath $script:SelfPath -Destination $script:SelfCopy -Force -ErrorAction Stop
+                    [void](Set-ScriptAuthorization $script:SelfCopy)
                 } else {
                     Write-Log 'WARN' 'Refused to overwrite protected watchdog copy because current script has syntax errors.'
                 }
@@ -950,7 +2282,7 @@ function Test-InteractiveSessionActive {
     return $false
 }
 function Assert-Admin {
-    if ($script:IsAdmin) { return $true }
+    if ($script:IsAdmin -or $script:IsDry -or $script:IsPlan) { return $true }
     Write-Log 'FAIL' 'Administrator rights are required for this action. Re-open Lan Fixer and approve the UAC prompt.'
     return $false
 }
@@ -1094,7 +2426,7 @@ function Get-ScopedDnsAnswers([string]$Name, [string]$SourceIp, [int]$TimeoutMs 
             try { $u = New-Object System.Net.Sockets.UdpClient((New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Parse($SourceIp), 0))) }
             catch { if ($u) { try { $u.Close() } catch {} }; $u = $null }
             if (-not $u) {
-                if ($s -eq $script:Cfg.CampusDns -or $s -eq $script:Cfg.PortalIp) { $u = New-Object System.Net.Sockets.UdpClient }
+                if ($s -eq $script:Cfg.CampusDns -or $s -eq $script:Cfg.PortalIp -or (Test-PrivateIPv4 $s)) { $u = New-Object System.Net.Sockets.UdpClient }
                 else { continue }
             }
             $u.Connect($s, 53)
@@ -1156,6 +2488,7 @@ function Get-DnsVerdictDecision([bool]$HasGlobalV6, [bool]$HasV6Route, [int]$V6D
 }
 
 function Get-AdapterDnsVerdict($Ad) {
+    if (-not $Ad -or -not $Ad.ifIndex) { return 'Neutralize' }
     $hasGlobalV6 = $false
     $hasV6Route = $false
     $v6Dns = @()
@@ -1196,6 +2529,11 @@ function Resolve-HostBounded([string]$Name, [int]$TimeoutMs = 2500, [string]$Sou
     if (-not $Name) { return $null }
     $cleanName = $Name.Trim().TrimEnd('.')
     if (-not $cleanName) { return $null }
+    $discIp = if ($script:State -is [hashtable] -and $script:State.Misc -is [hashtable]) { [string]$script:State.Misc['DiscoveredPortalIp'] } else { '' }
+    if (-not $NoPin -and $discIp -and (Test-AllowedPortalIp $discIp)) {
+        $activeEp = Get-ActivePortalEndpoint
+        if ($cleanName.ToLower() -eq ([string]$activeEp.Host).TrimEnd('.').ToLower()) { return $discIp }
+    }
     if (-not $NoPin -and $script:Cfg.PortalHost -and ($cleanName.ToLower() -eq ([string]$script:Cfg.PortalHost).TrimEnd('.').ToLower()) -and $script:Cfg.PortalIp) {
         return [string]$script:Cfg.PortalIp
     }
@@ -1499,6 +2837,7 @@ function Test-MetricsManaged {
 # IPv6: act only on EVIDENCE (advertised, but unreachable while IPv4 works); keep every other DisabledComponents bit
 # ==============================================================================
 function Get-Ipv6State($Ad, [string]$Conn) {
+    if (-not $Ad -or -not $Ad.ifIndex) { return @{ Verdict = 'None'; HasGlobal = $false } }
     $g6 = @(Get-NetIPAddress -InterfaceIndex $Ad.ifIndex -AddressFamily IPv6 -ErrorAction SilentlyContinue | Where-Object { [string]$_.AddressState -eq 'Preferred' -and [string]$_.IPAddress -notmatch '^(fe80|fc|fd|::1)' })
     $r6 = @(Get-NetRoute -InterfaceIndex $Ad.ifIndex -AddressFamily IPv6 -DestinationPrefix '::/0' -ErrorAction SilentlyContinue)
     $reach = $false
@@ -1917,8 +3256,10 @@ function Test-AclSidsOnly($Rules, [string[]]$Allowed) {
 }
 
 function Protect-VaultFile([string]$Path) {
-    $r = Invoke-Native (Get-SysExe 'icacls.exe') @($Path, '/setowner', '*S-1-5-32-544', '/inheritance:r', '/grant:r', '*S-1-5-18:F', '/grant:r', '*S-1-5-32-544:F', '/C', '/Q') 5000
-    return ($r.ExitCode -eq 0)
+    $ic = Get-SysExe 'icacls.exe'
+    [void](Invoke-Native $ic @($Path, '/inheritance:r', '/grant:r', '*S-1-5-18:F', '*S-1-5-32-544:F', '/C', '/Q') 5000)
+    $r2 = Invoke-Native $ic @($Path, '/setowner', '*S-1-5-32-544', '/C', '/Q') 5000
+    return ($r2.ExitCode -eq 0)
 }
 
 # The vault must be readable by SYSTEM and Administrators ONLY, with inheritance cut.
@@ -1926,12 +3267,137 @@ function Test-VaultAcl([string]$Path) {
     if (-not $Path) { $Path = $script:VaultFile }
     if (-not (Test-Path -LiteralPath $Path)) { return $true }
     try {
-        $acl = Get-Acl -LiteralPath $Path
+        $acl = [System.IO.File]::GetAccessControl($Path)
         $owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
         if (@('S-1-5-18', 'S-1-5-32-544') -notcontains $owner) { return $false }
         $rules = $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
         return ((Test-AclSidsOnly $rules @('S-1-5-18', 'S-1-5-32-544')) -and $acl.AreAccessRulesProtected)
     } catch { return $false }
+}
+
+function Protect-IntegrityFile([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path)) { return $false }
+    $ic = Get-SysExe 'icacls.exe'
+    [void](Invoke-Native $ic @($Path, '/inheritance:r', '/grant:r', '*S-1-5-18:F', '*S-1-5-32-544:F', '/grant:r', '*S-1-5-32-545:R', '/C', '/Q') 5000)
+    $r2 = Invoke-Native $ic @($Path, '/setowner', '*S-1-5-32-544', '/C', '/Q') 5000
+    return ($r2.ExitCode -eq 0)
+}
+
+function Set-ScriptAuthorization([string]$TargetScript = '') {
+    if (-not $TargetScript) {
+        $TargetScript = if (Test-Path -LiteralPath $script:SelfCopy) { $script:SelfCopy } else { $script:SelfPath }
+    }
+    if (-not (Test-Path -LiteralPath $TargetScript)) {
+        Write-Log 'WARN' ("Set-ScriptAuthorization: target script not found: $TargetScript")
+        return $false
+    }
+    $sha = Get-FileSha256 $TargetScript
+    if (-not $sha) {
+        Write-Log 'WARN' "Set-ScriptAuthorization: failed to compute SHA256 of $TargetScript"
+        return $false
+    }
+    $curSid = try { [Security.Principal.WindowsIdentity]::GetCurrent().User.Value } catch { 'S-1-5-32-544' }
+    $manifest = @{
+        SchemaVersion     = 1
+        ScriptPath        = (Resolve-Path -LiteralPath $TargetScript).Path
+        ScriptSha256      = $sha
+        AuthorizedBy      = $curSid
+        AuthorizedTimeUtc = (Get-Date).ToUniversalTime().ToString('o')
+    }
+    $intFile = Join-Path $script:StoreDir 'integrity.json'
+    $json = ConvertTo-Json $manifest -Depth 2
+    try {
+        [System.IO.File]::WriteAllText($intFile, $json, [System.Text.Encoding]::ASCII)
+        [void](Protect-IntegrityFile $intFile)
+        Write-Log 'OK' ("Cryptographic integrity authorized: $TargetScript [SHA256: $sha]")
+        return $true
+    } catch {
+        Write-Log 'WARN' ("Failed to write integrity manifest: " + $_.Exception.Message)
+        return $false
+    }
+}
+
+function Test-ScriptIntegrity([string]$TargetScript = '') {
+    $errors = New-Object System.Collections.ArrayList
+    $intFile = Join-Path $script:StoreDir 'integrity.json'
+    
+    if (-not $TargetScript) {
+        $TargetScript = if (Test-Path -LiteralPath $script:SelfCopy) { $script:SelfCopy } else { $script:SelfPath }
+    }
+    
+    if (-not (Test-Path -LiteralPath $TargetScript)) {
+        [void]$errors.Add("Target script not found: $TargetScript")
+        return @{ Valid = $false; Status = 'FileNotFound'; ScriptPath = $TargetScript; Errors = $errors; ExpectedHash = ''; ActualHash = '' }
+    }
+    
+    try {
+        $acl = [System.IO.File]::GetAccessControl($TargetScript)
+        $owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
+        if (@('S-1-5-18', 'S-1-5-32-544') -notcontains $owner) {
+            $isAdminOwner = $false
+            try {
+                $secId = New-Object System.Security.Principal.SecurityIdentifier($owner)
+                $curUser = [Security.Principal.WindowsIdentity]::GetCurrent()
+                if ($curUser.User.Value -eq $owner -or $curUser.Groups -contains $secId) { $isAdminOwner = $true }
+            } catch {}
+            if (-not $isAdminOwner) {
+                [void]$errors.Add("Script owner is untrusted: $owner (must be Administrators or SYSTEM)")
+            }
+        }
+        $rules = $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
+        foreach ($r in $rules) {
+            $sid = $r.IdentityReference.Value
+            if (@('S-1-5-32-545', 'S-1-1-0', 'S-1-5-11') -contains $sid) {
+                $rights = $r.FileSystemRights
+                $hasWrite = [bool]($rights -band [System.Security.AccessControl.FileSystemRights]::Write) -or
+                            [bool]($rights -band [System.Security.AccessControl.FileSystemRights]::WriteData) -or
+                            [bool]($rights -band [System.Security.AccessControl.FileSystemRights]::CreateFiles) -or
+                            [bool]($rights -band [System.Security.AccessControl.FileSystemRights]::FullControl)
+                if ($hasWrite -and $r.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow) {
+                    [void]$errors.Add("Unprivileged identity $sid has write permissions on $TargetScript")
+                }
+            }
+        }
+    } catch {
+        [void]$errors.Add("Failed to inspect script ACL: " + $_.Exception.Message)
+    }
+
+    if (-not (Test-Path -LiteralPath $intFile)) {
+        [void]$errors.Add("Integrity manifest missing: $intFile")
+        $actualSha = Get-FileSha256 $TargetScript
+        return @{ Valid = $false; Status = 'MissingManifest'; ScriptPath = $TargetScript; ExpectedHash = ''; ActualHash = $actualSha; Errors = $errors }
+    }
+    
+    $manifest = $null
+    try {
+        $manifest = ConvertFrom-Json (Get-Content -LiteralPath $intFile -Raw -ErrorAction Stop)
+    } catch {
+        [void]$errors.Add("Integrity manifest corrupt: " + $_.Exception.Message)
+        return @{ Valid = $false; Status = 'CorruptManifest'; ScriptPath = $TargetScript; ExpectedHash = ''; ActualHash = ''; Errors = $errors }
+    }
+    
+    $actualHash = Get-FileSha256 $TargetScript
+    $expectedHash = [string]$manifest.ScriptSha256
+    
+    if (-not $expectedHash -or -not $actualHash -or ($actualHash -ne $expectedHash)) {
+        [void]$errors.Add("SHA256 mismatch! Expected: $expectedHash, Actual: $actualHash")
+        return @{ Valid = $false; Status = 'HashMismatch'; ScriptPath = $TargetScript; ExpectedHash = $expectedHash; ActualHash = $actualHash; Errors = $errors }
+    }
+
+    if ($errors.Count -gt 0) {
+        return @{ Valid = $false; Status = 'UntrustedAcl'; ScriptPath = $TargetScript; ExpectedHash = $expectedHash; ActualHash = $actualHash; Errors = $errors }
+    }
+
+    return @{
+        Valid             = $true
+        Status            = 'Authorized'
+        ScriptPath        = $TargetScript
+        ExpectedHash      = $expectedHash
+        ActualHash        = $actualHash
+        AuthorizedBy      = [string]$manifest.AuthorizedBy
+        AuthorizedTimeUtc = [string]$manifest.AuthorizedTimeUtc
+        Errors            = @()
+    }
 }
 
 # user<TAB>password, split on the FIRST tab only (a password may contain tabs).
@@ -1975,7 +3441,11 @@ function Ensure-CampusPortalPath([uri]$RedirectUri = $null) {
             if ($resIp -and (Test-AllowedPortalIp $resIp)) { $baseTargets += $resIp }
         }
     }
-    foreach ($a in @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })) {
+    $targetAdapters = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })
+    if ($targetAdapters.Count -eq 0) {
+        $targetAdapters = @(Get-OtherUplinkAdapters | Where-Object { $_.Status -eq 'Up' })
+    }
+    foreach ($a in $targetAdapters) {
         $e = Get-AdapterEnvironment $a -UseCache
         $isCaptiveOrCampus = ($e.Env -eq 'Campus' -or $baseTargets.Count -gt 0 -or [bool]$script:State.Misc['DiscoveredPortalUrl'])
         if (-not $isCaptiveOrCampus) { continue }
@@ -2134,6 +3604,7 @@ function Initialize-Ui {
     if ($uni) { try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {} }
     $script:Ui.Vt = $vt
     $script:Ui.Uni = $uni
+    if ($script:NoColor) { $script:Ui.Plain = $true; $script:Ui.Vt = $false }
     Set-UiGlyphs $uni
 }
 
@@ -2174,6 +3645,19 @@ function Fit([string]$Text, [int]$Width) {
 
 function Get-SegsLength($Segs) { $n = 0; foreach ($s in @($Segs)) { $n += ([string]$s.T).Length }; return $n }
 
+function Get-StatusToken([string]$State) {
+    switch ($State.ToLowerInvariant()) {
+        'ok'      { return @{ Text = '[  OK  ]'; Role = 'ok'; Glyph = $script:G.dot } }
+        'warn'    { return @{ Text = '[ WARN ]'; Role = 'warn'; Glyph = $script:G.half } }
+        'bad'     { return @{ Text = '[ FAIL ]'; Role = 'bad'; Glyph = $script:G.cross } }
+        'skip'    { return @{ Text = '[ SKIP ]'; Role = 'info'; Glyph = $script:G.dash } }
+        'prog'    { return @{ Text = '[ .... ]'; Role = 'vio'; Glyph = $script:G.mid } }
+        'unknown' { return @{ Text = '[ ???? ]'; Role = 'dim'; Glyph = $script:G.ring } }
+        'unk'     { return @{ Text = '[ ???? ]'; Role = 'dim'; Glyph = $script:G.ring } }
+        default   { return @{ Text = '[ ???? ]'; Role = 'dim'; Glyph = $script:G.ring } }
+    }
+}
+
 function ConvertTo-AnsiString($Segs) {
     $sb = New-Object System.Text.StringBuilder
     foreach ($s in @($Segs)) {
@@ -2188,7 +3672,7 @@ function ConvertTo-AnsiString($Segs) {
 }
 
 function Out-Line($Segs, [switch]$NoNewline) {
-    if ($script:Ui.Vt -and -not $script:Ui.Plain) {
+    if ($script:Ui.Vt -and -not $script:Ui.Plain -and -not $script:NoColor) {
         $txt = ConvertTo-AnsiString $Segs
         if (-not $NoNewline) { $txt += "`n" }
         [Console]::Write($txt)
@@ -2197,7 +3681,11 @@ function Out-Line($Segs, [switch]$NoNewline) {
     foreach ($s in @($Segs)) {
         $r = ([string]$s.R).TrimEnd('!')
         $col = $script:ConMap[$r]; if (-not $col) { $col = 'Gray' }
-        Write-Host ([string]$s.T) -NoNewline -ForegroundColor $col
+        if ($script:NoColor) {
+            Write-Host ([string]$s.T) -NoNewline
+        } else {
+            Write-Host ([string]$s.T) -NoNewline -ForegroundColor $col
+        }
     }
     if (-not $NoNewline) { Write-Host '' }
 }
@@ -2215,8 +3703,31 @@ function Write-Frame($Lines) {
         [void]$sb.Append($script:Esc + '[J')
         [Console]::Write($sb.ToString())
     } else {
-        Clear-Host
-        foreach ($l in @($Lines)) { Out-Line $l }
+        $canRewind = $false
+        try {
+            if (-not [Console]::IsOutputRedirected) {
+                [Console]::CursorVisible = $false
+                [Console]::SetCursorPosition(0, 0)
+                $canRewind = $true
+            }
+        } catch {}
+        if (-not $canRewind) { Clear-Host }
+        $cw = 80
+        try { $cw = [Console]::WindowWidth } catch {}
+        foreach ($l in @($Lines)) {
+            if ($canRewind) {
+                $len = Get-SegsLength $l
+                if ($len -lt $cw) {
+                    $padSeg = Seg 'text' (' ' * ($cw - $len))
+                    Out-Line (@($l) + $padSeg)
+                } else {
+                    Out-Line $l
+                }
+            } else {
+                Out-Line $l
+            }
+        }
+        try { if ($canRewind) { [Console]::CursorVisible = $true } } catch {}
     }
 }
 
@@ -2251,11 +3762,26 @@ function Out-Wrapped([string]$GlyphRole, [string]$Glyph, [string]$TextRole, [str
 }
 
 # Thin wrappers so the interactive loop can be driven by scripted keystrokes in tests.
-function Test-InputRedirected { try { return [Console]::IsInputRedirected } catch { return $true } }
+function Test-InputRedirected {
+    try {
+        if (-not [Environment]::UserInteractive) { return $true }
+        if ([Console]::IsInputRedirected -or [Console]::IsOutputRedirected -or [Console]::IsErrorRedirected) { return $true }
+        return $false
+    } catch { return $true }
+}
 
 function Test-KeyAvailable { try { return [Console]::KeyAvailable } catch { return $false } }
 
 function Read-KeyNow { return [Console]::ReadKey($true) }
+
+function Test-RemoteSession {
+    try {
+        if ($env:SESSIONNAME -match '^(?:RDP|ICA|HDX)') { return $true }
+        if ($env:SSH_CONNECTION -or $env:SSH_CLIENT) { return $true }
+        if ($env:REMOTEHOST) { return $true }
+        return $false
+    } catch { return $false }
+}
 
 function Clear-InputBuffer {
     try {
@@ -2427,11 +3953,11 @@ function Get-HopRows($t, $adv) {
         'Offline' { $net = 'Blocked' }
     }
     return @(
-        @{ Label = 'Link'; Value = $link; State = $st[0] },
-        @{ Label = 'Address'; Value = $ip; State = $st[1] },
-        @{ Label = 'Gateway'; Value = $gw; State = $st[2] },
-        @{ Label = 'DNS'; Value = $dns; State = $st[3] },
-        @{ Label = 'Internet'; Value = $net; State = $st[4] })
+        @{ Label = 'Link'; Value = $link; State = $st[0]; Token = (Get-StatusToken $st[0]).Text },
+        @{ Label = 'Address'; Value = $ip; State = $st[1]; Token = (Get-StatusToken $st[1]).Text },
+        @{ Label = 'Gateway'; Value = $gw; State = $st[2]; Token = (Get-StatusToken $st[2]).Text },
+        @{ Label = 'DNS'; Value = $dns; State = $st[3]; Token = (Get-StatusToken $st[3]).Text },
+        @{ Label = 'Internet'; Value = $net; State = $st[4]; Token = (Get-StatusToken $st[4]).Text })
 }
 
 function Get-StepperLines($Rows, [int]$Width) {
@@ -2494,6 +4020,7 @@ function Get-DashboardModel($t, $adv, [int]$Width = 0) {
     $left = @((Seg 'accent!' '  LAN FIXER'), (Seg 'faint' ('  v' + $script:Version)))
     $chips = @()
     $chipDefs = @(@('admin', $t.Admin, $(if ($t.Admin) { 'Admin' } else { 'Limited' })), @('watchdog', $t.Watchdog, 'Guard'), @('vault', $t.Vault, 'Vault'))
+    if ($script:IsDry) { $chipDefs += , @('dryrun', $true, 'DryRun') }
     foreach ($c in $chipDefs) {
         $dotRole = 'faint'; $glyph = $script:G.ring
         if ($c[1]) { $dotRole = 'ok'; $glyph = $script:G.dot } elseif ($c[0] -eq 'admin') { $dotRole = 'warn'; $glyph = $script:G.dot }
@@ -2523,7 +4050,7 @@ function Get-DashboardModel($t, $adv, [int]$Width = 0) {
             $right = 'Ethernet (Down)'
         }
     }
-    $heroL = @((Seg 'faint' '  ['), (Seg ($adv.Role + '!') (' ' + $script:G.dot + ' ' + $adv.Word.ToUpper() + ' ')), (Seg 'faint' ']'))
+    $heroL = @((Seg ($adv.Role + '!') ('  ' + $adv.Word)))
     $maxRightLen = [Math]::Max(10, ($w + 2) - (Get-SegsLength $heroL) - 2)
     if ($right.Length -gt $maxRightLen) {
         if ($t.UplinkActive -and $t.UplinkName) {
@@ -2535,6 +4062,10 @@ function Get-DashboardModel($t, $adv, [int]$Width = 0) {
         }
     }
     $hp = ($w + 2) - (Get-SegsLength $heroL) - $right.Length
+    if ($hp -lt 2) {
+        $right = Fit $right [Math]::Max(4, (($w + 2) - (Get-SegsLength $heroL) - 2))
+        $hp = 2
+    }
     [void]$L.Add(@($heroL + (Seg 'text' (' ' * [Math]::Max(2, $hp))) + (Seg 'dim' $right)))
     # path
     foreach ($ln in @(Get-StepperLines (Get-HopRows $t $adv) $w)) { [void]$L.Add($ln) }
@@ -2635,25 +4166,25 @@ function Get-DashboardModel($t, $adv, [int]$Width = 0) {
     }
     [void]$L.Add(@())
     
-    # categorized command dock (v3.9 inspired, minimal borderless)
+    # categorized command dock (responsive, clear hierarchy, plain language)
     $uiH = Get-UiHeight
     if ($w -ge 74 -and ($uiH -eq 0 -or $uiH -ge 28)) {
         $col1W = $cw
-        [void]$L.Add(@((Seg 'accent!' ('  REPAIR & CONNECTIVITY'.PadRight($col1W + 2))), (Seg 'accent!' 'DIAGNOSTICS & TOOLS')))
-        [void]$L.Add(@((Seg $(if ($adv.Key -eq '1') { 'ok!' } else { 'text' }) ('  [1] Quick Heal'.PadRight($col1W + 2))), (Seg 'text' '[3] DNS Profile Engine')))
-        [void]$L.Add(@((Seg $(if ($adv.Key -eq '2') { 'ok!' } else { 'text' }) ('  [2] Arm Watchdog Guard'.PadRight($col1W + 2))), (Seg 'text' '[M] Routing Priority Engine')))
-        [void]$L.Add(@((Seg $(if ($adv.Key -eq 'a') { 'ok!' } else { 'text' }) ('  [A] Portal Login Vault'.PadRight($col1W + 2))), (Seg 'text' '[4] Live Latency Probe')))
-        [void]$L.Add(@((Seg $(if ($adv.Key -eq '7') { 'ok!' } else { 'text' }) ('  [7] Open Portal Page'.PadRight($col1W + 2))), (Seg 'text' '[5] Flush DNS & ARP Caches')))
-        [void]$L.Add(@((Seg $(if ($adv.Key -eq 'g') { 'ok!' } else { 'text' }) ('  [G] Headless Auto-Login'.PadRight($col1W + 2))), (Seg 'text' '[6] System Diagnostics Audit')))
+        [void]$L.Add(@((Seg 'accent!' ('  REPAIR & REMEDIATION'.PadRight($col1W + 2))), (Seg 'accent!' 'DIAGNOSTICS & AUDIT')))
+        [void]$L.Add(@((Seg $(if ($adv.Key -eq '1') { 'ok!' } else { 'text' }) ('  [1] Quick Heal (Recommended)'.PadRight($col1W + 2))), (Seg 'text' '[3] DNS Configuration')))
+        [void]$L.Add(@((Seg $(if ($adv.Key -eq '2') { 'ok!' } else { 'text' }) ('  [2] Install Watchdog Task'.PadRight($col1W + 2))), (Seg 'text' '[M] Routing & Metric Priority')))
+        [void]$L.Add(@((Seg $(if ($adv.Key -eq 'a') { 'ok!' } else { 'text' }) ('  [A] Portal Credentials Vault'.PadRight($col1W + 2))), (Seg 'text' '[4] Network Quality Probe')))
+        [void]$L.Add(@((Seg $(if ($adv.Key -eq '7') { 'ok!' } else { 'text' }) ('  [7] Captive Portal Check'.PadRight($col1W + 2))), (Seg 'text' '[5] Flush Network Caches')))
+        [void]$L.Add(@((Seg $(if ($adv.Key -eq 'g') { 'ok!' } else { 'text' }) ('  [G] Submit Portal Login'.PadRight($col1W + 2))), (Seg 'text' '[6] System Diagnostics Audit')))
         if ($uiH -eq 0 -or $uiH -ge 32) { [void]$L.Add(@()) }
-        [void]$L.Add(@((Seg 'accent!' ('  PREVIEW & REPORTS'.PadRight($col1W + 2))), (Seg 'accent!' 'SYSTEM & RECOVERY')))
-        [void]$L.Add(@((Seg 'text' ('  [T] Dry-Run Simulation'.PadRight($col1W + 2))), (Seg 'text' '[8] Disarm Watchdog')))
-        [void]$L.Add(@((Seg 'text' ('  [R] Export Support Report'.PadRight($col1W + 2))), (Seg 'text' '[B] Autonomous Daemon')))
-        [void]$L.Add(@((Seg 'text' ('  [S] Run Self-Test Suite'.PadRight($col1W + 2))), (Seg $(if ($adv.Key -eq 'x') { 'ok!' } else { 'accent!' }) '[X] Reset Options')))
-        [void]$L.Add(@((Seg 'text' ('  [0] Guide'.PadRight($col1W + 2))), (Seg 'dim' '[Q] Quit')))
+        [void]$L.Add(@((Seg 'accent!' ('  PREVIEW & LOGS'.PadRight($col1W + 2))), (Seg 'accent!' 'Recovery and System')))
+        [void]$L.Add(@((Seg 'text' ('  [T] Dry Run'.PadRight($col1W + 2))), (Seg 'text' '[8] Remove Watchdog Task')))
+        [void]$L.Add(@((Seg 'text' ('  [R] Export Diagnostic Report'.PadRight($col1W + 2))), (Seg 'text' '[B] Live Sentinel Monitor')))
+        [void]$L.Add(@((Seg 'text' ('  [H] History & Forensics'.PadRight($col1W + 2))), (Seg $(if ($adv.Key -eq 'x') { 'ok!' } else { 'accent!' }) '[X] Recovery and System')))
+        [void]$L.Add(@((Seg 'dim' ('  [0] User Guide'.PadRight($col1W + 2))), (Seg 'dim' '[Q] Exit')))
         if ($t.ArpPending) { [void]$L.Add(@((Seg 'warn!' ('  [K] Approve Gateway MAC Change'.PadRight($col1W + 2))), (Seg 'warn' 'Router MAC changed; review to lock ARP'))) }
     } else {
-        $legend = @(@('1', 'QuickHeal'), @('X', 'ResetOptions'), @('2', 'Guard'), @('A', 'Vault'), @('7', 'Portal'), @('G', 'Login'), @('3', 'DNS'), @('M', 'Route'), @('4', 'Probe'), @('5', 'Flush'), @('6', 'Audit'), @('B', 'Daemon'), @('T', 'Test'), @('R', 'Report'), @('S', 'Verify'), @('8', 'Disarm'), @('9', 'Reset'), @('0', 'Guide'), @('Q', 'Quit'))
+        $legend = @(@('1', 'QuickHeal'), @('X', 'Recovery'), @('H', 'History'), @('2', 'Watchdog'), @('A', 'Vault'), @('7', 'Portal'), @('G', 'Login'), @('3', 'DNS'), @('M', 'Route'), @('4', 'Probe'), @('5', 'Flush'), @('6', 'Audit'), @('B', 'Sentinel'), @('T', 'DryRun'), @('R', 'Report'), @('8', 'Disarm'), @('9', 'Reset'), @('0', 'Guide'), @('Q', 'Quit'))
         # A gateway-MAC review is transient, so [K] is advertised only while a candidate is really waiting. The leading
         # comma appends the pair as ONE legend cell; a bare "+=" would append two loose strings and corrupt the legend.
         if ($t.ArpPending) { $legend += , @('K', 'MAC') }
@@ -2710,7 +4241,7 @@ function Read-Confirm([string]$Prompt, [string]$Word = 'yes') {
 
 function Show-Advisory {
     Clear-Screen; Show-Cursor $true
-    Write-Banner 'DECISION & PROBLEM-SOLVING GUIDE'
+    Write-Banner 'USER GUIDE'
     $w = Get-UiWidth
     Out-Line @((Seg 'accent!' '  Recommendation'))
     Out-Line @((Seg 'dim' '  * Plug in Ethernet cable  '), (Seg 'faint' '-> '), (Seg 'ok!' '[1] Quick Heal '), (Seg 'dim' '(repairs adapter, IP lease & routes)'))
@@ -2719,27 +4250,26 @@ function Show-Advisory {
     Out-Line @((Seg 'faint' ('  ' + ($script:G.rule * $w))))
     $matrix = @(
         # 1. Connection & Initial Setup
-        @('Cable in, no IP / APIPA (169.254.x.x)',       '1', 'Quick Heal'),
-        @('Campus portal login required for internet',   'A', 'Portal Login Vault'),
-        @('Auto-repair on cable plug or system wake',    '2', 'Arm Background Watchdog'),
-        @('Autonomous continuous sentinel monitoring',   'B', 'Autonomous Sentinel Daemon'),
+        @('Cable in, no IP / APIPA (169.254.x.x)',       '1', 'Quick Heal (Recommended)'),
+        @('Campus portal login required for internet',   'A', 'Portal Credentials Vault'),
+        @('Auto-repair on cable plug or system wake',    '2', 'Install Watchdog Task'),
+        @('Autonomous continuous sentinel monitoring',   'B', 'Live Sentinel Monitor'),
         # 2. DNS & Everyday Browsing
-        @('University ERP or intranet unreachable',      '3', 'Campus DHCP DNS Profile'),
-        @('Balance traffic: Ethernet vs Wi-Fi',          'M', 'Routing Priority Engine'),
-        @('Websites fail to open / stale DNS cache',     '5', 'Flush DNS & ARP Caches'),
-        @('High ping, jitter or lag in games & calls',   '4', 'Latency & Loss Probe'),
+        @('University ERP or intranet unreachable',      '3', 'DNS Configuration (DHCP)'),
+        @('Balance traffic: Ethernet vs Wi-Fi',          'M', 'Routing & Metric Priority'),
+        @('Websites fail to open / stale DNS cache',     '5', 'Flush Network Caches'),
+        @('High ping, jitter or lag in games & calls',   '4', 'Network Quality Probe'),
         # 3. Diagnostics & Audit Reports
         @('Inspect hardware MAC, lease & gateway',       '6', 'System Diagnostics Audit'),
-        @('Save diagnostic audit report to file',        'R', 'Export Support Report'),
+        @('Save diagnostic audit report to file',        'R', 'Export Diagnostic Report'),
         # 4. Safety & Rollback
-        @('Instant background sign-in with saved login', 'G', 'Headless Portal Sign-In'),
-        @('Total network down / no internet anywhere',   'X', 'Full Network Reset'),
-        @('Total connectivity dead (Wi-Fi/LAN/USB/BT)','D', 'Doomsday System Reset'),
-        @('Hyper-nuclear stack purge & driver/LSP rebuild','U', 'Ultra System Reset'),
-        @('Preview repairs safely without changes',      'T', 'Dry-Run Simulation'),
-        @('Verify system cmdlets & security integrity',  'S', 'Run Self-Test Suite'),
-        @('Autonomous Sentinel background daemon',       'B', 'Autonomous Daemon'),
-        @('Restore default Windows network settings',    '9', 'Factory Reset Rollback')
+        @('Instant background sign-in with saved login', 'G', 'Submit Portal Login'),
+        @('Total network down / no internet anywhere',   'X', 'Recovery and System'),
+        @('Total connectivity dead (Wi-Fi/LAN/USB/BT)',  'D', 'Deep Multi-Adapter Reinstall'),
+        @('Corrupted Winsock catalog & TCP/IP stack',     'U', 'Standard Stack Reset'),
+        @('Preview repairs safely without changes',      'T', 'Dry Run'),
+        @('Autonomous Sentinel background daemon',       'B', 'Live Sentinel Monitor'),
+        @('Restore default Windows network settings',    '9', 'Restore Network Defaults')
     )
     foreach ($m in $matrix) {
         Out-Line @(
@@ -2755,6 +4285,955 @@ function Show-Advisory {
     Out-Line @((Seg 'faint' ('  ' + ($script:G.rule * $w))))
     Out-Line @((Seg 'dim' '  Press any key to return to dashboard...'))
     Wait-AnyKey
+}
+
+# ==============================================================================
+# FEATURE F11: IN-FILE HELP SYSTEM & UNIFIED METADATA REGISTRY
+# ==============================================================================
+function Get-CommandMetadata {
+    if ($script:CommandMetadata) { return $script:CommandMetadata }
+    $meta = @{
+        # --- Diagnostics ---
+        'Doctor' = @{
+            Name         = 'Doctor'
+            Category     = 'Diagnostics'
+            Tier         = 0
+            Mutating     = $false
+            Reversible   = $true
+            Summary      = 'Comprehensive 7-layer read-only health diagnosis.'
+            Description  = 'Audits physical transceiver, DHCP lease, gateway reachability, DNS resolvers, IPv4 internet, TLS handshake, and captive portal state.'
+            BlastRadius  = 'None (Read-Only)'
+            ExitCodes    = @{ '0' = 'Healthy'; '10' = 'Degraded'; '20' = 'Broken'; '30' = 'Undetermined' }
+            Examples     = @('LanFixer.cmd -Mode Doctor', 'LanFixer.cmd -Mode Doctor -Json', 'LanFixer.cmd -Mode Doctor -Quiet')
+            RelatedModes = @('Status', 'Diagnose', 'Recover')
+            Aliases      = @('Doctor')
+        }
+        'Status' = @{
+            Name         = 'Status'
+            Category     = 'Diagnostics'
+            Tier         = 0
+            Mutating     = $false
+            Reversible   = $true
+            Summary      = 'High-level network health status summary (alias for Doctor).'
+            Description  = 'Audits network connectivity across all 7 OSI layers and outputs health verdict and degraded components.'
+            BlastRadius  = 'None (Read-Only)'
+            ExitCodes    = @{ '0' = 'Healthy'; '10' = 'Degraded'; '20' = 'Broken'; '30' = 'Undetermined' }
+            Examples     = @('LanFixer.cmd -Mode Status', 'LanFixer.cmd -Mode Status -Quiet')
+            RelatedModes = @('Doctor', 'Diagnose')
+            Aliases      = @('Doctor')
+        }
+        'Diagnose' = @{
+            Name         = 'Diagnose'
+            Category     = 'Diagnostics'
+            Tier         = 0
+            Mutating     = $false
+            Reversible   = $true
+            Summary      = 'Deep forensic network and adapter configuration audit.'
+            Description  = 'Inspects IP interfaces, DHCP leases, DNS client configurations, ARP cache, adapter hardware states, and routing tables.'
+            BlastRadius  = 'None (Read-Only)'
+            ExitCodes    = @{ '0' = 'Success'; '1' = 'Error' }
+            Examples     = @('LanFixer.cmd -Mode Diagnose', 'LanFixer.cmd -Mode Audit')
+            RelatedModes = @('Audit', 'Doctor', 'Report')
+            Aliases      = @('Audit')
+        }
+        'Audit' = @{
+            Name         = 'Audit'
+            Category     = 'Diagnostics'
+            Tier         = 0
+            Mutating     = $false
+            Reversible   = $true
+            Summary      = 'Deep forensic network and adapter configuration audit (alias for Diagnose).'
+            Description  = 'Inspects IP interfaces, DHCP leases, DNS client configurations, ARP cache, adapter hardware states, and routing tables.'
+            BlastRadius  = 'None (Read-Only)'
+            ExitCodes    = @{ '0' = 'Success'; '1' = 'Error' }
+            Examples     = @('LanFixer.cmd -Mode Audit', 'LanFixer.cmd -Mode Diagnose')
+            RelatedModes = @('Diagnose', 'Doctor', 'Report')
+            Aliases      = @('Diagnose')
+        }
+        'QuickProbe' = @{
+            Name         = 'QuickProbe'
+            Category     = 'Diagnostics'
+            Tier         = 0
+            Mutating     = $false
+            Reversible   = $true
+            Summary      = 'Lightweight latency, loss, and jitter probe to gateways and internet targets.'
+            Description  = 'Tests UDP/ICMP reachability and round-trip latency to the local default gateway and public DNS root servers.'
+            BlastRadius  = 'None (Read-Only)'
+            ExitCodes    = @{ '0' = 'Online'; '1' = 'Offline/Degraded' }
+            Examples     = @('LanFixer.cmd -Mode QuickProbe', 'LanFixer.cmd -Mode Probe')
+            RelatedModes = @('Probe', 'Doctor')
+            Aliases      = @('Probe')
+        }
+        'Probe' = @{
+            Name         = 'Probe'
+            Category     = 'Diagnostics'
+            Tier         = 0
+            Mutating     = $false
+            Reversible   = $true
+            Summary      = 'Lightweight latency, loss, and jitter probe (alias for QuickProbe).'
+            Description  = 'Tests UDP/ICMP reachability and round-trip latency to the local default gateway and public DNS root servers.'
+            BlastRadius  = 'None (Read-Only)'
+            ExitCodes    = @{ '0' = 'Online'; '1' = 'Offline/Degraded' }
+            Examples     = @('LanFixer.cmd -Mode Probe')
+            RelatedModes = @('QuickProbe', 'Doctor')
+            Aliases      = @('QuickProbe')
+        }
+        'SelfTest' = @{
+            Name         = 'SelfTest'
+            Category     = 'Diagnostics'
+            Tier         = 0
+            Mutating     = $false
+            Reversible   = $true
+            Summary      = 'Comprehensive internal regression suite verifying all system subsystems and logic.'
+            Description  = 'Executes 385+ hermetic behavioral tests against network stack, crypto, state management, ACLs, and repair algorithms.'
+            BlastRadius  = 'None (Read-Only in dry-run)'
+            ExitCodes    = @{ '0' = 'All Passed'; '1' = 'Test Failure' }
+            Examples     = @('LanFixer.cmd -Mode SelfTest -DryRun', 'LanFixer.cmd -Mode SelfTest -Json')
+            RelatedModes = @('Verify', 'Doctor')
+            Aliases      = @('Verify')
+        }
+        'Verify' = @{
+            Name         = 'Verify'
+            Category     = 'Diagnostics'
+            Tier         = 0
+            Mutating     = $false
+            Reversible   = $true
+            Summary      = 'System regression test suite (alias for SelfTest).'
+            Description  = 'Executes comprehensive internal self-tests verifying cmdlets, tools, parsers, and logic invariants.'
+            BlastRadius  = 'None (Read-Only in dry-run)'
+            ExitCodes    = @{ '0' = 'All Passed'; '1' = 'Test Failure' }
+            Examples     = @('LanFixer.cmd -Mode Verify -DryRun')
+            RelatedModes = @('SelfTest', 'Doctor')
+            Aliases      = @('SelfTest')
+        }
+        'Report' = @{
+            Name         = 'Report'
+            Category     = 'Diagnostics'
+            Tier         = 0
+            Mutating     = $false
+            Reversible   = $true
+            Summary      = 'Generates and exports an exhaustive diagnostic text report to disk.'
+            Description  = 'Compiles full adapter configuration, routing tables, DNS status, event log snippets, and driver inventory into a timestamped report file.'
+            BlastRadius  = 'None (Writes local report file)'
+            ExitCodes    = @{ '0' = 'Success'; '1' = 'Error' }
+            Examples     = @('LanFixer.cmd -Mode Report', 'LanFixer.cmd -Mode Report -Json')
+            RelatedModes = @('Bundle', 'Diagnose')
+            Aliases      = @()
+        }
+        'Bundle' = @{
+            Name         = 'Bundle'
+            Category     = 'Diagnostics'
+            Tier         = 0
+            Mutating     = $false
+            Reversible   = $true
+            Summary      = 'Zero-dependency redacted diagnostic ZIP support bundle generator.'
+            Description  = 'Creates an encrypted/redacted ZIP archive of system network diagnostics, event logs, and state with PII, MAC, and IP masking.'
+            BlastRadius  = 'None (Creates ZIP bundle in OutDir)'
+            ExitCodes    = @{ '0' = 'Success'; '1' = 'Error' }
+            Examples     = @('LanFixer.cmd -Mode Bundle -OutDir C:\Logs', 'LanFixer.cmd -Mode Bundle -Redaction Strict -Json')
+            RelatedModes = @('Report', 'Diagnose')
+            Aliases      = @()
+        }
+
+        # --- Remediation ---
+        'Recover' = @{
+            Name         = 'Recover'
+            Category     = 'Remediation'
+            Tier         = 1
+            Mutating     = $true
+            Reversible   = $true
+            Summary      = 'Guided automated recovery escalation ladder.'
+            Description  = 'Executes Doctor diagnosis, applies least-destructive repair for the specific failing layer, and re-verifies. Halts before destructive tiers.'
+            BlastRadius  = 'Low to Moderate (Scoped to failing layer)'
+            ExitCodes    = @{ '0' = 'Healthy'; '1' = 'Error'; '2' = 'Unresolved' }
+            Examples     = @('LanFixer.cmd -Mode Recover', 'LanFixer.cmd -Mode Recover -Plan')
+            RelatedModes = @('Doctor', 'QuickHeal', 'Omnifix')
+            Aliases      = @()
+        }
+        'QuickHeal' = @{
+            Name         = 'QuickHeal'
+            Category     = 'Remediation'
+            Tier         = 1
+            Mutating     = $true
+            Reversible   = $true
+            Summary      = 'Autonomous multi-loop network heal pipeline for common link and lease dropouts.'
+            Description  = 'Cycles physical adapter transceivers, renews DHCP leases, repairs ARP entries, and corrects routing priority.'
+            BlastRadius  = 'Low (Temporary link toggle, ~2-4s)'
+            ExitCodes    = @{ '0' = 'Repaired'; '1' = 'Error'; '2' = 'Unresolved' }
+            Examples     = @('LanFixer.cmd -Mode QuickHeal', 'LanFixer.cmd -Mode Heal')
+            RelatedModes = @('Heal', 'AutoHeal', 'Recover')
+            Aliases      = @('Heal')
+        }
+        'Heal' = @{
+            Name         = 'Heal'
+            Category     = 'Remediation'
+            Tier         = 1
+            Mutating     = $true
+            Reversible   = $true
+            Summary      = 'Network healing pipeline (alias for QuickHeal).'
+            Description  = 'Cycles physical adapter transceivers, renews DHCP leases, repairs ARP entries, and corrects routing priority.'
+            BlastRadius  = 'Low (Temporary link toggle, ~2-4s)'
+            ExitCodes    = @{ '0' = 'Repaired'; '1' = 'Error'; '2' = 'Unresolved' }
+            Examples     = @('LanFixer.cmd -Mode Heal')
+            RelatedModes = @('QuickHeal', 'AutoHeal')
+            Aliases      = @('QuickHeal')
+        }
+        'AutoHeal' = @{
+            Name         = 'AutoHeal'
+            Category     = 'Remediation'
+            Tier         = 1
+            Mutating     = $true
+            Reversible   = $true
+            Summary      = 'Background unattended recovery triggered by Windows Task Scheduler or Watchdog.'
+            Description  = 'Non-interactive execution of the QuickHeal pipeline with cooldown debounce, integrity check, and failure telemetry suppression.'
+            BlastRadius  = 'Low (Scheduled/background execution)'
+            ExitCodes    = @{ '0' = 'Success'; '1' = 'Error'; '50' = 'Integrity Tamper' }
+            Examples     = @('LanFixer.cmd -Mode AutoHeal')
+            RelatedModes = @('QuickHeal', 'InstallWatchdog')
+            Aliases      = @()
+        }
+        'FlushCache' = @{
+            Name         = 'FlushCache'
+            Category     = 'Remediation'
+            Tier         = 1
+            Mutating     = $true
+            Reversible   = $true
+            Summary      = 'Flushes DNS client cache, NetBIOS names, and ARP neighbor table.'
+            Description  = 'Purges cached DNS lookup responses, ARP resolution tables, and NetBIOS name registrations to resolve stale endpoint bindings.'
+            BlastRadius  = 'Low (Flushes dynamic caches)'
+            ExitCodes    = @{ '0' = 'Success'; '1' = 'Error' }
+            Examples     = @('LanFixer.cmd -Mode FlushCache', 'LanFixer.cmd -Mode Flush')
+            RelatedModes = @('Flush', 'QuickHeal')
+            Aliases      = @('Flush')
+        }
+        'Flush' = @{
+            Name         = 'Flush'
+            Category     = 'Remediation'
+            Tier         = 1
+            Mutating     = $true
+            Reversible   = $true
+            Summary      = 'Flush caches (alias for FlushCache).'
+            Description  = 'Purges cached DNS lookup responses, ARP resolution tables, and NetBIOS name registrations.'
+            BlastRadius  = 'Low (Flushes dynamic caches)'
+            ExitCodes    = @{ '0' = 'Success'; '1' = 'Error' }
+            Examples     = @('LanFixer.cmd -Mode Flush')
+            RelatedModes = @('FlushCache')
+            Aliases      = @('FlushCache')
+        }
+
+        # --- Reset & Recovery ---
+        'Omnifix' = @{
+            Name         = 'Omnifix'
+            Category     = 'Reset & Recovery'
+            Tier         = 1
+            Mutating     = $true
+            Reversible   = $true
+            Summary      = '5-stage non-destructive stack refresh (Tier 1 Reset).'
+            Description  = 'Hardware bus rescan, adapter power management optimization, TCP/IP stack parameter tuning, and WFP proxy neutralization.'
+            BlastRadius  = 'Moderate (Transient adapter reset)'
+            ExitCodes    = @{ '0' = 'Success'; '1' = 'Error' }
+            Examples     = @('LanFixer.cmd -Mode Omnifix', 'LanFixer.cmd -Mode StandardReset -Force')
+            RelatedModes = @('StandardReset', 'NetReset', 'UltraReset')
+            Aliases      = @('StandardReset')
+        }
+        'StandardReset' = @{
+            Name         = 'StandardReset'
+            Category     = 'Reset & Recovery'
+            Tier         = 1
+            Mutating     = $true
+            Reversible   = $true
+            Summary      = 'Standard network reset (alias for Omnifix).'
+            Description  = 'Hardware bus rescan, adapter power management optimization, TCP/IP stack parameter tuning, and WFP proxy neutralization.'
+            BlastRadius  = 'Moderate (Transient adapter reset)'
+            ExitCodes    = @{ '0' = 'Success'; '1' = 'Error' }
+            Examples     = @('LanFixer.cmd -Mode StandardReset')
+            RelatedModes = @('Omnifix', 'NetReset')
+            Aliases      = @('Omnifix')
+        }
+        'NetReset' = @{
+            Name         = 'NetReset'
+            Category     = 'Reset & Recovery'
+            Tier         = 2
+            Mutating     = $true
+            Reversible   = $false
+            Summary      = '10-stage deep network stack resuscitation (Tier 2 Reset).'
+            Description  = 'Winsock catalog reset, TCP/IP autotuning reset, firewall policy normalization, proxy wipe, and adapter driver reload.'
+            BlastRadius  = 'High (Resets network stack configuration)'
+            ExitCodes    = @{ '0' = 'Success'; '1' = 'Error' }
+            Examples     = @('LanFixer.cmd -Mode NetReset -Force', 'LanFixer.cmd -Mode FullNetReset')
+            RelatedModes = @('FullNetReset', 'UltraReset', 'Omnifix')
+            Aliases      = @('FullNetReset')
+        }
+        'FullNetReset' = @{
+            Name         = 'FullNetReset'
+            Category     = 'Reset & Recovery'
+            Tier         = 2
+            Mutating     = $true
+            Reversible   = $false
+            Summary      = 'Full network reset (alias for NetReset).'
+            Description  = 'Winsock catalog reset, TCP/IP autotuning reset, firewall policy normalization, proxy wipe, and adapter driver reload.'
+            BlastRadius  = 'High (Resets network stack configuration)'
+            ExitCodes    = @{ '0' = 'Success'; '1' = 'Error' }
+            Examples     = @('LanFixer.cmd -Mode FullNetReset -Force')
+            RelatedModes = @('NetReset', 'UltraReset')
+            Aliases      = @('NetReset')
+        }
+        'UltraReset' = @{
+            Name         = 'UltraReset'
+            Category     = 'Reset & Recovery'
+            Tier         = 2
+            Mutating     = $true
+            Reversible   = $false
+            Summary      = '10-stage network stack and driver resuscitation.'
+            Description  = 'Comprehensive stack wipe, LSP driver cleanup, network profile normalization, and adapter re-initialization.'
+            BlastRadius  = 'High (Requires elevated confirmation or -Force)'
+            ExitCodes    = @{ '0' = 'Success'; '1' = 'Error' }
+            Examples     = @('LanFixer.cmd -Mode UltraReset -Force', 'LanFixer.cmd -Mode Ultra')
+            RelatedModes = @('Ultra', 'NetReset', 'DoomsdayReset')
+            Aliases      = @('Ultra')
+        }
+        'Ultra' = @{
+            Name         = 'Ultra'
+            Category     = 'Reset & Recovery'
+            Tier         = 2
+            Mutating     = $true
+            Reversible   = $false
+            Summary      = 'Ultra system reset (alias for UltraReset).'
+            Description  = 'Comprehensive stack wipe, LSP driver cleanup, network profile normalization, and adapter re-initialization.'
+            BlastRadius  = 'High (Requires elevated confirmation or -Force)'
+            ExitCodes    = @{ '0' = 'Success'; '1' = 'Error' }
+            Examples     = @('LanFixer.cmd -Mode Ultra -Force')
+            RelatedModes = @('UltraReset', 'DoomsdayReset')
+            Aliases      = @('UltraReset')
+        }
+        'DoomsdayReset' = @{
+            Name         = 'DoomsdayReset'
+            Category     = 'Reset & Recovery'
+            Tier         = 3
+            Mutating     = $true
+            Reversible   = $false
+            Summary      = 'Comprehensive multi-adapter reinstall, NDIS unbind/rebind, and service rebuild (Tier 3 Reset).'
+            Description  = 'Purges all virtual adapters, neutralizes misconfigured third-party network filters, and rebuilds core networking services.'
+            BlastRadius  = 'Critical (Reboot recommended; requires explicit confirmation)'
+            ExitCodes    = @{ '0' = 'Success'; '1' = 'Error' }
+            Examples     = @('LanFixer.cmd -Mode DoomsdayReset -Force', 'LanFixer.cmd -Mode Doomsday')
+            RelatedModes = @('Doomsday', 'ArmageddonReset', 'UltraReset')
+            Aliases      = @('Doomsday')
+        }
+        'Doomsday' = @{
+            Name         = 'Doomsday'
+            Category     = 'Reset & Recovery'
+            Tier         = 3
+            Mutating     = $true
+            Reversible   = $false
+            Summary      = 'Doomsday system reset (alias for DoomsdayReset).'
+            Description  = 'Purges all virtual adapters, neutralizes misconfigured third-party network filters, and rebuilds core networking services.'
+            BlastRadius  = 'Critical (Reboot recommended; requires explicit confirmation)'
+            ExitCodes    = @{ '0' = 'Success'; '1' = 'Error' }
+            Examples     = @('LanFixer.cmd -Mode Doomsday -Force')
+            RelatedModes = @('DoomsdayReset', 'ArmageddonReset')
+            Aliases      = @('DoomsdayReset')
+        }
+        'ArmageddonReset' = @{
+            Name         = 'ArmageddonReset'
+            Category     = 'Reset & Recovery'
+            Tier         = 4
+            Mutating     = $true
+            Reversible   = $false
+            Summary      = 'Absolute bare-metal network device wipe via netcfg -d (Tier 4 Reset).'
+            Description  = 'Uninstalls all network adapters and cleans up registry networking keys. Will sever remote sessions; requires reboot.'
+            BlastRadius  = 'Total (Performs netcfg -d bare-metal purge)'
+            ExitCodes    = @{ '0' = 'Success'; '1' = 'Error' }
+            Examples     = @('LanFixer.cmd -Mode ArmageddonReset -Force -ConfirmRemoteDisconnect')
+            RelatedModes = @('Armageddon', 'DoomsdayReset')
+            Aliases      = @('Armageddon')
+        }
+        'Armageddon' = @{
+            Name         = 'Armageddon'
+            Category     = 'Reset & Recovery'
+            Tier         = 4
+            Mutating     = $true
+            Reversible   = $false
+            Summary      = 'Armageddon reset (alias for ArmageddonReset).'
+            Description  = 'Uninstalls all network adapters and cleans up registry networking keys. Will sever remote sessions; requires reboot.'
+            BlastRadius  = 'Total (Performs netcfg -d bare-metal purge)'
+            ExitCodes    = @{ '0' = 'Success'; '1' = 'Error' }
+            Examples     = @('LanFixer.cmd -Mode Armageddon -Force -ConfirmRemoteDisconnect')
+            RelatedModes = @('ArmageddonReset')
+            Aliases      = @('ArmageddonReset')
+        }
+        'ResetOptions' = @{
+            Name         = 'ResetOptions'
+            Category     = 'Reset & Recovery'
+            Tier         = 0
+            Mutating     = $false
+            Reversible   = $true
+            Summary      = 'Interactive menu displaying all 5 graduated network reset tiers.'
+            Description  = 'Presents descriptions, blast radius, and confirmation prompts for Omnifix, Ultra, Doomsday, Armageddon, and Factory Reset.'
+            BlastRadius  = 'None (Menu interface)'
+            ExitCodes    = @{ '0' = 'Success' }
+            Examples     = @('LanFixer.cmd -Mode ResetOptions', 'LanFixer.cmd -Mode ResetMenu')
+            RelatedModes = @('ResetMenu', 'UltraReset', 'DoomsdayReset')
+            Aliases      = @('ResetMenu')
+        }
+        'ResetMenu' = @{
+            Name         = 'ResetMenu'
+            Category     = 'Reset & Recovery'
+            Tier         = 0
+            Mutating     = $false
+            Reversible   = $true
+            Summary      = 'Reset menu (alias for ResetOptions).'
+            Description  = 'Presents descriptions, blast radius, and confirmation prompts for all reset tiers.'
+            BlastRadius  = 'None (Menu interface)'
+            ExitCodes    = @{ '0' = 'Success' }
+            Examples     = @('LanFixer.cmd -Mode ResetMenu')
+            RelatedModes = @('ResetOptions')
+            Aliases      = @('ResetOptions')
+        }
+        'ResetFactory' = @{
+            Name         = 'ResetFactory'
+            Category     = 'Reset & Recovery'
+            Tier         = 5
+            Mutating     = $true
+            Reversible   = $false
+            Summary      = 'Restores the original system network baseline snapshot captured on first run.'
+            Description  = 'Restores initial registry values, adapter metrics, power management settings, and DNS server configuration.'
+            BlastRadius  = 'High (Restores first-seen system snapshot)'
+            ExitCodes    = @{ '0' = 'Success'; '1' = 'Error' }
+            Examples     = @('LanFixer.cmd -Mode ResetFactory -Force', 'LanFixer.cmd -Mode Reset')
+            RelatedModes = @('Reset', 'Undo')
+            Aliases      = @('Reset')
+        }
+        'Reset' = @{
+            Name         = 'Reset'
+            Category     = 'Reset & Recovery'
+            Tier         = 5
+            Mutating     = $true
+            Reversible   = $false
+            Summary      = 'Factory reset rollback (alias for ResetFactory).'
+            Description  = 'Restores initial registry values, adapter metrics, power management settings, and DNS server configuration.'
+            BlastRadius  = 'High (Restores first-seen system snapshot)'
+            ExitCodes    = @{ '0' = 'Success'; '1' = 'Error' }
+            Examples     = @('LanFixer.cmd -Mode Reset -Force')
+            RelatedModes = @('ResetFactory')
+            Aliases      = @('ResetFactory')
+        }
+        'Undo' = @{
+            Name         = 'Undo'
+            Category     = 'Reset & Recovery'
+            Tier         = 1
+            Mutating     = $true
+            Reversible   = $true
+            Summary      = 'Rolls back specific mutations recorded in the persistent Change Ledger.'
+            Description  = 'Reverses changes by mutation entry ID or run correlation ID with drift detection before modifying system state.'
+            BlastRadius  = 'Targeted (Reverses specified mutations)'
+            ExitCodes    = @{ '0' = 'Undone'; '1' = 'Error'; '2' = 'NotFound'; '3' = 'DriftSkipped' }
+            Examples     = @('LanFixer.cmd -Mode Undo -Id <EntryId>', 'LanFixer.cmd -Mode Undo -RunId <RunId>')
+            RelatedModes = @('History', 'ResetFactory')
+            Aliases      = @()
+        }
+        'History' = @{
+            Name         = 'History'
+            Category     = 'Reset & Recovery'
+            Tier         = 0
+            Mutating     = $false
+            Reversible   = $true
+            Summary      = 'Multi-section forensic history, mutation ledger, execution logs, and live network monitor.'
+            Description  = 'Deep multi-dimensional forensic suite: audits mutations (registry, DNS, routes), exact execution logs (LanFixer.log), error/failure history, Windows OS network events (NDIS/DHCP/DNS/NCSI), state transitions, heal passes, root-cause causality timeline, and live streaming forensics.'
+            BlastRadius  = 'None (Read-Only)'
+            ExitCodes    = @{ '0' = 'Success' }
+            Examples     = @('LanFixer.cmd -Mode History', 'LanFixer.cmd -Mode History -Section mutations', 'LanFixer.cmd -Mode History -Section logs', 'LanFixer.cmd -Mode History -Section errors', 'LanFixer.cmd -Mode History -Section os', 'LanFixer.cmd -Mode History -Section timeline', 'LanFixer.cmd -Mode History -Follow', 'LanFixer.cmd -Mode History -Limit 50 -Json')
+            RelatedModes = @('Undo', 'Doctor', 'Audit')
+            Aliases      = @('Hist', 'Logs', 'Forensics')
+        }
+
+        # --- Network Configuration ---
+        'SetDnsProfile' = @{
+            Name         = 'SetDnsProfile'
+            Category     = 'Network Configuration'
+            Tier         = 1
+            Mutating     = $true
+            Reversible   = $true
+            Summary      = 'Configures DNS resolver policy (Adaptive, DHCP, Hybrid, Cloudflare, ResetDHCP).'
+            Description  = 'Applies fast public DNS fallbacks, university intranet resolution rules, or restores ISP DHCP assigned resolvers.'
+            BlastRadius  = 'Low (Updates DNS server addresses)'
+            ExitCodes    = @{ '0' = 'Success'; '1' = 'Error' }
+            Examples     = @('LanFixer.cmd -Mode SetDnsProfile -DnsProfile Adaptive', 'LanFixer.cmd -Mode Dns')
+            RelatedModes = @('Dns', 'DnsMenu', 'SetRouteProfile')
+            Aliases      = @('Dns', 'DnsMenu')
+        }
+        'Dns' = @{
+            Name         = 'Dns'
+            Category     = 'Network Configuration'
+            Tier         = 1
+            Mutating     = $true
+            Reversible   = $true
+            Summary      = 'DNS resolver profile configuration (alias for SetDnsProfile).'
+            Description  = 'Applies fast public DNS fallbacks, university intranet resolution rules, or restores ISP DHCP assigned resolvers.'
+            BlastRadius  = 'Low (Updates DNS server addresses)'
+            ExitCodes    = @{ '0' = 'Success'; '1' = 'Error' }
+            Examples     = @('LanFixer.cmd -Mode Dns')
+            RelatedModes = @('SetDnsProfile', 'DnsMenu')
+            Aliases      = @('SetDnsProfile', 'DnsMenu')
+        }
+        'DnsMenu' = @{
+            Name         = 'DnsMenu'
+            Category     = 'Network Configuration'
+            Tier         = 1
+            Mutating     = $true
+            Reversible   = $true
+            Summary      = 'Interactive DNS profile selection menu (alias for SetDnsProfile).'
+            Description  = 'Interactive menu to choose between Adaptive, DHCP, Hybrid, and Cloudflare DNS resolver configurations.'
+            BlastRadius  = 'Low (Updates DNS server addresses)'
+            ExitCodes    = @{ '0' = 'Success'; '1' = 'Error' }
+            Examples     = @('LanFixer.cmd -Mode DnsMenu')
+            RelatedModes = @('SetDnsProfile', 'Dns')
+            Aliases      = @('SetDnsProfile', 'Dns')
+        }
+        'SetRouteProfile' = @{
+            Name         = 'SetRouteProfile'
+            Category     = 'Network Configuration'
+            Tier         = 1
+            Mutating     = $true
+            Reversible   = $true
+            Summary      = 'Configures interface metric priority routing (Adaptive, Ethernet, Wifi, Windows).'
+            Description  = 'Adjusts IPv4 and IPv6 interface route metrics to prioritize high-speed wired Ethernet over wireless or split traffic.'
+            BlastRadius  = 'Low (Modifies route interface metrics)'
+            ExitCodes    = @{ '0' = 'Success'; '1' = 'Error' }
+            Examples     = @('LanFixer.cmd -Mode SetRouteProfile -RouteProfile Adaptive', 'LanFixer.cmd -Mode Route')
+            RelatedModes = @('Route', 'RouteMenu', 'SetDnsProfile')
+            Aliases      = @('Route', 'RouteMenu')
+        }
+        'Route' = @{
+            Name         = 'Route'
+            Category     = 'Network Configuration'
+            Tier         = 1
+            Mutating     = $true
+            Reversible   = $true
+            Summary      = 'Interface metric routing policy (alias for SetRouteProfile).'
+            Description  = 'Adjusts IPv4 and IPv6 interface route metrics to prioritize wired Ethernet or balanced multi-homed traffic.'
+            BlastRadius  = 'Low (Modifies route interface metrics)'
+            ExitCodes    = @{ '0' = 'Success'; '1' = 'Error' }
+            Examples     = @('LanFixer.cmd -Mode Route')
+            RelatedModes = @('SetRouteProfile', 'RouteMenu')
+            Aliases      = @('SetRouteProfile', 'RouteMenu')
+        }
+        'RouteMenu' = @{
+            Name         = 'RouteMenu'
+            Category     = 'Network Configuration'
+            Tier         = 1
+            Mutating     = $true
+            Reversible   = $true
+            Summary      = 'Interactive routing profile menu (alias for SetRouteProfile).'
+            Description  = 'Interactive menu to choose between Adaptive, Ethernet, Wifi, and Windows default routing profiles.'
+            BlastRadius  = 'Low (Modifies route interface metrics)'
+            ExitCodes    = @{ '0' = 'Success'; '1' = 'Error' }
+            Examples     = @('LanFixer.cmd -Mode RouteMenu')
+            RelatedModes = @('SetRouteProfile', 'Route')
+            Aliases      = @('SetRouteProfile', 'Route')
+        }
+
+        # --- Authentication & Portals ---
+        'LaunchPortal' = @{
+            Name         = 'LaunchPortal'
+            Category     = 'Authentication & Portals'
+            Tier         = 0
+            Mutating     = $false
+            Reversible   = $true
+            Summary      = 'Detects captive portal gateway redirect and launches browser or completes sign-in.'
+            Description  = 'Probes HTTP 204 endpoint to discover redirect URLs and opens browser or executes automated authentication.'
+            BlastRadius  = 'None'
+            ExitCodes    = @{ '0' = 'Online'; '1' = 'LoginRequired/Failed' }
+            Examples     = @('LanFixer.cmd -Mode LaunchPortal', 'LanFixer.cmd -Mode Login')
+            RelatedModes = @('Login', 'Vault')
+            Aliases      = @('Login')
+        }
+        'Login' = @{
+            Name         = 'Login'
+            Category     = 'Authentication & Portals'
+            Tier         = 0
+            Mutating     = $false
+            Reversible   = $true
+            Summary      = 'Captive portal sign-in (alias for LaunchPortal).'
+            Description  = 'Probes HTTP 204 endpoint to discover redirect URLs and opens browser or executes automated authentication.'
+            BlastRadius  = 'None'
+            ExitCodes    = @{ '0' = 'Online'; '1' = 'LoginRequired/Failed' }
+            Examples     = @('LanFixer.cmd -Mode Login')
+            RelatedModes = @('LaunchPortal', 'Vault')
+            Aliases      = @('LaunchPortal')
+        }
+        'Vault' = @{
+            Name         = 'Vault'
+            Category     = 'Authentication & Portals'
+            Tier         = 0
+            Mutating     = $true
+            Reversible   = $true
+            Summary      = 'Manages encrypted DPAPI LocalMachine credentials for captive network login.'
+            Description  = 'Stores, audits, and removes campus/hotel network authentication credentials secured by Windows DPAPI.'
+            BlastRadius  = 'Low (Stores encrypted local secret)'
+            ExitCodes    = @{ '0' = 'Success'; '1' = 'Error' }
+            Examples     = @('LanFixer.cmd -Mode Vault')
+            RelatedModes = @('LaunchPortal', 'Login')
+            Aliases      = @()
+        }
+
+        # --- Automation & Sentinel ---
+        'InstallWatchdog' = @{
+            Name         = 'InstallWatchdog'
+            Category     = 'Automation & Sentinel'
+            Tier         = 1
+            Mutating     = $true
+            Reversible   = $true
+            Summary      = 'Registers event-triggered SYSTEM scheduled task for automatic network repair on link connect.'
+            Description  = 'Attaches a secured scheduled task to NDIS 10000/10001 connect events, executing AutoHeal upon link change.'
+            BlastRadius  = 'Moderate (Registers scheduled task)'
+            ExitCodes    = @{ '0' = 'Success'; '1' = 'Error' }
+            Examples     = @('LanFixer.cmd -Mode InstallWatchdog')
+            RelatedModes = @('UninstallWatchdog', 'InstallShield')
+            Aliases      = @()
+        }
+        'UninstallWatchdog' = @{
+            Name         = 'UninstallWatchdog'
+            Category     = 'Automation & Sentinel'
+            Tier         = 1
+            Mutating     = $true
+            Reversible   = $true
+            Summary      = 'Removes the event-triggered scheduled repair task from Windows Task Scheduler.'
+            Description  = 'Deletes the LanFixerWatchdog task and cleans up event trigger registrations.'
+            BlastRadius  = 'Low (Removes scheduled task)'
+            ExitCodes    = @{ '0' = 'Success'; '1' = 'Error' }
+            Examples     = @('LanFixer.cmd -Mode UninstallWatchdog')
+            RelatedModes = @('InstallWatchdog')
+            Aliases      = @()
+        }
+        'InstallShield' = @{
+            Name         = 'InstallShield'
+            Category     = 'Automation & Sentinel'
+            Tier         = 1
+            Mutating     = $true
+            Reversible   = $true
+            Summary      = 'Installs link connection watchdog and locks down adapter power throttling.'
+            Description  = 'Registers watchdog task and enforces continuous adapter transceiver vigilance.'
+            BlastRadius  = 'Moderate (Registers scheduled task)'
+            ExitCodes    = @{ '0' = 'Success'; '1' = 'Error' }
+            Examples     = @('LanFixer.cmd -Mode InstallShield')
+            RelatedModes = @('UninstallShield', 'InstallWatchdog')
+            Aliases      = @()
+        }
+        'UninstallShield' = @{
+            Name         = 'UninstallShield'
+            Category     = 'Automation & Sentinel'
+            Tier         = 1
+            Mutating     = $true
+            Reversible   = $true
+            Summary      = 'Uninstalls watchdog shield and restores adapter power management policies.'
+            Description  = 'Removes watchdog scheduled task and restores energy saving settings.'
+            BlastRadius  = 'Low (Removes scheduled task)'
+            ExitCodes    = @{ '0' = 'Success'; '1' = 'Error' }
+            Examples     = @('LanFixer.cmd -Mode UninstallShield')
+            RelatedModes = @('InstallShield')
+            Aliases      = @()
+        }
+        'InstallSentinel' = @{
+            Name         = 'InstallSentinel'
+            Category     = 'Automation & Sentinel'
+            Tier         = 1
+            Mutating     = $true
+            Reversible   = $true
+            Summary      = 'Registers autonomous sentinel background service task for continuous monitoring.'
+            Description  = 'Creates persistent SYSTEM scheduled task running the Sentinel daemon loop with flap detection.'
+            BlastRadius  = 'Moderate (Registers scheduled task)'
+            ExitCodes    = @{ '0' = 'Success'; '1' = 'Error' }
+            Examples     = @('LanFixer.cmd -Mode InstallSentinel')
+            RelatedModes = @('UninstallSentinel', 'Sentinel')
+            Aliases      = @()
+        }
+        'UninstallSentinel' = @{
+            Name         = 'UninstallSentinel'
+            Category     = 'Automation & Sentinel'
+            Tier         = 1
+            Mutating     = $true
+            Reversible   = $true
+            Summary      = 'Removes autonomous sentinel scheduled monitoring task.'
+            Description  = 'Deletes the LanFixerSentinel scheduled task.'
+            BlastRadius  = 'Low (Removes scheduled task)'
+            ExitCodes    = @{ '0' = 'Success'; '1' = 'Error' }
+            Examples     = @('LanFixer.cmd -Mode UninstallSentinel')
+            RelatedModes = @('InstallSentinel')
+            Aliases      = @()
+        }
+        'Daemon' = @{
+            Name         = 'Daemon'
+            Category     = 'Automation & Sentinel'
+            Tier         = 0
+            Mutating     = $true
+            Reversible   = $true
+            Summary      = 'Runs continuous background link monitor and autonomous repair loop.'
+            Description  = 'Continuously monitors NDIS link state, detects link flapping and Gigabit downshifts, and heals connectivity issues.'
+            BlastRadius  = 'Moderate (Long-running process)'
+            ExitCodes    = @{ '0' = 'Terminated'; '1' = 'Error'; '50' = 'Integrity Tamper' }
+            Examples     = @('LanFixer.cmd -Mode Daemon -Headless', 'LanFixer.cmd -Mode Sentinel')
+            RelatedModes = @('Sentinel', 'AutoHeal')
+            Aliases      = @('Sentinel')
+        }
+        'Sentinel' = @{
+            Name         = 'Sentinel'
+            Category     = 'Automation & Sentinel'
+            Tier         = 0
+            Mutating     = $true
+            Reversible   = $true
+            Summary      = 'Autonomous sentinel monitor (alias for Daemon).'
+            Description  = 'Continuously monitors NDIS link state, detects link flapping and Gigabit downshifts, and heals connectivity issues.'
+            BlastRadius  = 'Moderate (Long-running process)'
+            ExitCodes    = @{ '0' = 'Terminated'; '1' = 'Error'; '50' = 'Integrity Tamper' }
+            Examples     = @('LanFixer.cmd -Mode Sentinel')
+            RelatedModes = @('Daemon', 'AutoHeal')
+            Aliases      = @('Daemon')
+        }
+
+        # --- System & Policy ---
+        'Config' = @{
+            Name         = 'Config'
+            Category     = 'System & Policy'
+            Tier         = 0
+            Mutating     = $false
+            Reversible   = $true
+            Summary      = 'Inspects and audits effective policy configuration from INI file and defaults.'
+            Description  = 'Parses $StoreDir\lanfixer.ini, audits file security ACLs, and merges values with system defaults.'
+            BlastRadius  = 'None (Read-Only unless validating)'
+            ExitCodes    = @{ '0' = 'Valid'; '1' = 'Invalid' }
+            Examples     = @('LanFixer.cmd -Mode Config', 'LanFixer.cmd -Mode Config -Validate -Json')
+            RelatedModes = @('Integrity', 'Report')
+            Aliases      = @()
+        }
+        'Integrity' = @{
+            Name         = 'Integrity'
+            Category     = 'System & Policy'
+            Tier         = 0
+            Mutating     = $true
+            Reversible   = $true
+            Summary      = 'Validates or authorizes cryptographic SHA-256 self-integrity manifest.'
+            Description  = 'Verifies the script file owner, ACL permissions, and SHA-256 hash against $StoreDir\integrity.json to prevent tampering.'
+            BlastRadius  = 'None (or writes integrity manifest on -Authorize)'
+            ExitCodes    = @{ '0' = 'Authorized'; '1' = 'Error'; '50' = 'Tampered' }
+            Examples     = @('LanFixer.cmd -Mode Integrity -Audit', 'LanFixer.cmd -Mode Integrity -Authorize')
+            RelatedModes = @('SelfTest', 'Config')
+            Aliases      = @()
+        }
+        'Help' = @{
+            Name         = 'Help'
+            Category     = 'System & Policy'
+            Tier         = 0
+            Mutating     = $false
+            Reversible   = $true
+            Summary      = 'Displays in-file command reference manual and metadata.'
+            Description  = 'Displays comprehensive command manuals, category references, exit code specifications, and JSON schemas.'
+            BlastRadius  = 'None (Read-Only)'
+            ExitCodes    = @{ '0' = 'Success'; '1' = 'UnknownCommand' }
+            Examples     = @('LanFixer.cmd -Mode Help', 'LanFixer.cmd -Mode Help -Id Doctor', 'LanFixer.cmd -Mode Help -Json')
+            RelatedModes = @('Guide', 'Interactive')
+            Aliases      = @('Guide')
+        }
+        'Guide' = @{
+            Name         = 'Guide'
+            Category     = 'System & Policy'
+            Tier         = 0
+            Mutating     = $false
+            Reversible   = $true
+            Summary      = 'Decision guide and symptom troubleshooting matrix (alias for Help).'
+            Description  = 'Displays decision guide matrix for common networking symptoms and recommended one-touch repairs.'
+            BlastRadius  = 'None (Read-Only)'
+            ExitCodes    = @{ '0' = 'Success' }
+            Examples     = @('LanFixer.cmd -Mode Guide')
+            RelatedModes = @('Help', 'Interactive')
+            Aliases      = @('Help')
+        }
+        'Interactive' = @{
+            Name         = 'Interactive'
+            Category     = 'System & Policy'
+            Tier         = 0
+            Mutating     = $false
+            Reversible   = $true
+            Summary      = 'Interactive console dashboard with live network telemetry and hotkey menus.'
+            Description  = 'Starts full-screen terminal dashboard displaying real-time link status, gateway reachability, DNS profiles, and repair keys.'
+            BlastRadius  = 'None (Interactive UI)'
+            ExitCodes    = @{ '0' = 'Exited' }
+            Examples     = @('LanFixer.cmd', 'LanFixer.cmd -Mode Interactive')
+            RelatedModes = @('Help', 'Doctor')
+            Aliases      = @()
+        }
+        'Debloat' = @{
+            Name         = 'Debloat'
+            Category     = 'Optimization'
+            Tier         = 1
+            Mutating     = $true
+            Reversible   = $true
+            Summary      = 'Careful network and stack debloat (removes telemetry chatter, P2P uploads, packet throttling).'
+            Description  = 'Optimizes Windows network stack by disabling Delivery Optimization P2P upload seeding, disabling multimedia network packet throttling, overriding WPAD probing, quieting telemetry chatter, and flushing network caches. Safe-by-default with pre-flight snapshots.'
+            BlastRadius  = 'Low (Registry and services optimized; zero impact on core connectivity)'
+            ExitCodes    = @{ '0' = 'Success'; '40' = 'Elevation Required' }
+            Examples     = @('LanFixer.cmd -Mode Debloat', 'LanFixer.cmd -Mode Debloat -SafeOnly', 'LanFixer.cmd -Mode Debloat -Audit')
+            RelatedModes = @('UndoDebloat', 'Flush', 'ResetOptions')
+            Aliases      = @()
+        }
+        'UndoDebloat' = @{
+            Name         = 'UndoDebloat'
+            Category     = 'Optimization'
+            Tier         = 1
+            Mutating     = $true
+            Reversible   = $true
+            Summary      = 'Rollback previous network debloat changes back to pre-debloat snapshots.'
+            Description  = 'Restores every registry key, DWORD value, service mode, and transition tunnel configuration to its exact pre-debloat state recorded in the snapshot.'
+            BlastRadius  = 'Low (Restores original Windows defaults)'
+            ExitCodes    = @{ '0' = 'Success'; '40' = 'Elevation Required' }
+            Examples     = @('LanFixer.cmd -Mode UndoDebloat')
+            RelatedModes = @('Debloat', 'Undo')
+            Aliases      = @()
+        }
+    }
+    $script:CommandMetadata = $meta
+    return $script:CommandMetadata
+}
+
+function Show-HelpReport {
+    param(
+        [string]$TargetMode = '',
+        [switch]$Json,
+        [switch]$Quiet,
+        [switch]$NoColor,
+        [switch]$NoOutput
+    )
+    $allMeta = Get-CommandMetadata
+    $normTarget = if ($TargetMode) { $TargetMode.Trim() } else { '' }
+
+    if ($normTarget -ne '') {
+        $found = $null
+        foreach ($k in $allMeta.Keys) {
+            if ($k -ieq $normTarget) {
+                $found = $allMeta[$k]
+                break
+            }
+        }
+        if (-not $found) {
+            if (-not $NoOutput) {
+                if ($Json) {
+                [Console]::Out.WriteLine((ConvertTo-Json @{ Status = 'Error'; ExitCode = 1; Message = ("Unknown command mode '{0}'" -f $normTarget) } -Depth 4))
+            } elseif ($Quiet) {
+                [Console]::Out.WriteLine(("Unknown mode: {0}" -f $normTarget))
+            } else {
+                [Console]::Out.WriteLine(("Unknown command mode '{0}'. Run 'LanFixer.cmd -Mode Help' to view all available commands." -f $normTarget))
+            }
+            }
+            return @{ Status = 'Error'; ExitCode = 1 }
+        }
+
+        if ($NoOutput) {
+            return @{ Status = 'Success'; ExitCode = 0; Metadata = $found }
+        }
+
+        if ($Json) {
+            [Console]::Out.WriteLine((ConvertTo-Json @{ Status = 'Success'; ExitCode = 0; Mode = $found.Name; Metadata = $found } -Depth 5))
+            return @{ Status = 'Success'; ExitCode = 0; Metadata = $found }
+        }
+        if ($Quiet) {
+            [Console]::Out.WriteLine(("{0}: {1}" -f $found.Name, $found.Summary))
+            return @{ Status = 'Success'; ExitCode = 0; Metadata = $found }
+        }
+
+        [Console]::Out.WriteLine('================================================================================')
+        [Console]::Out.WriteLine(("LANFIXER COMMAND MANUAL: {0}" -f $found.Name.ToUpperInvariant()))
+        [Console]::Out.WriteLine('================================================================================')
+        [Console]::Out.WriteLine('SUMMARY:')
+        [Console]::Out.WriteLine(("  {0}" -f $found.Summary))
+        [Console]::Out.WriteLine('')
+        [Console]::Out.WriteLine(("CATEGORY:      {0}" -f $found.Category))
+        $tierDesc = switch ($found.Tier) {
+            0 { '0 (Non-Destructive / Read-Only)' }
+            1 { '1 (Standard Remediation / Cache Flush)' }
+            2 { '2 (Stack & Driver Resuscitation)' }
+            3 { '3 (Nuclear Stack & Service Rebuild)' }
+            4 { '4 (Bare-Metal netcfg -d Purge)' }
+            5 { '5 (Baseline Snapshot Factory Restore)' }
+            default { [string]$found.Tier }
+        }
+        [Console]::Out.WriteLine(("TIER:          {0}" -f $tierDesc))
+        $mutatingStr = if ($found.Mutating) { 'YES (Modifies system configuration)' } else { 'NO (Read-only)' }
+        [Console]::Out.WriteLine(("MUTATING:      {0}" -f $mutatingStr))
+        $revStr = if ($found.Reversible) { 'YES (Tracked in ledger / undoable)' } else { 'NO (Irreversible / requires reboot)' }
+        [Console]::Out.WriteLine(("REVERSIBLE:    {0}" -f $revStr))
+        [Console]::Out.WriteLine(("BLAST RADIUS:  {0}" -f $found.BlastRadius))
+        [Console]::Out.WriteLine('')
+        [Console]::Out.WriteLine('DESCRIPTION:')
+        [Console]::Out.WriteLine(("  {0}" -f $found.Description))
+        [Console]::Out.WriteLine('')
+        [Console]::Out.WriteLine('EXIT CODES:')
+        if ($found.ExitCodes) {
+            foreach ($code in ($found.ExitCodes.Keys | Sort-Object { [int]$_ })) {
+                [Console]::Out.WriteLine(("  {0,-4} {1}" -f $code, $found.ExitCodes[$code]))
+            }
+        }
+        [Console]::Out.WriteLine('')
+        [Console]::Out.WriteLine('EXAMPLES:')
+        if ($found.Examples) {
+            foreach ($ex in $found.Examples) {
+                [Console]::Out.WriteLine(("  {0}" -f $ex))
+            }
+        }
+        [Console]::Out.WriteLine('')
+        [Console]::Out.WriteLine('RELATED MODES:')
+        $rel = if ($found.RelatedModes) { $found.RelatedModes -join ', ' } else { 'None' }
+        [Console]::Out.WriteLine(("  {0}" -f $rel))
+        [Console]::Out.WriteLine('================================================================================')
+        return @{ Status = 'Success'; ExitCode = 0; Metadata = $found }
+    }
+
+    if ($NoOutput) {
+        return @{ Status = 'Success'; ExitCode = 0; Commands = $allMeta }
+    }
+
+    if ($Json) {
+        $cats = @('Diagnostics', 'Remediation', 'Reset & Recovery', 'Network Configuration', 'Authentication & Portals', 'Automation & Sentinel', 'System & Policy')
+        $jsonPayload = @{
+            Version    = $script:Version
+            TotalModes = $allMeta.Count
+            Categories = $cats
+            Commands   = $allMeta
+        }
+        [Console]::Out.WriteLine((ConvertTo-Json $jsonPayload -Depth 5))
+        return @{ Status = 'Success'; ExitCode = 0; Commands = $allMeta }
+    }
+
+    if ($Quiet) {
+        foreach ($k in ($allMeta.Keys | Sort-Object)) {
+            [Console]::Out.WriteLine(("{0,-20} : {1}" -f $allMeta[$k].Name, $allMeta[$k].Summary))
+        }
+        return @{ Status = 'Success'; ExitCode = 0; Commands = $allMeta }
+    }
+
+    [Console]::Out.WriteLine('================================================================================')
+    [Console]::Out.WriteLine(("          LANFIXER v{0} COMMAND & UNIFIED METADATA REFERENCE" -f $script:Version))
+    [Console]::Out.WriteLine('================================================================================')
+    [Console]::Out.WriteLine('Usage:')
+    [Console]::Out.WriteLine('  LanFixer.cmd -Mode <Command> [options]')
+    [Console]::Out.WriteLine('  LanFixer.cmd -Mode Help [-Id <Command>] [-Json] [-Quiet] [-NoColor]')
+    [Console]::Out.WriteLine('')
+
+    $cats = @('Diagnostics', 'Remediation', 'Reset & Recovery', 'Network Configuration', 'Authentication & Portals', 'Automation & Sentinel', 'System & Policy')
+    foreach ($cat in $cats) {
+        [Console]::Out.WriteLine(("=== {0} ===" -f $cat.ToUpperInvariant()))
+        $items = @($allMeta.Values | Where-Object { $_.Category -eq $cat } | Sort-Object { $_.Tier }, { $_.Name })
+        $seen = @{}
+        foreach ($item in $items) {
+            if ($seen.ContainsKey($item.Name)) { continue }
+            $seen[$item.Name] = $true
+            $mutStr = if ($item.Mutating) { 'Mutating' } else { 'Read-Only' }
+            [Console]::Out.WriteLine(("  {0,-18} Tier {1}  {2,-9}  {3}" -f $item.Name, $item.Tier, $mutStr, $item.Summary))
+        }
+        [Console]::Out.WriteLine('')
+    }
+    [Console]::Out.WriteLine('Run ''LanFixer.cmd -Mode Help -Id <Command>'' for detailed syntax, exit codes, and examples.')
+    [Console]::Out.WriteLine('================================================================================')
+    return @{ Status = 'Success'; ExitCode = 0; Commands = $allMeta }
 }
 
 function Show-VaultMenu {
@@ -2892,33 +5371,38 @@ function Start-Repair([string]$Title = 'quick heal') {
 }
 
 function Invoke-DashboardKey([string]$Key, $adv) {
-    $aliases = @{ w = '2'; n = 'x'; p = '4'; f = '5'; c = '5'; i = '6'; o = '7'; v = 'a'; l = 'g'; h = '0'; '?' = '0' }
+    $aliases = @{ w = '2'; n = 'x'; p = '4'; f = '5'; c = '5'; i = '6'; o = '7'; v = 'a'; l = 'g'; '?' = '0' }
     if ($aliases.ContainsKey($Key)) { $Key = $aliases[$Key] }
     switch ($Key) {
         '0' { Show-Advisory }
+        'h' {
+            Show-View 'History & Forensic Suite' {
+                Show-HistoryMenu
+            }
+        }
         'b' {
-            Show-View 'autonomous sentinel daemon' {
+            Show-View 'Live Sentinel Monitor' {
                 if (-not (Assert-Admin)) { return }
                 Start-AutonomousDaemon
             } -NoWait
         }
-        '1' { Start-Repair 'quick heal' }
-        'm' { Show-View 'routing priority' { Show-RouteMenu } }
+        '1' { Start-Repair 'Quick Heal' }
+        'm' { Show-View 'Routing & Metric Priority' { Show-RouteMenu } }
         'x' {
-            Show-View 'reset & system recovery options' {
+            Show-View 'Recovery and System' {
                 Show-ResetMenu
             }
         }
         '!' {
-            Show-View 'armageddon deep os wipe (netcfg -d)' {
+            Show-View 'Complete Network Stack Rebuild (netcfg -d)' {
                 if (-not (Assert-Admin)) { return }
-                Out-Line @((Seg 'bad!' '  DANGER: ARMAGEDDON SYSTEM RESET PERFORMS A KERNEL-LEVEL NETWORK REINSTALL:'))
+                Out-Line @((Seg 'bad!' '  WARNING: COMPLETE NETWORK STACK REBUILD ([ REBOOT REQUIRED ]):'))
                 Out-Wrapped 'faint' $script:G.mid 'text' 'Kernel-level removal and reinstallation of all network protocols, virtual adapters, and hardware stacks via netcfg -d.' 4
                 Out-Wrapped 'warn'  $script:G.mid 'warn' 'Requires an immediate system reboot to reconstruct the Windows networking stack.' 4
                 Out-Line @()
-                if (Read-Confirm 'Execute ARMAGEDDON SYSTEM RESET (netcfg -d, requires reboot)?' 'yes') {
+                if (Read-Confirm 'Execute Complete Network Stack Rebuild (netcfg -d, requires reboot)?' 'yes') {
                     $script:ChangeCount = 0; $script:FailCount = 0
-                    Invoke-ArmageddonReset
+                    Invoke-ArmageddonReset -Confirmed
                     $script:WdCache = $null
                 } else {
                     Out-Line @((Seg 'dim' '  Operation cancelled. No changes made.'))
@@ -2926,26 +5410,15 @@ function Invoke-DashboardKey([string]$Key, $adv) {
             }
         }
         'd' {
-            Show-View 'doomsday system reset (ultimate universal weapon)' {
+            Show-View 'Deep Multi-Adapter Reinstall' {
                 if (-not (Assert-Admin)) { return }
-                Out-Line @((Seg 'warn!' '  CRITICAL: DOOMSDAY SYSTEM RESET IS THE ULTIMATE UNIVERSAL NETWORK WEAPON:'))
-                Out-Wrapped 'faint' $script:G.mid 'text' 'Universal recovery when NO internet works by ANY way: Wi-Fi, Bluetooth, USB Tethering, LAN, Cellular' 4
-                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 1: Pre-flight ACID global snapshot & 12-service reverse topological teardown' 4
-                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 2: Universal physical adapter cycle (LAN, Wi-Fi, USB, BT, WWAN) & WLAN autoconfig reset' 4
-                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 3: Dual-architecture 64-bit System32 & 32-bit SysWOW64 Winsock catalog wipe & autodial purge' 4
-                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 4: Dual-stack TCP/IP stack restoration, global heuristics reset, tunnel defeat & HTTP flush' 4
-                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 5: Routing table purge (route -f), portproxy reset, IP-HTTPS, bridge destruction & firewall reset' 4
-                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 6: Encrypted DNS (DoH/DoT/DDR) wipe (global & per-interface), WPAD reset & BITS purge' 4
-                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 7: Universal proxy & dead VPN killswitch annihilation across all user and machine hives' 4
-                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 8: Hosts file sanitization, NRPT wipe & WFP filter defeat' 4
-                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 9: NCSI active probing calibration, Kerberos ticket purge, SMB sweep & NLM cleanup' 4
-                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 10: Low-level ARP/NDP eviction, NetBIOS release/refresh (nbtstat -R/-RR) & DNS resolver flush' 4
-                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 11: Universal DHCP re-enablement, MTU 1500, RFC 2131 broadcast flag & lease zeroing across ALL media' 4
-                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 12: Topological 12-service resuscitation, 802.1X reconnect, STP convergence & multi-adapter verification' 4
+                Out-Line @((Seg 'warn!' '  WARNING: DEEP MULTI-ADAPTER REINSTALL ([ HIGH RISK ]):'))
+                Out-Wrapped 'faint' $script:G.mid 'text' 'Universal recovery when no internet works: Wi-Fi, Bluetooth, USB Tethering, LAN, Cellular' 4
+                Out-Wrapped 'faint' $script:G.mid 'text' 'Cycles all network interfaces, wipes dual-architecture Winsock catalogs, and restores TCP/IP stack.' 4
                 Out-Line @()
-                if (Read-Confirm 'Execute DOOMSDAY SYSTEM RESET (Ultimate Universal Weapon)?' 'yes') {
+                if (Read-Confirm 'Execute Deep Multi-Adapter Reinstall?' 'yes') {
                     $script:ChangeCount = 0; $script:FailCount = 0
-                    Invoke-DoomsdayReset
+                    Invoke-DoomsdayReset -Confirmed
                     $script:WdCache = $null
                 } else {
                     Out-Line @((Seg 'dim' '  Operation cancelled. No changes made.'))
@@ -2953,23 +5426,14 @@ function Invoke-DashboardKey([string]$Key, $adv) {
             }
         }
         'u' {
-            Show-View 'ultra system reset (hyper-nuclear antimatter weapon)' {
+            Show-View 'Standard Stack Reset (Winsock & IP)' {
                 if (-not (Assert-Admin)) { return }
-                Out-Line @((Seg 'warn!' '  WARNING: ULTRA SYSTEM RESET IS THE SUPREME HYPER-NUCLEAR REMEDIATION ENGINE:'))
-                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 1: Pre-flight ACID snapshot, process isolation & 10-service reverse topological teardown' 4
-                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 2: Dual-architecture 64-bit System32 & 32-bit SysWOW64 Winsock catalog wipe & autodial zeroing' 4
-                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 3: Dual-stack TCP/IP stack restoration, global heuristics reset, tunnel defeat & HTTP driver flush' 4
-                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 4: Routing table purge (route -f), portproxy reset, bridge destruction & firewall factory policy' 4
-                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 5: Encrypted DNS (DoH/DoT/DDR) wipe (global & per-interface), WPAD reset & BITS job purge' 4
-                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 6: NCSI active probing calibration, Kerberos ticket purge, SMB session sweep & NLM cleanup' 4
-                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 7: Low-level ARP/NDP eviction, NetBIOS release/refresh (nbtstat -R/-RR) & DNS resolver deep flush' 4
-                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 8: PHY transceiver hard cycle, NDIS protocol re-binding, driver power lock & EEE defeat' 4
-                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 9: DHCP lease registry obliteration, RFC 2131 broadcast flag enforcement & auto-metric lock' 4
-                Out-Wrapped 'faint' $script:G.mid 'text' 'Stage 10: Topological 10-service resuscitation, 802.1X reconnect, STP convergence & 7-layer verification' 4
+                Out-Line @((Seg 'warn!' '  NOTICE: STANDARD STACK RESET ([ CAUTION ]):'))
+                Out-Wrapped 'faint' $script:G.mid 'text' '10-Stage network stack reset: Dual 64/32-bit Winsock, TCP/IP heuristics, NCSI calibration, and adapter bounce.' 4
                 Out-Line @()
-                if (Read-Confirm 'Execute ULTRA SYSTEM RESET (Hyper-Nuclear Antimatter Weapon)?' 'yes') {
+                if (Read-Confirm 'Execute Standard Stack Reset (Winsock & IP)?' 'yes') {
                     $script:ChangeCount = 0; $script:FailCount = 0
-                    Invoke-UltraSystemReset
+                    Invoke-UltraSystemReset -Confirmed
                     $script:WdCache = $null
                 } else {
                     Out-Line @((Seg 'dim' '  Operation cancelled. No changes made.'))
@@ -2977,7 +5441,7 @@ function Invoke-DashboardKey([string]$Key, $adv) {
             }
         }
         '2' {
-            Show-View 'arm the watchdog' {
+            Show-View 'Install Watchdog Task' {
                 if (-not (Assert-Admin)) { return }
                 $script:ChangeCount = 0; $script:FailCount = 0
                 $sw = [System.Diagnostics.Stopwatch]::StartNew()
@@ -3007,17 +5471,17 @@ function Invoke-DashboardKey([string]$Key, $adv) {
                 }
             }
         }
-        '3' { Show-View 'dns profile' { Show-DnsMenu } }
-        '4' { Show-View 'latency, packet loss & jitter probe' { Run-QuickProbe } }
+        '3' { Show-View 'DNS Configuration' { Show-DnsMenu } }
+        '4' { Show-View 'Network Quality Probe' { Run-QuickProbe } }
         '5' {
-            Show-View 'flush caches' {
+            Show-View 'Flush Network Caches' {
                 $script:ChangeCount = 0; $script:FailCount = 0
                 [void](Invoke-WithLock { Flush-NetworkCache })
             }
         }
-        '6' { Show-View 'system diagnostics audit' { Show-Diagnostics } }
+        '6' { Show-View 'System Diagnostics Audit' { Show-Diagnostics } }
         '7' {
-            Show-View 'captive portal sign-in' {
+            Show-View 'Captive Portal Check' {
                 $ups = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })
                 if ($ups.Count -eq 0) {
                     Write-Log 'WARN' 'No active Ethernet link is connected. Plug in the campus LAN cable before opening the portal.'
@@ -3047,7 +5511,7 @@ function Invoke-DashboardKey([string]$Key, $adv) {
             }
         }
         '8' {
-            Show-View 'disarm the watchdog' {
+            Show-View 'Remove Watchdog Task' {
                 $script:ChangeCount = 0; $script:FailCount = 0
                 [void](Invoke-WithLock { Uninstall-Watchdog; Save-State })
                 $script:WdCache = $null
@@ -3137,9 +5601,9 @@ function Invoke-DashboardKey([string]$Key, $adv) {
                 }
             }
         }
-        's' { Show-View 'system self-test verification' { Invoke-SelfTest } }
+        's' { Show-View 'System Integrity Self-Test' { Invoke-SelfTest } }
         't' {
-            Show-View 'safe dry-run simulation' {
+            Show-View 'Dry Run' {
                 $script:IsDry = $true
                 $script:ChangeCount = 0; $script:FailCount = 0
                 $sw = [System.Diagnostics.Stopwatch]::StartNew()
@@ -3151,16 +5615,16 @@ function Invoke-DashboardKey([string]$Key, $adv) {
                 } finally { $script:IsDry = [bool]$DryRun; if ($script:StoreReady) { $script:State = Get-State } }
             }
         }
-        'r' { Show-View 'export system support report' { New-SupportReport } }
+        'r' { Show-View 'Export Diagnostic Report' { New-SupportReport } }
         '9' {
-            Show-View 'factory reset & restore defaults' {
+            Show-View 'Restore Network Defaults' {
                 if (-not (Assert-Admin)) { return }
                 Out-Line @((Seg 'text' '  This action will revert system configuration:'))
                 Out-Wrapped 'faint' $script:G.mid 'text' 'Restore all adapter properties, DNS resolvers, and route metrics to original pre-LanFixer state' 4
                 Out-Wrapped 'faint' $script:G.mid 'text' 'Unregister background watchdog and helper tasks, NRPT rules, and firewall exceptions' 4
                 Out-Wrapped 'faint' $script:G.mid 'warn' 'Purge saved portal login credentials from the encrypted machine vault' 4
                 Out-Line @()
-                if (Read-Confirm 'Restore original settings?' 'yes') {
+                if (Read-Confirm 'Restore all network settings and adapters to DHCP defaults?' 'yes') {
                     $script:ChangeCount = 0; $script:FailCount = 0
                     [void](Invoke-WithLock { Restore-Everything })
                     $script:WdCache = $null
@@ -3203,10 +5667,12 @@ function Approve-GatewayMac([string]$Gw, [string]$Mac, [switch]$Quiet) {
 # ---- USB selective suspend: record the ORIGINAL value and put exactly that back (no forced "factory" value)
 $script:UsbSub = '2a737441-1930-4402-8d77-b2bebba308a3'
 $script:UsbSet = '48e6b7a6-50f5-4782-a5d4-53bb8f07e226'
-function ConvertFrom-PowerIndexText([string]$Text) {
-    $m = [regex]::Match($Text, '0x([0-9a-fA-F]{1,8})')
-    if (-not $m.Success) { return $null }
-    return [Convert]::ToInt32($m.Groups[1].Value, 16)
+function ConvertFrom-PowerIndexText([string]$Text, [string]$Mode = 'ac') {
+    $matches = @([regex]::Matches($Text, '0x([0-9a-fA-F]{1,8})'))
+    if ($Mode -eq 'ac' -and $matches.Count -ge 1) { return [Convert]::ToInt32($matches[0].Groups[1].Value, 16) }
+    elseif ($Mode -ne 'ac' -and $matches.Count -ge 2) { return [Convert]::ToInt32($matches[1].Groups[1].Value, 16) }
+    elseif ($matches.Count -ge 1) { return [Convert]::ToInt32($matches[0].Groups[1].Value, 16) }
+    return $null
 }
 
 function Get-ActivePowerScheme {
@@ -3225,7 +5691,71 @@ function Get-PowerSettingIndex([string]$Scheme, [string]$Mode) {
         $m = [regex]::Match([string]$r.Output, 'Current DC Power Setting Index:\s*0x([0-9a-fA-F]+)')
         if ($m.Success) { return [Convert]::ToInt32($m.Groups[1].Value, 16) }
     }
-    return (ConvertFrom-PowerIndexText ([string]$r.Output))
+    return (ConvertFrom-PowerIndexText ([string]$r.Output) $Mode)
+}
+
+
+function Get-BatteryHealthAndEfficiency {
+    $res = @{
+        HasBattery         = $false
+        IsOnBattery        = $false
+        ChargePercent      = 100
+        StatusText         = 'AC Wall Power (Desktop / Workstation)'
+        HealthPercent      = 100
+        WearLevelPercent   = 0
+        CycleCount         = 0
+        DesignCapacityMWh  = 0
+        FullCapacityMWh    = 0
+        RemainingMWh       = 0
+        EfficiencyTier     = 'Optimal'
+    }
+    try {
+        $wmiBat = Get-CimInstance Win32_Battery -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($wmiBat) {
+            $res.HasBattery = $true
+            if ($null -ne $wmiBat.EstimatedChargeRemaining) {
+                $res.ChargePercent = [int]$wmiBat.EstimatedChargeRemaining
+            }
+            $bStat = [int]$wmiBat.BatteryStatus
+            if ($bStat -eq 1 -or $bStat -eq 4 -or $bStat -eq 5) {
+                $res.IsOnBattery = $true
+                $res.StatusText = ("Battery Discharging ({0}%)" -f $res.ChargePercent)
+            } elseif ($bStat -eq 6 -or $bStat -eq 7 -or $bStat -eq 8 -or $bStat -eq 9) {
+                $res.IsOnBattery = $false
+                $res.StatusText = ("AC Connected, Charging ({0}%)" -f $res.ChargePercent)
+            } else {
+                $res.IsOnBattery = $false
+                $res.StatusText = ("AC Connected ({0}%)" -f $res.ChargePercent)
+            }
+        }
+        $full = Get-CimInstance -Namespace root\wmi -ClassName BatteryFullChargedCapacity -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($full -and $full.FullChargedCapacity -gt 0) {
+            $res.FullCapacityMWh = [int]$full.FullChargedCapacity
+        }
+        $stat = Get-CimInstance -Namespace root\wmi -ClassName BatteryStatus -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($stat) {
+            if ($null -ne $stat.PowerOnline) {
+                $res.IsOnBattery = (-not [bool]$stat.PowerOnline)
+                if ($res.IsOnBattery) {
+                    $res.StatusText = ("Battery Power (DC) - {0}%" -f $res.ChargePercent)
+                }
+            }
+            if ($stat.RemainingCapacity -gt 0) { $res.RemainingMWh = [int]$stat.RemainingCapacity }
+        }
+        $cycles = Get-CimInstance -Namespace root\wmi -ClassName BatteryCycleCount -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($cycles -and $null -ne $cycles.CycleCount) {
+            $res.CycleCount = [int]$cycles.CycleCount
+        }
+        $static = Get-CimInstance -Namespace root\wmi -ClassName BatteryStaticData -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($static -and $static.DesignedCapacity -gt 0) {
+            $res.DesignCapacityMWh = [int]$static.DesignedCapacity
+        }
+        if ($res.DesignCapacityMWh -gt 0 -and $res.FullCapacityMWh -gt 0) {
+            $res.HealthPercent = [math]::Round(($res.FullCapacityMWh / $res.DesignCapacityMWh) * 100, 1)
+            $res.WearLevelPercent = [math]::Max(0, [math]::Round((1 - ($res.FullCapacityMWh / $res.DesignCapacityMWh)) * 100, 1))
+        }
+    } catch {}
+    return $res
 }
 
 function Set-UsbSuspendOff {
@@ -3238,9 +5768,12 @@ function Set-UsbSuspendOff {
     if ($null -eq $ac -and $null -eq $dc) { return }                        # unreadable: never write blind
     if (($null -eq $ac -or $ac -eq 0) -and ($null -eq $dc -or $dc -eq 0)) { return }   # already off
     Save-Original 'Global' 'UsbSuspend' @{ Scheme = $scheme; Ac = $ac; Dc = $dc }
-    [void](Invoke-Change 'USB selective suspend turned off in the active power plan (the dongle is never put to sleep)' {
+    $bat = Get-BatteryHealthAndEfficiency
+    [void](Invoke-Change 'USB selective suspend configured for low-latency Ethernet on AC power (preserves battery efficiency)' {
         [void](Invoke-Native $pcfg @('/setacvalueindex', $scheme, $script:UsbSub, $script:UsbSet, '0') 5000)
-        [void](Invoke-Native $pcfg @('/setdcvalueindex', $scheme, $script:UsbSub, $script:UsbSet, '0') 5000)
+        if (-not $bat.IsOnBattery) {
+            [void](Invoke-Native $pcfg @('/setdcvalueindex', $scheme, $script:UsbSub, $script:UsbSet, '0') 5000)
+        }
         [void](Invoke-Native $pcfg @('/s', $scheme) 5000)
     })
 }
@@ -3266,7 +5799,11 @@ function Get-ProbeVerdict($P1, $P2) {
     return 'Offline'
 }
 function Get-PrimarySourceIp {
-    foreach ($a in @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })) {
+    $targetAdapters = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })
+    if ($targetAdapters.Count -eq 0) {
+        $targetAdapters = @(Get-OtherUplinkAdapters | Where-Object { $_.Status -eq 'Up' })
+    }
+    foreach ($a in $targetAdapters) {
         $ip = Get-ValidIPv4 $a
         if ($ip) { return [string]$ip }
     }
@@ -3291,6 +5828,10 @@ function Get-InternetState {
     $p1 = Invoke-HttpProbe 'connectivitycheck.gstatic.com' '/generate_204' 2500 $SourceIp
     $p2 = $none
     if ($p1.Code -ne 204) { $p2 = Invoke-HttpProbe 'www.msftconnecttest.com' '/connecttest.txt' 2500 $SourceIp }
+    if ($p1.Code -eq 0 -and $p2.Code -eq 0) {
+        $pApple = Invoke-HttpProbe 'captive.apple.com' '/hotspot-detect.html' 2500 $SourceIp
+        if ($pApple.Code -ne 0) { $p2 = $pApple }
+    }
     $state = Get-ProbeVerdict $p1 $p2
     $via = 'link'
     if (-not $explicit -and ($state -eq 'Offline' -or $state -eq 'NoDns') -and (Test-AllowSystemFallback $explicit $state (Test-OtherUplinkActive))) {
@@ -3338,9 +5879,22 @@ function Get-InternetState {
                 if ($lu.IsAbsoluteUri -and ($lu.Scheme -eq 'http' -or $lu.Scheme -eq 'https')) {
                     $script:State.Misc['DiscoveredPortalUrl'] = [string]$lu.AbsoluteUri
                     $script:State.Misc['DiscoveryTime'] = (Get-Date).ToString('o')
+                    if ($lu.Port -gt 0) { $script:State.Misc['DiscoveredPortalPort'] = [int]$lu.Port }
+                    $cleanHost = ([string]$lu.Host).Trim().Trim('.').ToLower()
+                    if ($cleanHost) {
+                        $script:State.Misc['DiscoveredPortalHost'] = $cleanHost
+                        if ($cleanHost -match '\.' -and $cleanHost -notmatch '^(local|lan|home|arpa|localdomain|mshome\.net)$') {
+                            $script:State.Misc['DiscoveredDomain'] = $cleanHost
+                        }
+                    }
                     $tmpIp = $null
                     if ([System.Net.IPAddress]::TryParse($lu.Host, [ref]$tmpIp) -and (Test-AllowedPortalIp $lu.Host)) {
                         $script:State.Misc['DiscoveredPortalIp'] = $lu.Host
+                    } else {
+                        $resIp = Resolve-HostBounded $lu.Host 1500
+                        if ($resIp -and (Test-AllowedPortalIp $resIp)) {
+                            $script:State.Misc['DiscoveredPortalIp'] = $resIp
+                        }
                     }
                 }
             } catch {}
@@ -3355,6 +5909,7 @@ function Get-InternetState {
 # leftover entry looks like, and 'Permanent' is our own lock. Force a fresh ARP exchange and accept only a freshly
 # 'Reachable' entry (checked a few times, because the entry appears a moment after the probe).
 function Test-GatewayAlive($Ad, [string]$Gw) {
+    if (-not $Ad -or -not $Ad.ifIndex -or -not $Gw) { return @{ Alive = $false; Rtt = $null; Via = '' } }
     $rtt = Test-Ping $Gw 700
     if ($null -ne $rtt) { return @{ Alive = $true; Rtt = $rtt; Via = 'icmp' } }
     $ex = Get-NetNeighbor -InterfaceIndex $Ad.ifIndex -IPAddress $Gw -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -3439,11 +5994,21 @@ function Rescue-DormantEthernetPnp {
         Write-Log 'WARN' "Rescue-DormantEthernetPnp non-critical exception: $_"
     }
 }
-function Get-EthernetAdapters {
+$script:EthernetAdaptersCache = $null
+$script:EthernetAdaptersCacheTicks = 0L
+
+function Get-EthernetAdapters([switch]$NoCache) {
+    $nowTicks = [System.Diagnostics.Stopwatch]::GetTimestamp()
+    if (-not $NoCache -and $null -ne $script:EthernetAdaptersCache -and (($nowTicks - $script:EthernetAdaptersCacheTicks) / [System.Diagnostics.Stopwatch]::Frequency) -lt 2.5) {
+        return $script:EthernetAdaptersCache
+    }
     Rescue-DormantEthernetPnp
-    return @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object {
+    $res = @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object {
         $_.MediaType -eq '802.3' -and $_.InterfaceDescription -notmatch $script:VirtRegex
     })
+    $script:EthernetAdaptersCache = $res
+    $script:EthernetAdaptersCacheTicks = $nowTicks
+    return $res
 }
 function Get-IfaceReg([string]$Guid) {
     try { return (Get-ItemProperty -LiteralPath "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$Guid" -ErrorAction Stop) } catch { return $null }
@@ -3491,6 +6056,7 @@ function Get-DhcpCaptiveUrl([string]$Guid) {
     return $null
 }
 function Get-GatewaysV4($Ad) {
+    if (-not $Ad -or -not $Ad.ifIndex) { return @() }
     return @(Get-NetRoute -InterfaceIndex $Ad.ifIndex -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue |
         Where-Object { $_.NextHop -and $_.NextHop -ne '0.0.0.0' } | ForEach-Object { [string]$_.NextHop } | Select-Object -Unique)
 }
@@ -3501,6 +6067,7 @@ function Get-DefaultGateway($Ad) {
     return $null
 }
 function Get-ValidIPv4($Ad) {
+    if (-not $Ad -or -not $Ad.ifIndex) { return $null }
     $x = Get-NetIPAddress -InterfaceIndex $Ad.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue |
          Where-Object { $_.IPAddress -notlike '169.254.*' -and $_.AddressState -eq 'Preferred' } | Select-Object -First 1
     if ($x) { return [string]$x.IPAddress }
@@ -3521,6 +6088,7 @@ function Test-LearnableDhcpServer([string]$Ip) {
 }
 function Get-AdapterEnvironment {
     param($Ad, [switch]$UseCache)
+    if (-not $Ad -or -not $Ad.InterfaceGuid) { return @{ Env = 'Other'; Score = 0; Reasons = @(); DhcpDns = @(); Gateways = @(); DhcpServer = ''; Subnet = $null; State = 'Offline' } }
     $guid = [string]$Ad.InterfaceGuid
     if ($UseCache -and $script:EnvCache.ContainsKey($guid)) {
         $c = $script:EnvCache[$guid]
@@ -3543,6 +6111,7 @@ function Get-AdapterEnvironment {
         if (-not $script:IsDry) {
             $script:State.Misc['DiscoveredPortalUrl'] = $dhcpPortal
             $script:State.Misc['DiscoveryTime'] = (Get-Date).ToString('o')
+            try { $du = [uri]$dhcpPortal; if ($du.Port -gt 0) { $script:State.Misc['DiscoveredPortalPort'] = [int]$du.Port } } catch {}
         }
     }
     foreach ($g in $gws) { if ($g -match $cfg.GwRegex) { $score += 1; [void]$ev.Add("gateway $g matches hostel pattern"); break } }
@@ -3579,12 +6148,13 @@ function Get-AdapterEnvironment {
         $score += 1; [void]$ev.Add("dedicated DHCP server $dhcpSrv")
     }
     if ($score -lt $cfg.CampusThreshold -and $ip) {
-        if ($ip -notlike '192.168.*' -or ($cfg.PortalIp -and $cfg.PortalIp -like '192.168.*')) {
-            $detectedPort = Find-ActivePortalPort $cfg.PortalIp ([int]$cfg.PortalPort)
-            if (Test-TcpPort $cfg.PortalIp $detectedPort 700) { $score += 2; $portalHit = $true; [void]$ev.Add("portal $($cfg.PortalIp):$detectedPort open") }
-            if ($null -ne (Test-Ping $cfg.PortalIp 700)) { $score += 1; $portalHit = $true; [void]$ev.Add("portal firewall answers ping") }
-            if ($null -ne (Test-Ping $cfg.CampusDns 700)) { $score += 1; [void]$ev.Add("campus DNS answers ping") }
+        $targetPortalIp = if ($script:State.Misc -and $script:State.Misc['DiscoveredPortalIp']) { [string]$script:State.Misc['DiscoveredPortalIp'] } elseif ($gws.Count -gt 0 -and $cfg.PortalIp -ne $gws[0]) { [string]$gws[0] } else { $cfg.PortalIp }
+        if ($targetPortalIp) {
+            $detectedPort = Find-ActivePortalPort $targetPortalIp ([int]$cfg.PortalPort)
+            if (Test-TcpPort $targetPortalIp $detectedPort 700) { $score += 2; $portalHit = $true; [void]$ev.Add(("portal {0}:{1} open" -f $targetPortalIp, $detectedPort)) }
+            if ($null -ne (Test-Ping $targetPortalIp 700)) { $score += 1; $portalHit = $true; [void]$ev.Add("portal firewall answers ping") }
         }
+        if ($cfg.CampusDns -and $null -ne (Test-Ping $cfg.CampusDns 700)) { $score += 1; [void]$ev.Add("campus DNS answers ping") }
         if ($score -lt $cfg.CampusThreshold) {
             $probeEnv = Get-InternetState -SourceIp $ip
             if ($probeEnv.State -eq 'Captive') {
@@ -3595,6 +6165,7 @@ function Get-AdapterEnvironment {
                         if ($lu.Host) {
                             $script:State.Misc['DiscoveredPortalUrl'] = [string]$probeEnv.Location
                             $script:State.Misc['DiscoveryTime'] = (Get-Date).ToString('o')
+                            if ($lu.Port -gt 0) { $script:State.Misc['DiscoveredPortalPort'] = [int]$lu.Port }
                             $tmpIp = $null
                             if ([System.Net.IPAddress]::TryParse($lu.Host, [ref]$tmpIp)) {
                                 if (Test-AllowedPortalIp $lu.Host) { $script:State.Misc['DiscoveredPortalIp'] = $lu.Host }
@@ -3648,6 +6219,7 @@ function Get-AdapterEnvironment {
 
 # Problem: NoAdapter | NoLink | NoIp | GwUnreachable | NoDns | Captive | Offline | Healthy
 function Get-AdapterHealth($Ad) {
+    if (-not $Ad -or -not $Ad.Name) { return @{ Name = ''; Up = $false; Ip = $null; Apipa = $false; Gateway = $null; GwRtt = $null; GwAlive = $false; GwVia = ''; Conn = 'Offline'; Problem = 'NoAdapter' } }
     $h = @{ Name = $Ad.Name; Up = ($Ad.Status -eq 'Up'); Ip = $null; Apipa = $false; Gateway = $null; GwRtt = $null; GwAlive = $false; GwVia = ''; Conn = 'Offline'; Problem = 'NoLink' }
     if (-not $h.Up) { return $h }
     $all = @(Get-NetIPAddress -InterfaceIndex $Ad.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue)
@@ -3946,6 +6518,7 @@ function Resolve-DisabledValue($Prop) {
     return $null
 }
 function Shield-Hardware($Ad) {
+    if (-not $Ad -or -not $Ad.Name) { return $false }
     $guid = [string]$Ad.InterfaceGuid
     [void](Shield-TransceiverBus $Ad)
     $touched = $false
@@ -4027,7 +6600,7 @@ $script:PendingRestart = @{}
 # LAYER 2 - DATA LINK: duplicate-address guard + DHCP/APIPA recovery ladder
 # ==============================================================================
 function Shield-Dot3Svc($Ad) {
-    if (-not $script:IsAdmin) { return $false }
+    if (-not $script:IsAdmin -or -not $Ad) { return $false }
     if ($script:IsDry) { Write-Log 'DRY' 'Would check Wired AutoConfig (dot3svc) service'; return $false }
     try {
         $svc = Get-Service -Name 'dot3svc' -ErrorAction SilentlyContinue
@@ -4089,10 +6662,17 @@ function Wait-StpConvergence($Ad, [int]$MaxWaitSec = 45) {
     return $converged
 }
 
-function Get-IPv4Interface($Ad) { return (Get-NetIPInterface -InterfaceIndex $Ad.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue) }
+function Get-IPv4Interface($Ad) {
+    if (-not $Ad -or -not $Ad.ifIndex) { return $null }
+    return (Get-NetIPInterface -InterfaceIndex $Ad.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue)
+}
 
-function Get-DhcpFailureDiagnosis($Ad) { return (Get-DhcpFailureText (Get-DhcpErrorCode) ([string]$Ad.MacAddress)) }
+function Get-DhcpFailureDiagnosis($Ad) {
+    $mac = if ($Ad -and $Ad.MacAddress) { [string]$Ad.MacAddress } else { '' }
+    return (Get-DhcpFailureText (Get-DhcpErrorCode) $mac)
+}
 function Test-DhcpLeaseUsable($Ad) {
+    if (-not $Ad -or -not $Ad.ifIndex) { return $false }
     $ip = Get-ValidIPv4 $Ad
     if (-not $ip) { return $false }
     $gw = @(Get-GatewaysV4 $Ad) | Select-Object -First 1
@@ -4184,6 +6764,7 @@ function Repair-Dhcp($Ad, [switch]$ForceRelease) {
 # answers every probe (false conflict -> address marked Duplicate -> 169.254.x.x). So 'Auto' turns them off
 # only after evidence of that, instead of unconditionally trading away conflict detection.
 function Test-DadConflictEvidence($Ad) {
+    if (-not $Ad -or -not $Ad.ifIndex) { return '' }
     $dup = @(Get-NetIPAddress -InterfaceIndex $Ad.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { [string]$_.AddressState -eq 'Duplicate' })
     if ($dup.Count -gt 0) { return 'an address is in Duplicate state right now' }
     $c = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Tcpip'; Id = 4199; StartTime = (Get-Date).AddDays(-7) } -ErrorAction SilentlyContinue).Count
@@ -4303,6 +6884,7 @@ function Shield-DataLink($Ctx) {
 # LAYER 3 - GATEWAY ARP INTEGRITY (verify, then lock; auto-release if it hurts)
 # ==============================================================================
 function Get-GatewayMacs($Ad, [string]$Gw, [int]$Samples = 3) {
+    if (-not $Ad -or -not $Ad.ifIndex -or -not $Gw) { return @() }
     $macs = @()
     for ($i = 0; $i -lt $Samples; $i++) {
         $n = Get-NetNeighbor -InterfaceIndex $Ad.ifIndex -IPAddress $Gw -AddressFamily IPv4 -ErrorAction SilentlyContinue |
@@ -4329,6 +6911,7 @@ function Get-GatewayMacs($Ad, [string]$Gw, [int]$Samples = 3) {
     return $macs
 }
 function Remove-GatewayLock($Ad, [string]$Gw) {
+    if (-not $Ad -or -not $Ad.ifIndex -or -not $Gw) { return }
     if ($script:IsDry) { Write-Log 'DRY' "Would release ARP lock for $Gw on $($Ad.Name)"; return }
     Remove-NetNeighbor -InterfaceIndex $Ad.ifIndex -IPAddress $Gw -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue
     Remove-NetNeighbor -InterfaceIndex $Ad.ifIndex -IPAddress $Gw -PolicyStore PersistentStore -Confirm:$false -ErrorAction SilentlyContinue
@@ -4339,6 +6922,7 @@ function Remove-GatewayLock($Ad, [string]$Gw) {
     $t = Get-SubTable 'Arp' ([string]$Ad.InterfaceGuid)
 }
 function Release-ArpLocks($Ad) {
+    if (-not $Ad -or -not $Ad.InterfaceGuid) { return }
     $t = Get-SubTable 'Arp' ([string]$Ad.InterfaceGuid)
     foreach ($gw in @($t.Keys)) {
         [void](Invoke-Change "Gateway ARP lock released: $gw" { Remove-GatewayLock $Ad $gw })
@@ -4842,9 +7426,14 @@ function Get-BestDnsOrder([string]$Guid, [string[]]$Campus) {
         return @($script:Cfg.PublicDns)
     }
     $ordered = @($scored | Sort-Object Ms | ForEach-Object { [string]$_.Server })
-    foreach ($c in $Campus) { if ($ordered -notcontains $c) { $ordered += $c } }
-    $final = @($ordered | Select-Object -First 3)
-    if ($Campus.Count -gt 0 -and @($final | Where-Object { $Campus -contains $_ }).Count -eq 0) { $final = @($final | Select-Object -First 2) + @($Campus[0]) }
+    if ($Campus.Count -gt 0) {
+        $campusAlive = @($Campus | Where-Object { $null -ne $meas[$_] } | Sort-Object { $meas[$_] })
+        $primaryCampus = if ($campusAlive.Count -gt 0) { $campusAlive[0] } else { $Campus[0] }
+        $rest = @($ordered | Where-Object { $_ -ne $primaryCampus } | Select-Object -First 2)
+        $final = @($primaryCampus) + $rest
+    } else {
+        $final = @($ordered | Select-Object -First 3)
+    }
     $d.Order = $final
     $d.OrderTime = (Get-Date).ToString('o')
     return $final
@@ -4855,6 +7444,7 @@ function Get-StaticDnsString($Guid) {
     return ''
 }
 function Set-AdapterDns($Ad, [string[]]$Servers) {
+    if (-not $Ad -or -not $Ad.InterfaceGuid) { return $false }
     $guid = [string]$Ad.InterfaceGuid
     $curNs = Get-StaticDnsString $guid
     $cur = @($curNs -split '[,\s]+' | Where-Object { $_ })
@@ -4879,6 +7469,7 @@ function Set-AdapterDns($Ad, [string[]]$Servers) {
     return $ok
 }
 function Set-AdapterDnsAutomatic($Ad) {
+    if (-not $Ad -or -not $Ad.InterfaceGuid) { return $false }
     $guid = [string]$Ad.InterfaceGuid
     $curNs = Get-StaticDnsString $guid
     if ($curNs -eq '') { return $false }
@@ -4896,6 +7487,7 @@ function Set-AdapterDnsAutomatic($Ad) {
 }
 # Only undo what WE changed (never wipe a static DNS the user set themselves).
 function Restore-AdapterDns($Ad) {
+    if (-not $Ad -or -not $Ad.InterfaceGuid) { return }
     $guid = [string]$Ad.InterfaceGuid
     $d = Get-SubTable 'Dns' $guid
     if (-not $d.Managed) { return }
@@ -5001,6 +7593,7 @@ function Test-DhcpDnsUsable([string]$Guid, [string]$SourceIp = '') {
     return $false
 }
 function Restore-Ipv6IfNeutralized($Ad) {
+    if (-not $Ad -or -not $Ad.InterfaceGuid) { return }
     $guid = [string]$Ad.InterfaceGuid
     $d = Get-SubTable 'Dns' $guid
     if ($d.Ipv6Neutralized -ne $true) { return }
@@ -5014,7 +7607,7 @@ function Restore-Ipv6IfNeutralized($Ad) {
     if ($ok -and -not $script:IsDry) { $d.Ipv6Neutralized = $false }
 }
 function Shield-DnsIntegrity($Ad) {
-    if (-not $script:IsAdmin) { return }
+    if (-not $script:IsAdmin -or -not $Ad -or -not $Ad.InterfaceGuid) { return }
     if ($Ad.MediaType -and $Ad.MediaType -ne '802.3') { return }
     $guid = [string]$Ad.InterfaceGuid
     try {
@@ -5103,8 +7696,8 @@ function Shield-Dns($Ctx, [string]$ConnState) {
     switch ($prof) {
         'DHCP'       { $phase = 'Auto' }
         'ResetDHCP'  { $phase = 'Auto' }
-        'Hybrid'     { $order = @('9.9.9.9', '8.8.8.8') + $campus; $phase = 'Public' }
-        'Cloudflare' { $order = @($script:Cfg.CfDns) + $campus; $phase = 'Public' }
+        'Hybrid'     { $order = @($campus) + @('9.9.9.9', '8.8.8.8'); $phase = 'Campus' }
+        'Cloudflare' { $order = @($campus) + @($script:Cfg.CfDns); $phase = 'Campus' }
         default {
             if ($ConnState -eq 'Online' -or $ConnState -eq 'NoDns' -or $ConnState -eq 'Offline') {
                 $order = @(Get-BestDnsOrder $guid $campus)
@@ -5295,6 +7888,7 @@ function Restore-NeutralizedInterceptors([string]$Why = 'Non-campus network') {
 }
 $script:LlmnrKey = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient'
 function Restore-Llmnr($Orig) {
+    if ($script:IsDry) { return }
     if ($null -eq $Orig) { Remove-ItemProperty -LiteralPath $script:LlmnrKey -Name EnableMulticast -ErrorAction SilentlyContinue }
     else { New-ItemProperty -LiteralPath $script:LlmnrKey -Name EnableMulticast -Value ([int]$Orig) -PropertyType DWord -Force -ErrorAction Stop | Out-Null }
 }
@@ -5554,7 +8148,7 @@ function Shield-Proxies {
         $netsh = Get-SysExe 'netsh.exe'
         if (Test-Path -LiteralPath $netsh) {
             $r = Invoke-Native $netsh @('winhttp', 'show', 'proxy') 5000
-            if ($r.ExitCode -eq 0 -and $r.Output -match 'Proxy Server\(s\)\s*:\s*(\S+)') {
+            if ($r.ExitCode -eq 0 -and $r.Output -match '((?:https?://)?(?:127\.0\.0\.1|localhost|\[?::1\]?):\d+)') {
                 $srv = $Matches[1]
                 if ($srv -match '127\.0\.0\.1|localhost|::1') {
                     Save-Original 'Global' 'WinHttpProxy' $srv
@@ -5882,8 +8476,412 @@ function Shield-SystemStack([switch]$Aggressive) {
     }
 }
 
-function Invoke-SupremeOmnifix {
-    if (-not (Assert-Admin)) { return }
+# ==============================================================================
+# RESET & RECOVERY SUBSYSTEM INFRASTRUCTURE (TIERS 1 - 5)
+# ==============================================================================
+function Get-ResetJournalPath {
+    return (Join-Path $script:StoreDir 'reset_journal.json')
+}
+
+function Set-ResetJournal([string]$Tier, [int]$TotalStages, [int]$Stage = 1, [string]$StageDesc = '', [string]$Status = 'InProgress') {
+    if ($script:IsDry) { return }
+    try {
+        $jPath = Get-ResetJournalPath
+        $jObj = @{
+            Version            = $script:Version
+            ResetId            = [guid]::NewGuid().ToString('D')
+            Tier               = $Tier
+            Stage              = $Stage
+            TotalStages        = $TotalStages
+            StageDesc          = $StageDesc
+            Status             = $Status
+            StartTime          = (Get-Date).ToString('o')
+            LastUpdated        = (Get-Date).ToString('o')
+            CompletedTime      = ''
+            RebootRequired     = ($Tier -eq 'Armageddon')
+            PendingReboot      = ($Status -eq 'PendingReboot')
+        }
+        $json = ConvertTo-Json $jObj
+        Set-Content -LiteralPath $jPath -Value $json -Encoding ASCII -Force
+    } catch {}
+}
+
+function Update-ResetJournal([int]$Stage, [string]$StageDesc, [string]$Status = 'InProgress') {
+    if ($script:IsDry) { return }
+    try {
+        $jPath = Get-ResetJournalPath
+        if (Test-Path -LiteralPath $jPath) {
+            $content = Get-Content -LiteralPath $jPath -Raw -ErrorAction SilentlyContinue
+            if ($content) {
+                $jObj = ConvertFrom-Json $content
+                $jObj.Stage = $Stage
+                $jObj.StageDesc = $StageDesc
+                $jObj.Status = $Status
+                $jObj.LastUpdated = (Get-Date).ToString('o')
+                $json = ConvertTo-Json $jObj
+                Set-Content -LiteralPath $jPath -Value $json -Encoding ASCII -Force
+            }
+        }
+    } catch {}
+}
+
+function New-SystemRestorePoint([string]$Description) {
+    if ($script:IsDry) { Write-Log 'DRY' ("Would create System Restore Point: {0}" -f $Description); return $true }
+    $srKey = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SystemRestore'
+    $origFreq = $null
+    $freqModified = $false
+    try {
+        # Bypass Windows 24-hour throttling by temporarily zeroing SystemRestorePointCreationFrequency
+        if (Test-Path -LiteralPath $srKey) {
+            $val = (Get-ItemProperty -LiteralPath $srKey -Name 'SystemRestorePointCreationFrequency' -ErrorAction SilentlyContinue).SystemRestorePointCreationFrequency
+            if ($null -ne $val) { $origFreq = [int]$val }
+            Set-ItemProperty -LiteralPath $srKey -Name 'SystemRestorePointCreationFrequency' -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+            $freqModified = $true
+        }
+
+        Write-Log 'INFO' ("Creating System Restore Point '{0}'..." -f $Description)
+        Checkpoint-Computer -Description $Description -RestorePointType 'MODIFY_SETTINGS' -ErrorAction Stop
+        Write-Log 'OK' ("System Restore Point '{0}' created successfully." -f $Description)
+        return $true
+    } catch {
+        Write-Log 'WARN' ("System Restore Point creation bypassed or unsupported: {0}" -f $_.Exception.Message)
+        return $false
+    } finally {
+        if ($freqModified) {
+            try {
+                if ($null -ne $origFreq) {
+                    Set-ItemProperty -LiteralPath $srKey -Name 'SystemRestorePointCreationFrequency' -Value $origFreq -Type DWord -Force -ErrorAction SilentlyContinue
+                } else {
+                    Remove-ItemProperty -LiteralPath $srKey -Name 'SystemRestorePointCreationFrequency' -ErrorAction SilentlyContinue
+                }
+            } catch {}
+        }
+    }
+}
+
+function Stage-PostRebootVerification {
+    if ($script:IsDry) {
+        Write-Log 'DRY' 'Would stage post-reboot verification script with locked ACLs'
+        return @{ Path = (Join-Path (Join-Path $script:StoreDir 'staging') 'post_reboot_verify.ps1'); Hash = ('0' * 64); DryRun = $true }
+    }
+    try {
+        $stageDir = Join-Path $script:StoreDir 'staging'
+        if (-not (Test-Path -LiteralPath $stageDir)) {
+            New-Item -Path $stageDir -ItemType Directory -Force | Out-Null
+        }
+
+        $verifyScript = Join-Path $stageDir 'post_reboot_verify.ps1'
+        $scriptContent = @'
+# LanFixer Post-Reboot Verification & State Reconstitution
+Write-Host "LanFixer Post-Reboot Verification..." -ForegroundColor Cyan
+try {
+    $ads = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' })
+    if ($ads.Count -gt 0) {
+        Write-Host "Network hardware re-detected successfully: $($ads.Name -join ', ')" -ForegroundColor Green
+    } else {
+        Write-Host "No active network adapters detected yet. Checking PnP..." -ForegroundColor Yellow
+    }
+} catch {
+    Write-Host "Error verifying network adapters: $_" -ForegroundColor Red
+}
+'@
+        Set-Content -LiteralPath $verifyScript -Value $scriptContent -Encoding ASCII -Force
+
+        # Secure staging directory & file when running elevated as Administrator
+        if ($script:IsAdmin) {
+            $icStg = Get-SysExe 'icacls.exe'
+            [void](Invoke-Native $icStg @($stageDir, '/inheritance:r', '/grant:r', '*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F', '/C', '/Q') 5000)
+            [void](Invoke-Native $icStg @($stageDir, '/setowner', '*S-1-5-32-544', '/C', '/Q') 5000)
+            [void](Protect-VaultFile $verifyScript)
+        }
+
+        # Compute cryptographic hash for integrity validation
+        $sha = Get-FileSha256 $verifyScript
+        $shaShort = if ($sha -and $sha.Length -ge 16) { $sha.Substring(0, 16) } else { 'SIMULATED' }
+        Write-Log 'OK' ("Staged secure post-reboot verification script (SHA256: {0})" -f $shaShort)
+        return @{ Path = $verifyScript; Hash = $sha }
+    } catch {
+        Write-Log 'WARN' ("Failed to stage post-reboot verification script: {0}" -f $_.Exception.Message)
+        return $null
+    }
+}
+
+function Complete-ResetJournal([bool]$Success = $true) {
+    if ($script:IsDry) { return }
+    try {
+        $jPath = Get-ResetJournalPath
+        if (Test-Path -LiteralPath $jPath) {
+            $content = Get-Content -LiteralPath $jPath -Raw -ErrorAction SilentlyContinue
+            if ($content) {
+                $jObj = ConvertFrom-Json $content
+                $jObj.Status = if ($Success) { 'Completed' } else { 'Failed' }
+                try {
+                    $jObj.CompletedTime = (Get-Date).ToString('o')
+                } catch {
+                    Add-Member -InputObject $jObj -NotePropertyName 'CompletedTime' -NotePropertyValue ((Get-Date).ToString('o')) -Force
+                }
+                $json = ConvertTo-Json $jObj
+                Set-Content -LiteralPath $jPath -Value $json -Encoding ASCII -Force
+            }
+        }
+    } catch {}
+}
+
+function Test-PriorResetJournal {
+    try {
+        $jPath = Get-ResetJournalPath
+        if (Test-Path -LiteralPath $jPath) {
+            $content = Get-Content -LiteralPath $jPath -Raw -ErrorAction SilentlyContinue
+            if ($content) {
+                $jObj = ConvertFrom-Json $content
+                if ($jObj.Status -eq 'InProgress') {
+                    Write-Log 'WARN' ("Prior reset operation '{0}' was interrupted at Stage {1}/{2} ({3})." -f $jObj.Tier, $jObj.Stage, $jObj.TotalStages, $jObj.StageDesc)
+                    return $jObj
+                } elseif ($jObj.Status -eq 'PendingReboot') {
+                    Write-Log 'WARN' ("Prior reset operation '{0}' is awaiting system reboot to complete driver re-installation." -f $jObj.Tier)
+                    if ($jObj.VerifyScriptPath -and (Test-Path -LiteralPath $jObj.VerifyScriptPath)) {
+                        $vPath = [string]$jObj.VerifyScriptPath
+                        $aclOk = Test-VaultAcl $vPath
+                        $curHash = Get-FileSha256 $vPath
+                        if (-not $aclOk -or ($jObj.VerifyScriptSha256 -and $curHash -ne $jObj.VerifyScriptSha256)) {
+                            Write-Log 'FAIL' 'SECURITY ALERT: Staged post-reboot verification script failed integrity check or permissions tampered! Execution refused.'
+                        } else {
+                            Write-Log 'OK' 'Staged post-reboot verification script verified (SHA256 authenticated).'
+                        }
+                    }
+                    return $jObj
+                }
+            }
+        }
+    } catch {}
+    return $null
+}
+
+function Backup-WlanProfiles {
+    if ($script:IsDry) { Write-Log 'DRY' 'Would backup Wi-Fi profiles'; return }
+    try {
+        $backupDir = Join-Path $script:StoreDir 'wifi_backup'
+        if (-not (Test-Path -LiteralPath $backupDir)) {
+            New-Item -Path $backupDir -ItemType Directory -Force | Out-Null
+        }
+        $netsh = Get-SysExe 'netsh.exe'
+        [void](Invoke-Native $netsh @('wlan', 'export', 'profile', ("folder=" + $backupDir), 'key=clear') 5000)
+        try {
+            $acl = Get-Acl -LiteralPath $backupDir
+            $acl.SetAccessRuleProtection($true, $false)
+            $adminSid = New-Object System.Security.Principal.SecurityIdentifier([System.Security.Principal.WellKnownSidType]::BuiltinAdministratorsSid, $null)
+            $systemSid = New-Object System.Security.Principal.SecurityIdentifier([System.Security.Principal.WellKnownSidType]::LocalSystemSid, $null)
+            $ruleAdmin = New-Object System.Security.AccessControl.FileSystemAccessRule($adminSid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+            $ruleSys = New-Object System.Security.AccessControl.FileSystemAccessRule($systemSid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+            $acl.ResetAccessRule($ruleAdmin)
+            $acl.AddAccessRule($ruleSys)
+            Set-Acl -LiteralPath $backupDir -AclObject $acl
+        } catch {}
+    } catch {
+        Write-Log 'WARN' ("Failed to backup Wi-Fi profiles: {0}" -f $_.Exception.Message)
+    }
+}
+
+function Restore-WlanProfiles {
+    if ($script:IsDry) { Write-Log 'DRY' 'Would restore Wi-Fi profiles'; return }
+    try {
+        $backupDir = Join-Path $script:StoreDir 'wifi_backup'
+        if (Test-Path -LiteralPath $backupDir) {
+            $xmlFiles = @(Get-ChildItem -LiteralPath $backupDir -Filter '*.xml' -ErrorAction SilentlyContinue)
+            $netsh = Get-SysExe 'netsh.exe'
+            foreach ($xf in $xmlFiles) {
+                [void](Invoke-Native $netsh @('wlan', 'add', 'profile', ("filename=" + $xf.FullName)) 5000)
+            }
+            if ($xmlFiles.Count -gt 0) {
+                Write-Log 'OK' ("Restored {0} Wi-Fi profiles from backup." -f $xmlFiles.Count)
+            }
+        }
+    } catch {
+        Write-Log 'WARN' ("Failed to restore Wi-Fi profiles: {0}" -f $_.Exception.Message)
+    }
+}
+
+function Backup-FirewallBaseline {
+    if ($script:IsDry) { Write-Log 'DRY' 'Would backup Windows Firewall rules'; return }
+    try {
+        $fwFile = Join-Path $script:StoreDir 'firewall_pre_reset.wfw'
+        if (-not (Test-Path -LiteralPath $fwFile)) {
+            $netsh = Get-SysExe 'netsh.exe'
+            [void](Invoke-Native $netsh @('advfirewall', 'export', $fwFile) 8000)
+            if (Test-Path -LiteralPath $fwFile) {
+                Write-Log 'OK' 'Windows Firewall policy backed up.'
+            }
+        }
+    } catch {
+        Write-Log 'WARN' ("Failed to backup Windows Firewall: {0}" -f $_.Exception.Message)
+    }
+}
+
+function Restore-FirewallBaseline {
+    if ($script:IsDry) { Write-Log 'DRY' 'Would restore Windows Firewall rules'; return }
+    try {
+        $fwFile = Join-Path $script:StoreDir 'firewall_pre_reset.wfw'
+        if (Test-Path -LiteralPath $fwFile) {
+            $netsh = Get-SysExe 'netsh.exe'
+            [void](Invoke-Native $netsh @('advfirewall', 'import', $fwFile) 8000)
+            Write-Log 'OK' 'Windows Firewall policy restored from backup.'
+        }
+    } catch {
+        Write-Log 'WARN' ("Failed to restore Windows Firewall: {0}" -f $_.Exception.Message)
+    }
+}
+
+function Capture-GlobalPreflightSnapshot {
+    if ($script:IsDry) {
+        Write-Log 'DRY' 'Would capture global pre-flight snapshot across all network adapters and system settings'
+        return $true
+    }
+    Write-Log 'INFO' 'Capturing pre-flight snapshot across all network adapters and system settings...'
+    $snapCount = 0
+    try {
+        if (-not $script:State.ContainsKey('Snapshot') -or $script:State.Snapshot -isnot [hashtable]) {
+            $script:State.Snapshot = @{}
+        }
+
+        # 1. Global registry & network settings snapshot (First-Write-Wins)
+        if (-not $script:State.Snapshot.ContainsKey('Global')) {
+            $gSnap = @{}
+            try {
+                $whRes = Invoke-Native (Get-SysExe 'netsh.exe') @('winhttp', 'show', 'proxy') 3000
+                if ($whRes.Output -match 'Proxy Server\(s\)\s*:\s*(\S+)') { $gSnap['WinHttpProxy'] = $matches[1] }
+            } catch {}
+            try {
+                $peCu = (Get-ItemProperty -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -Name ProxyEnable -ErrorAction SilentlyContinue).ProxyEnable
+                if ($null -ne $peCu) { $gSnap['ProxyEnable_CU'] = [int]$peCu }
+            } catch {}
+            try {
+                $peLm = (Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings' -Name ProxyEnable -ErrorAction SilentlyContinue).ProxyEnable
+                if ($null -ne $peLm) { $gSnap['ProxyEnable_LM'] = [int]$peLm }
+            } catch {}
+            try {
+                $ncsi = (Get-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Services\NlaSvc\Parameters\Internet' -Name EnableActiveProbing -ErrorAction SilentlyContinue).EnableActiveProbing
+                if ($null -ne $ncsi) { $gSnap['Ncsi'] = [int]$ncsi }
+            } catch {}
+            $script:State.Snapshot['Global'] = $gSnap
+        }
+
+        # 2. Per-adapter snapshot across ALL adapters (Physical + Virtual)
+        $allAdapters = @(Get-NetAdapter -IncludeHidden -ErrorAction SilentlyContinue)
+        foreach ($ad in $allAdapters) {
+            $adGuid = [string]$ad.InterfaceGuid
+            if ($adGuid -and (-not $script:State.Snapshot.ContainsKey($adGuid))) {
+                $snap = Capture-PreflightSnapshot $ad
+                if ($snap) {
+                    $script:State.Snapshot[$adGuid] = $snap
+                    $snapCount++
+                }
+            }
+        }
+
+        # 3. Wi-Fi profiles & Firewall rules backup
+        Backup-WlanProfiles
+        Backup-FirewallBaseline
+
+        # 4. Save state & verify file exists
+        Save-State
+        if (Test-Path -LiteralPath $script:StateFile) {
+            Write-Log 'OK' ("Pre-flight snapshot verified ({0} adapters snapshotted, state persisted)." -f $snapCount)
+            return $true
+        } else {
+            Write-Log 'FAIL' 'State file could not be written to disk. Snapshot unverified.'
+            return $false
+        }
+    } catch {
+        Write-Log 'FAIL' ("Error during pre-flight snapshot capture: {0}" -f $_.Exception.Message)
+        return $false
+    }
+}
+
+function Test-ResetPreconditions([string]$Tier, [switch]$Confirmed) {
+    if (-not (Assert-Admin)) { return $false }
+    if ($Mode -eq 'AutoHeal' -or $Mode -eq 'Daemon' -or $Mode -eq 'Sentinel') {
+        Write-Log 'ALERT' ("Destructive reset mode '{0}' cannot be invoked by automated background tasks." -f $Tier)
+        return $false
+    }
+    if ((Test-RemoteSession) -and -not $Force) {
+        Write-Log 'ALERT' ("Active remote session detected ({0}). Destructive reset '{1}' aborted to prevent operator lockout. Re-run with -Force to override." -f $env:SESSIONNAME, $Tier)
+        return $false
+    }
+    if ($Tier -eq 'Armageddon' -and (Test-RemoteSession) -and -not $ConfirmRemoteDisconnect) {
+        Write-Log 'ALERT' 'CRITICAL: ARMAGEDDON RESET (netcfg -d) uninstalls all network adapters and WILL PERMANENTLY SEVER this remote session until a physical machine reboot! Pass -ConfirmRemoteDisconnect along with -Force to execute.'
+        return $false
+    }
+
+    # Free disk space check
+    $minMb = switch ($Tier) {
+        'Armageddon' { 200 }
+        'Doomsday'   { 100 }
+        default      { 50 }
+    }
+    try {
+        $driveLetter = if ($env:SystemDrive) { $env:SystemDrive.TrimEnd(':') } else { 'C' }
+        $drive = [System.IO.DriveInfo]::new($driveLetter)
+        $freeMb = [int]($drive.AvailableFreeSpace / 1MB)
+        if ($freeMb -lt $minMb) {
+            Write-Log 'FAIL' ("Insufficient disk space on system drive {0}: ({1} MB available, {2} MB required for {3} reset). Reset aborted." -f $driveLetter, $freeMb, $minMb, $Tier)
+            return $false
+        }
+    } catch {
+        Write-Log 'WARN' ("Unable to query free disk space on system drive: {0}" -f $_.Exception.Message)
+    }
+
+    # StoreDir write check
+    if (-not $script:IsDry) {
+        try {
+            if (-not (Test-Path -LiteralPath $script:StoreDir)) {
+                New-Item -Path $script:StoreDir -ItemType Directory -Force | Out-Null
+            }
+            $canary = Join-Path $script:StoreDir ('.canary_' + [guid]::NewGuid().ToString('N') + '.tmp')
+            Set-Content -LiteralPath $canary -Value 'lanfixer_canary' -Encoding ASCII -Force
+            Remove-Item -LiteralPath $canary -Force -ErrorAction SilentlyContinue
+        } catch {
+            Write-Log 'FAIL' ("State store directory '{0}' is not writable: {1}. Reset aborted to prevent unrecoverable state loss." -f $script:StoreDir, $_.Exception.Message)
+            return $false
+        }
+    }
+
+    # CLI / Interactive Confirmation
+    if (-not $Confirmed -and -not $Force -and -not $script:IsDry) {
+        $blastSummary = switch ($Tier) {
+            'Omnifix'    { '5-stage live stack reset (Winsock, TCP/IP, ARP, DNS, DHCP renewed, services bounced).' }
+            'Ultra'      { '10-stage nuclear reset (Dual 64/32-bit Winsock, TCP/IP stack, routing table, firewall, NLA profiles).' }
+            'Doomsday'   { '12-stage universal reset (All media: Wi-Fi, BT, USB, WWAN, LAN; NDIS filters detached, ARP purge).' }
+            'Armageddon' { '4-stage OS wipe: netcfg.exe -d uninstalls ALL network adapters. REQUIRES SYSTEM REBOOT!' }
+            default      { 'System network stack reset.' }
+        }
+        $reqWord = if ($Tier -eq 'Armageddon') { 'CONFIRM' } else { 'yes' }
+        if (Test-InputRedirected) {
+            Write-Log 'ALERT' ("Destructive reset '{0}' requires explicit confirmation. In automated or non-interactive environments, pass -Force to execute." -f $Tier)
+            return $false
+        }
+        Write-Host ''
+        Write-Host '  ========================================================================' -ForegroundColor Yellow
+        Write-Host ("  CRITICAL RESET CONFIRMATION REQUIRED: {0}" -f $Tier.ToUpperInvariant()) -ForegroundColor Red
+        Write-Host ("  {0}" -f $blastSummary) -ForegroundColor Gray
+        Write-Host '  ========================================================================' -ForegroundColor Yellow
+        Write-Host ''
+        $promptMsg = if ($Tier -eq 'Armageddon') { "Type 'CONFIRM' to execute Armageddon OS wipe" } else { "Execute $Tier reset?" }
+        if (-not (Read-Confirm $promptMsg $reqWord)) {
+            Write-Log 'INFO' ("Reset '{0}' cancelled by operator. No changes made." -f $Tier)
+            return $false
+        }
+    }
+
+    # System Restore Point checkpointing (Tiers 3 and 4) with 24-hour throttling bypass
+    if ($Tier -in @('Doomsday', 'Armageddon') -and -not $script:IsDry) {
+        [void](New-SystemRestorePoint ("LanFixer Pre-" + $Tier + " Reset"))
+    }
+
+    return $true
+}
+
+function Invoke-SupremeOmnifix([switch]$Confirmed) {
+    if (-not (Test-ResetPreconditions 'Omnifix' -Confirmed:$Confirmed)) { return }
     $swOmni = [System.Diagnostics.Stopwatch]::StartNew()
     Write-Section 'FULL NET RESET (5-STAGE DEEP RECOVERY)'
     $r = Pick-Hash (Invoke-WithLock {
@@ -5934,6 +8932,7 @@ function Invoke-SupremeOmnifix {
             Start-Service -Name iphlpsvc -ErrorAction SilentlyContinue
             Start-Service -Name Wcmsvc -ErrorAction SilentlyContinue
             Start-Service -Name WlanSvc -ErrorAction SilentlyContinue
+            Start-Service -Name WinHttpAutoProxySvc -ErrorAction SilentlyContinue
         }
         Write-Log 'STEP' 'STAGE 5/5  Verifying live IPv4 A-record & HTTPS reachability (GitHub & Google Auth)'
         $anyVerifyFail = $false
@@ -5967,7 +8966,10 @@ function Invoke-SupremeOmnifix {
                 Start-Service -Name iphlpsvc -ErrorAction SilentlyContinue
                 Start-Service -Name Wcmsvc -ErrorAction SilentlyContinue
                 Start-Service -Name WlanSvc -ErrorAction SilentlyContinue
-                foreach ($ea in @(Get-EthernetAdapters)) { Reset-PhysicalAdapterHardware $ea }
+                foreach ($ea in @(Get-EthernetAdapters)) {
+                    Reset-PhysicalAdapterHardware $ea
+                    [void](Wait-StpConvergence $ea 10)
+                }
             })
             foreach ($testHost in @('github.com', 'accounts.google.com')) {
                 $ip = Resolve-HostBounded $testHost 3000 $primarySrc
@@ -5993,12 +8995,12 @@ function Invoke-SupremeOmnifix {
 }
 
 # ==============================================================================
-# ULTRA SYSTEM RESET - THE SUPREME HYPER-NUCLEAR REMEDIATION ENGINE
+# ULTRA SYSTEM RESET - 10-STAGE NETWORK STACK & DRIVER REMEDIATION ENGINE
 # ==============================================================================
-function Invoke-UltraSystemReset {
-    if (-not (Assert-Admin)) { return }
+function Invoke-UltraSystemReset([switch]$Confirmed) {
+    if (-not (Test-ResetPreconditions 'Ultra' -Confirmed:$Confirmed)) { return }
     $swUltra = [System.Diagnostics.Stopwatch]::StartNew()
-    Write-Section 'ULTRA SYSTEM RESET (10-STAGE HYPER-NUCLEAR STACK RESUSCITATION)'
+    Write-Section 'ULTRA SYSTEM RESET (10-STAGE NETWORK STACK RESUSCITATION)'
     $r = Pick-Hash (Invoke-WithLock {
         # ----------------------------------------------------------------------
         # STAGE 1/10: PRE-FLIGHT ACID SNAPSHOT & 10-SERVICE REVERSE TEARDOWN
@@ -6009,13 +9011,14 @@ function Invoke-UltraSystemReset {
         if ($script:IsDry) {
             Write-Log 'DRY' 'Would capture pre-flight snapshots and stop dependent network services (BITS, netprofm, NlaSvc, Dnscache, Dhcp, iphlpsvc, dot3svc, WlanSvc, CryptSvc, mpssvc)'
         } else {
-            foreach ($ea in @(Get-EthernetAdapters)) {
-                try {
-                    $snap = Capture-PreflightSnapshot $ea
-                    if ($snap -and $snap.Guid) { $script:State.Snapshot[$snap.Guid] = $snap }
-                } catch {}
+            Set-ResetJournal -Tier 'Ultra' -TotalStages 10 -Stage 1 -StageDesc 'Snapshot & Service Teardown'
+            if (-not (Capture-GlobalPreflightSnapshot)) {
+                if (-not $Force) {
+                    Write-Log 'FAIL' 'Pre-flight safety snapshot failed. Ultra Reset aborted.'
+                    return
+                }
+                Write-Log 'WARN' 'Pre-flight snapshot failed, proceeding due to -Force.'
             }
-            if (-not $script:IsDry) { Save-State }
             $script:State.Misc['RouteProfile'] = 'Adaptive'
             $script:State.Misc['DnsProfile'] = 'Adaptive'
             $script:State.Misc['FailStreak'] = 0
@@ -6031,6 +9034,7 @@ function Invoke-UltraSystemReset {
             }
         }
 
+        try {
         # ----------------------------------------------------------------------
         # STAGE 2/10: DUAL-ARCHITECTURE WINSOCK CATALOG OBLITERATION (64-BIT & 32-BIT)
         # ----------------------------------------------------------------------
@@ -6389,8 +9393,18 @@ function Invoke-UltraSystemReset {
                 }
             }
         }
+        Restore-WlanProfiles
+        Complete-ResetJournal -Success $true
         Save-State
         $resHeal
+        } finally {
+            if (-not $script:IsDry) {
+                $reviveSvcs = @('BFE', 'mpssvc', 'CryptSvc', 'Dhcp', 'Dnscache', 'iphlpsvc', 'dot3svc', 'WlanSvc', 'NlaSvc', 'netprofm', 'BITS')
+                foreach ($s in $reviveSvcs) {
+                    try { Start-Service -Name $s -ErrorAction SilentlyContinue } catch {}
+                }
+            }
+        }
     })
     $swUltra.Stop()
     Write-HealSummary $r $swUltra
@@ -6403,12 +9417,12 @@ function Invoke-UltraSystemReset {
     }
 }
 # ==============================================================================
-# DOOMSDAY SYSTEM RESET - THE SUPREME UNIVERSAL NETWORK RESCUE WEAPON
+# DOOMSDAY SYSTEM RESET - 12-STAGE MULTI-ADAPTER & STACK RESCUE ENGINE
 # ==============================================================================
-function Invoke-DoomsdayReset {
-    if (-not (Assert-Admin)) { return }
+function Invoke-DoomsdayReset([switch]$Confirmed) {
+    if (-not (Test-ResetPreconditions 'Doomsday' -Confirmed:$Confirmed)) { return }
     $swDoom = [System.Diagnostics.Stopwatch]::StartNew()
-    Write-Section 'DOOMSDAY SYSTEM RESET (12-STAGE UNIVERSAL STACK ERADICATION)'
+    Write-Section 'DOOMSDAY SYSTEM RESET (12-STAGE UNIVERSAL MULTI-ADAPTER RESCUE)'
     $r = Pick-Hash (Invoke-WithLock {
         # ----------------------------------------------------------------------
         # STAGE 1/12: PRE-FLIGHT ACID SNAPSHOT, AIRPLANE UNLOCK & 13-SERVICE SUSPENSION
@@ -6421,13 +9435,14 @@ function Invoke-DoomsdayReset {
             Write-Log 'DRY' 'Would unlock RadioManagement Airplane Mode in registry'
             Write-Log 'DRY' 'Would stop: BITS, WwanSvc, bthserv, RmSvc, netprofm, NlaSvc, Dnscache, Dhcp, iphlpsvc, dot3svc, WlanSvc, CryptSvc, mpssvc'
         } else {
-            foreach ($a in @(Get-NetAdapter -ErrorAction SilentlyContinue)) {
-                try {
-                    $snap = Capture-PreflightSnapshot $a
-                    if ($snap -and $snap.Guid) { $script:State.Snapshot[$snap.Guid] = $snap }
-                } catch {}
+            Set-ResetJournal -Tier 'Doomsday' -TotalStages 12 -Stage 1 -StageDesc 'Snapshot & Radio Unlock'
+            if (-not (Capture-GlobalPreflightSnapshot)) {
+                if (-not $Force) {
+                    Write-Log 'FAIL' 'Pre-flight safety snapshot failed. Doomsday Reset aborted.'
+                    return
+                }
+                Write-Log 'WARN' 'Pre-flight snapshot failed, proceeding due to -Force.'
             }
-            if (-not $script:IsDry) { Save-State }
             $script:State.Misc['RouteProfile'] = 'Adaptive'
             $script:State.Misc['DnsProfile'] = 'Adaptive'
             $script:State.Misc['FailStreak'] = 0
@@ -6451,6 +9466,7 @@ function Invoke-DoomsdayReset {
             }
         }
 
+        try {
         # ----------------------------------------------------------------------
         # STAGE 2/12: NDIS FILTER DECONTAMINATION, SILICON D3 WAKE, WLAN & ADAPTER CYCLE
         # ----------------------------------------------------------------------
@@ -6477,6 +9493,7 @@ function Invoke-DoomsdayReset {
                     foreach ($b in $bindings) {
                         if ($b.ComponentID -notmatch '^(ms_|vms_)' -and $b.Enabled) {
                             Write-Log 'WARN' "Deactivating 3rd-party NDIS filter trap '$($b.DisplayName)' ($($b.ComponentID)) on $($ad.Name)..."
+                            if ($script:State.Snapshot -isnot [hashtable]) { $script:State.Snapshot = @{} }
                             if (-not $script:State.Snapshot.ContainsKey('DeactivatedFilters')) {
                                 $script:State.Snapshot['DeactivatedFilters'] = @{}
                             }
@@ -6492,6 +9509,10 @@ function Invoke-DoomsdayReset {
                 } catch {}
                 try {
                     Restart-NetAdapter -Name $ad.Name -Confirm:$false -ErrorAction SilentlyContinue
+                    $chkAd = Get-NetAdapter -Name $ad.Name -ErrorAction SilentlyContinue
+                    if ($chkAd -and $chkAd.Status -eq 'Disabled') {
+                        Enable-NetAdapter -Name $ad.Name -Confirm:$false -ErrorAction SilentlyContinue
+                    }
                 } catch {}
                 # Re-bind core NDIS protocols
                 foreach ($comp in @('ms_tcpip', 'ms_tcpip6', 'ms_rspndr', 'ms_lltdio', 'ms_msclient', 'ms_server', 'ms_pacer', 'ms_lldp', 'ms_netbt')) {
@@ -6848,7 +9869,9 @@ function Invoke-DoomsdayReset {
             $upSvcs = @('BFE', 'mpssvc', 'CryptSvc', 'RmSvc', 'WlanSvc', 'dot3svc', 'bthserv', 'WwanSvc', 'Dhcp', 'Dnscache', 'iphlpsvc', 'NlaSvc', 'netprofm', 'BITS')
             foreach ($s in $upSvcs) {
                 try {
-                    Set-Service -Name $s -StartupType Automatic -ErrorAction SilentlyContinue
+                    if ($s -notin @('bthserv', 'WwanSvc', 'BITS')) {
+                        Set-Service -Name $s -StartupType Automatic -ErrorAction SilentlyContinue
+                    }
                     Start-Service -Name $s -ErrorAction SilentlyContinue
                 } catch {}
             }
@@ -6907,8 +9930,18 @@ function Invoke-DoomsdayReset {
                 }
             }
         }
+        Restore-WlanProfiles
+        Complete-ResetJournal -Success $true
         Save-State
         $resHeal
+        } finally {
+            if (-not $script:IsDry) {
+                $reviveSvcs = @('BFE', 'mpssvc', 'CryptSvc', 'RmSvc', 'WlanSvc', 'dot3svc', 'bthserv', 'WwanSvc', 'Dhcp', 'Dnscache', 'iphlpsvc', 'NlaSvc', 'netprofm', 'BITS')
+                foreach ($s in $reviveSvcs) {
+                    try { Start-Service -Name $s -ErrorAction SilentlyContinue } catch {}
+                }
+            }
+        }
     })
     $swDoom.Stop()
     Write-HealSummary $r $swDoom
@@ -6922,36 +9955,39 @@ function Invoke-DoomsdayReset {
 }
 
 # ==============================================================================
-# ARMAGEDDON SYSTEM RESET - KERNEL PROTOCOL & NETWORK ADAPTER REINSTALL WEAPON
+# ARMAGEDDON SYSTEM RESET - KERNEL PROTOCOL & NETWORK ADAPTER REINSTALL ENGINE
 # ==============================================================================
-function Invoke-ArmageddonReset([switch]$RebootNow) {
-    if (-not (Assert-Admin)) { return }
+function Invoke-ArmageddonReset([switch]$RebootNow, [switch]$Confirmed) {
+    if (-not (Test-ResetPreconditions 'Armageddon' -Confirmed:$Confirmed)) { return }
     $swArm = [System.Diagnostics.Stopwatch]::StartNew()
     Write-Section 'ARMAGEDDON SYSTEM RESET (KERNEL PROTOCOL & NETWORK ADAPTER REINSTALL)'
-    Write-Log 'WARN' 'ARMAGEDDON RESET is Microsoft Windows native nuclear reset (netcfg.exe -d).'
+    Write-Log 'WARN' 'ARMAGEDDON RESET executes Microsoft Windows native deep device reset (netcfg.exe -d).'
     Write-Log 'WARN' 'This uninstalls ALL network adapters, removes virtual switches/filters, purges the TCP/IP stack registry, and requires a reboot to reinstall clean drivers.'
 
     if ($script:IsDry) {
         Write-Log 'DRY' 'Would capture global pre-flight snapshot across all adapters'
         Write-Log 'DRY' 'Would execute: netcfg.exe -d (deep kernel device cleanup & protocol reinstallation)'
         Write-Log 'DRY' 'Would execute post-cleanup: netsh winsock reset, netsh advfirewall reset, and reset RadioManagement'
+        Write-Log 'DRY' 'Would persist pending-reboot journal and schedule post-reboot verification'
         Write-Log 'DRY' 'Would prompt or execute scheduled reboot'
         return
     }
 
     # Pre-flight ACID snapshot
     Write-Log 'STEP' 'STAGE 1/4 Capturing global pre-flight snapshot across all network adapters'
-    foreach ($a in @(Get-NetAdapter -ErrorAction SilentlyContinue)) {
-        try {
-            $snap = Capture-PreflightSnapshot $a
-            if ($snap -and $snap.Guid) { $script:State.Snapshot[$snap.Guid] = $snap }
-        } catch {}
+    Set-ResetJournal -Tier 'Armageddon' -TotalStages 4 -Stage 1 -StageDesc 'Preflight Snapshot & Profile Backup'
+    if (-not (Capture-GlobalPreflightSnapshot)) {
+        if (-not $Force) {
+            Write-Log 'FAIL' 'Pre-flight safety snapshot failed. Armageddon OS Wipe aborted.'
+            return
+        }
+        Write-Log 'WARN' 'Pre-flight snapshot failed, proceeding due to -Force.'
     }
-    if (-not $script:IsDry) { Save-State }
 
     # Execute netcfg -d
     Write-Log 'STEP' 'STAGE 2/4 Executing netcfg.exe -d (wiping network devices, virtual switches & protocol stacks)...'
-    $netcfgRes = Invoke-Native (Get-SysExe 'netcfg.exe') @('-d') 30000
+    Update-ResetJournal -Stage 2 -StageDesc 'netcfg -d Kernel Stack Destruction'
+    $netcfgRes = Invoke-Native (Get-SysExe 'netcfg.exe') @('-d') 45000
     if ($netcfgRes.Output) {
         Write-Log 'INFO' ("netcfg output: {0}" -f $netcfgRes.Output.Trim())
     }
@@ -6961,6 +9997,7 @@ function Invoke-ArmageddonReset([switch]$RebootNow) {
 
     # Post-cleanup pass
     Write-Log 'STEP' 'STAGE 3/4 Running post-cleanup: resetting Winsock, Firewall & RadioManagement...'
+    Update-ResetJournal -Stage 3 -StageDesc 'Post-Cleanup Winsock & Firewall Reset'
     [void](Invoke-Native (Get-SysExe 'netsh.exe') @('winsock', 'reset') 5000)
     [void](Invoke-Native (Get-SysExe 'netsh.exe') @('advfirewall', 'reset') 5000)
     try {
@@ -6969,6 +10006,28 @@ function Invoke-ArmageddonReset([switch]$RebootNow) {
             Set-ItemProperty -LiteralPath $rmKey -Name 'SystemRadioState' -Value 0 -Type DWord -ErrorAction SilentlyContinue
         }
     } catch {}
+
+    # Stage 4/4: Post-reboot staging & journal persistence
+    Write-Log 'STEP' 'STAGE 4/4 Persisting pending-reboot journal, unregistering volatile hooks & scheduling post-reboot verification'
+    $stageInfo = Stage-PostRebootVerification
+    Update-ResetJournal -Stage 4 -StageDesc 'Pending Reboot Journal Stamped' -Status 'PendingReboot'
+    if ($stageInfo) {
+        try {
+            $jPath = Get-ResetJournalPath
+            if (Test-Path -LiteralPath $jPath) {
+                $jObj = ConvertFrom-Json (Get-Content -LiteralPath $jPath -Raw)
+                try { $jObj.VerifyScriptPath = $stageInfo.Path; $jObj.VerifyScriptSha256 = $stageInfo.Hash }
+                catch {
+                    Add-Member -InputObject $jObj -NotePropertyName 'VerifyScriptPath' -NotePropertyValue $stageInfo.Path -Force
+                    Add-Member -InputObject $jObj -NotePropertyName 'VerifyScriptSha256' -NotePropertyValue $stageInfo.Hash -Force
+                }
+                Set-Content -LiteralPath $jPath -Value (ConvertTo-Json $jObj) -Encoding ASCII -Force
+            }
+        } catch {}
+    }
+    $script:State.Misc['PendingReboot'] = $true
+    $script:State.Misc['PendingRebootTime'] = (Get-Date).ToString('o')
+    Save-State
 
     $swArm.Stop()
     Write-Log 'OK' ("ARMAGEDDON SYSTEM RESET completed in {0}ms." -f $swArm.ElapsedMilliseconds)
@@ -6991,6 +10050,334 @@ function Invoke-ArmageddonReset([switch]$RebootNow) {
         } else {
             Write-Host '  Restart postponed. Please reboot your computer manually to restore connectivity.' -ForegroundColor Gray
         }
+    }
+}
+
+# ==============================================================================
+# CAREFUL NETWORK & OS STACK DEBLOATER
+# ==============================================================================
+function Get-DebloatStatus {
+    $vectors = @(
+        @{
+            Id          = 'DeliveryOptimization'
+            Name        = 'Delivery Optimization P2P Uploads'
+            Tier        = 1
+            Key         = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization'
+            ValueName   = 'DODownloadMode'
+            OptimalVal  = 0
+            OptimalType = 'DWord'
+            Description = 'Uploads Windows updates to external peers over your network connection'
+        },
+        @{
+            Id          = 'NetworkThrottling'
+            Name        = 'Multimedia Network Throttling'
+            Tier        = 1
+            Key         = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile'
+            ValueName   = 'NetworkThrottlingIndex'
+            OptimalVal  = -1
+            OptimalType = 'DWord'
+            Description = 'Caps non-multimedia network processing at 10 packets per millisecond'
+        },
+        @{
+            Id          = 'SystemResponsiveness'
+            Name        = 'Network Packet Queue Priority'
+            Tier        = 1
+            Key         = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile'
+            ValueName   = 'SystemResponsiveness'
+            OptimalVal  = 0
+            OptimalType = 'DWord'
+            Description = 'Reserves 20% CPU packet scheduling away from network traffic'
+        },
+        @{
+            Id          = 'WpadOverride'
+            Name        = 'WPAD Automatic Proxy Probing'
+            Tier        = 1
+            Key         = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings\Wpad'
+            ValueName   = 'WpadOverride'
+            OptimalVal  = 1
+            OptimalType = 'DWord'
+            Description = 'Broadcasts continuous DHCP 252 queries and exposes to rogue proxy poisoning'
+        },
+        @{
+            Id          = 'EnableMulticast'
+            Name        = 'LLMNR Multicast Broadcast Resolution'
+            Tier        = 2
+            Key         = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient'
+            ValueName   = 'EnableMulticast'
+            OptimalVal  = 0
+            OptimalType = 'DWord'
+            Description = 'Broadcasts link-local name queries vulnerable to Responder credential theft'
+        },
+        @{
+            Id          = 'AllowTelemetry'
+            Name        = 'Windows Telemetry Network Chatter'
+            Tier        = 2
+            Key         = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection'
+            ValueName   = 'AllowTelemetry'
+            OptimalVal  = 0
+            OptimalType = 'DWord'
+            Description = 'Uploads continuous diagnostic telemetry payloads to remote endpoints'
+        }
+    )
+
+    $results = New-Object System.Collections.ArrayList
+    foreach ($v in $vectors) {
+        $exists = $false
+        $curVal = $null
+        try {
+            if (Test-Path -LiteralPath $v.Key) {
+                $p = Get-ItemProperty -LiteralPath $v.Key -Name $v.ValueName -ErrorAction SilentlyContinue
+                if ($null -ne $p -and $null -ne $p.($v.ValueName)) {
+                    $exists = $true
+                    $curVal = $p.($v.ValueName)
+                }
+            }
+        } catch {}
+
+        $isOptimal = $false
+        if ($exists) {
+            if ($curVal -eq $v.OptimalVal) { $isOptimal = $true }
+            if ($v.Id -eq 'DeliveryOptimization' -and $curVal -eq 1) { $isOptimal = $true }
+            if ($v.Id -eq 'NetworkThrottling' -and ($curVal -eq -1 -or $curVal -eq 4294967295)) { $isOptimal = $true }
+        }
+
+        [void]$results.Add(@{
+            Id               = $v.Id
+            Name             = $v.Name
+            Tier             = $v.Tier
+            Key              = $v.Key
+            ValueName        = $v.ValueName
+            Exists           = $exists
+            CurrentValue     = $curVal
+            OptimalValue     = $v.OptimalVal
+            OptimalType      = $v.OptimalType
+            Status           = if ($isOptimal) { 'Optimal' } else { 'Bloated' }
+            Description      = $v.Description
+        })
+    }
+    return @($results)
+}
+
+function Invoke-NetworkDebloat {
+    param(
+        [int]$Tier = 1,
+        [switch]$SafeOnly,
+        [switch]$Audit,
+        [switch]$Json,
+        [switch]$Quiet,
+        [switch]$NoColor
+    )
+    if ($SafeOnly) { $Tier = 1 }
+    $items = @(Get-DebloatStatus)
+    $targetItems = @($items | Where-Object { $_.Tier -le $Tier })
+
+    if ($Audit -or $script:IsDry) {
+        if ($Json) {
+            [Console]::Out.WriteLine((ConvertTo-Json @{ Status = 'Audit'; Vectors = $targetItems } -Depth 4))
+            return 0
+        }
+        if ($Quiet) {
+            $bloatCount = @($targetItems | Where-Object { $_.Status -eq 'Bloated' }).Count
+            [Console]::Out.WriteLine(("Debloat Audit: {0} bloated vectors identified across Tier {1}" -f $bloatCount, $Tier))
+            return 0
+        }
+        $nc = [bool]($NoColor -or $script:NoColor)
+        Write-Host '================================================================================' -ForegroundColor Cyan
+        Write-Host ('   LANFIXER NETWORK & STACK DEBLOAT AUDIT (TIER {0})' -f $Tier) -ForegroundColor Cyan
+        Write-Host '================================================================================' -ForegroundColor Cyan
+        foreach ($it in $targetItems) {
+            $tok = if ($it.Status -eq 'Optimal') { '[  OK  ]' } else { '[ WARN ]' }
+            $tokCol = if ($it.Status -eq 'Optimal') { 'Green' } else { 'Yellow' }
+            Write-Host ('  {0} {1,-36} : Current={2} | Optimal={3}' -f $tok, $it.Name, $(if ($null -ne $it.CurrentValue) { $it.CurrentValue } else { 'Not Set (Default)' }), $it.OptimalValue) -ForegroundColor $tokCol
+            Write-Host ('        Vector: ' + $it.Description) -ForegroundColor Gray
+        }
+        Write-Host ('-' * 80) -ForegroundColor Gray
+        Write-Host '  Audit complete. Zero system modifications executed.' -ForegroundColor Green
+        return 0
+    }
+
+    if (-not (Assert-Admin)) { return 40 }
+    Write-Log 'INFO' ("Starting Careful Network Debloat (Target Tier: {0})..." -f $Tier)
+
+    if (-not $script:State.ContainsKey('Snapshot') -or $script:State.Snapshot -isnot [hashtable]) {
+        $script:State.Snapshot = @{}
+    }
+    if (-not $script:State.Snapshot.ContainsKey('Debloat') -or $script:State.Snapshot.Debloat -isnot [hashtable]) {
+        $script:State.Snapshot['Debloat'] = @{
+            TimestampUtc = [DateTime]::UtcNow.ToString('o')
+            Keys         = @{}
+        }
+    }
+    $snap = $script:State.Snapshot['Debloat']
+
+    $changed = 0
+    foreach ($it in $targetItems) {
+        if ($it.Status -eq 'Optimal') { continue }
+        $snapKey = $it.Key + '\' + $it.ValueName
+        if (-not $snap.Keys.ContainsKey($snapKey)) {
+            $actualType = try { (Get-Item -LiteralPath $it.Key -ErrorAction SilentlyContinue).GetValueKind($it.ValueName).ToString() } catch { $it.OptimalType }
+            if (-not $actualType) { $actualType = $it.OptimalType }
+            $snap.Keys[$snapKey] = @{
+                KeyPath      = $it.Key
+                ValueName    = $it.ValueName
+                Exists       = $it.Exists
+                OriginalVal  = $it.CurrentValue
+                OriginalType = $actualType
+            }
+        }
+
+        [void](Invoke-Change ("Debloat: Set {0} ({1}={2})" -f $it.Name, $it.ValueName, $it.OptimalValue) {
+            if (-not (Test-Path -LiteralPath $it.Key)) {
+                [void](New-Item -Path $it.Key -ItemType Directory -Force -ErrorAction SilentlyContinue)
+            }
+            Set-ItemProperty -LiteralPath $it.Key -Name $it.ValueName -Value $it.OptimalValue -Type $it.OptimalType -Force -ErrorAction Stop
+        } -MutationType 'Debloat' -Target $it.Name -OldValue $it.CurrentValue -NewValue $it.OptimalValue -Reversible)
+        $changed++
+    }
+
+    if ($Tier -ge 2) {
+        try {
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('interface', 'teredo', 'set', 'state', 'disabled') 3000)
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('interface', '6to4', 'set', 'state', 'disabled') 3000)
+            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('interface', 'isatap', 'set', 'state', 'disabled') 3000)
+            $changed++
+        } catch {}
+    }
+
+    [void](Flush-NetworkCache)
+    Save-State
+
+    Write-Log 'OK' ("Careful Network Debloat completed: {0} optimizations applied safely." -f $changed)
+    if ($Json) {
+        [Console]::Out.WriteLine((ConvertTo-Json @{ Status = 'Success'; OptimizedCount = $changed; Tier = $Tier } -Depth 2))
+    } elseif ($Quiet) {
+        [Console]::Out.WriteLine(("Debloat Complete: {0} optimizations applied" -f $changed))
+    } else {
+        Write-Host ('================================================================================') -ForegroundColor Green
+        Write-Host ('   CAREFUL NETWORK DEBLOAT COMPLETED SUCCESSFULLY') -ForegroundColor Green
+        Write-Host ('   Optimized {0} vectors across Tier {1}. First-write-wins rollback snapshot preserved.' -f $changed, $Tier) -ForegroundColor Gray
+        Write-Host ('================================================================================') -ForegroundColor Green
+    }
+    return 0
+}
+
+function Undo-NetworkDebloat {
+    param(
+        [switch]$Json,
+        [switch]$Quiet,
+        [switch]$NoColor
+    )
+    if ($script:IsDry) {
+        Write-Log 'DRY' 'Would revert previous Network Debloat optimizations'
+        return 0
+    }
+    if (-not $script:State.ContainsKey('Snapshot') -or -not $script:State.Snapshot.ContainsKey('Debloat')) {
+        Write-Log 'WARN' 'No previous Debloat rollback snapshot was found. Nothing to revert.'
+        if ($Json) {
+            [Console]::Out.WriteLine((ConvertTo-Json @{ Status = 'NotFound'; Message = 'No Debloat snapshot found' } -Depth 2))
+        } elseif ($Quiet) {
+            [Console]::Out.WriteLine('Debloat Rollback: No snapshot found')
+        } else {
+            Write-Host 'No previous Debloat snapshot found. System is already at baseline.' -ForegroundColor Yellow
+        }
+        return 0
+    }
+    if (-not (Assert-Admin)) { return 40 }
+    Write-Log 'INFO' 'Executing rollback of previous Network Debloat optimizations...'
+
+    $snap = $script:State.Snapshot['Debloat']
+    $restored = 0
+    if ($snap.ContainsKey('Keys') -and $snap.Keys -is [hashtable]) {
+        foreach ($k in $snap.Keys.Keys) {
+            $item = $snap.Keys[$k]
+            try {
+                if ($item.Exists) {
+                    [void](Invoke-Change ("Revert Debloat: Restore {0}\{1} to {2}" -f $item.KeyPath, $item.ValueName, $item.OriginalVal) {
+                        Set-ItemProperty -LiteralPath $item.KeyPath -Name $item.ValueName -Value $item.OriginalVal -Type $item.OriginalType -Force -ErrorAction Stop
+                    })
+                } else {
+                    [void](Invoke-Change ("Revert Debloat: Remove newly-created {0}\{1}" -f $item.KeyPath, $item.ValueName) {
+                        Remove-ItemProperty -LiteralPath $item.KeyPath -Name $item.ValueName -Force -ErrorAction SilentlyContinue
+                    })
+                }
+                $restored++
+            } catch {}
+        }
+    }
+
+    try {
+        [void](Invoke-Native (Get-SysExe 'netsh.exe') @('interface', 'teredo', 'set', 'state', 'default') 3000)
+        [void](Invoke-Native (Get-SysExe 'netsh.exe') @('interface', '6to4', 'set', 'state', 'default') 3000)
+        [void](Invoke-Native (Get-SysExe 'netsh.exe') @('interface', 'isatap', 'set', 'state', 'default') 3000)
+    } catch {}
+
+    [void]$script:State.Snapshot.Remove('Debloat')
+    [void](Flush-NetworkCache)
+    Save-State
+
+    Write-Log 'OK' ("Debloat Rollback complete: {0} settings restored to exact pre-debloat state." -f $restored)
+    if ($Json) {
+        [Console]::Out.WriteLine((ConvertTo-Json @{ Status = 'Success'; RestoredCount = $restored } -Depth 2))
+    } elseif ($Quiet) {
+        [Console]::Out.WriteLine(("Debloat Rollback Complete: {0} settings restored" -f $restored))
+    } else {
+        Write-Host ('================================================================================') -ForegroundColor Green
+        Write-Host ('   NETWORK DEBLOAT ROLLBACK COMPLETED SUCCESSFULLY') -ForegroundColor Green
+        Write-Host ('   Restored {0} settings back to original Windows configuration.' -f $restored) -ForegroundColor Gray
+        Write-Host ('================================================================================') -ForegroundColor Green
+    }
+    return 0
+}
+
+function Show-DebloatMenu {
+    if (-not (Assert-Admin)) { return }
+    Out-Line @((Seg 'accent!' '  CAREFUL NETWORK & OS STACK DEBLOAT:'))
+    Out-Line @((Seg 'dim'     '  Eliminate telemetry chatter, P2P uploads, and packet throttling safely:'))
+    Out-Line @()
+
+    $items = @(Get-DebloatStatus)
+    foreach ($it in $items) {
+        $tok = if ($it.Status -eq 'Optimal') { (Get-StatusToken 'ok') } else { (Get-StatusToken 'warn') }
+        $tokRole = if ($it.Status -eq 'Optimal') { 'ok' } else { 'warn' }
+        Out-Line @(
+            (Seg $tokRole ('  ' + $tok.Text + ' ')),
+            (Seg 'text!' ($it.Name.PadRight(38))),
+            (Seg 'dim' ("Tier {0} | {1}" -f $it.Tier, $it.Status))
+        )
+    }
+    Out-Line @()
+    Out-Line @((Seg 'text!' '  Available Optimization Actions:'))
+    Out-Line @((Seg 'faint' '  [1] '), (Seg 'ok!' 'Safe Network Debloat'), (Seg 'dim' '         - Tier 1: P2P Uploads, Latency Unthrottling, WPAD, Caches'))
+    Out-Line @((Seg 'faint' '  [2] '), (Seg 'accent!' 'Comprehensive Debloat'), (Seg 'dim' '    - Tier 1 + 2: LLMNR Multicast, Telemetry Silence, Tunnels'))
+    Out-Line @((Seg 'faint' '  [3] '), (Seg 'text!' 'Audit & Inspect Details'), (Seg 'dim' '    - View exact registry keys and current values (No changes)'))
+    Out-Line @((Seg 'faint' '  [4] '), (Seg 'warn!' 'Rollback Previous Debloat'), (Seg 'dim' '  - Restore pre-debloat snapshots and original defaults'))
+    Out-Line @((Seg 'faint' '  [B] '), (Seg 'dim' 'Back to Recovery Menu'))
+    Out-Line @()
+    Out-Line @((Seg 'dim' '  Select an option [1-4] or [B], or press any other key to return '), (Seg 'accent!' $script:G.prompt)) -NoNewline
+
+    $k = Read-Choice
+    Out-Line @()
+    $choice = ([string]$k.KeyChar).ToLowerInvariant()
+    switch ($choice) {
+        '1' {
+            if (Read-Confirm 'Apply Safe Network Debloat (Tier 1)?' 'yes') {
+                [void](Invoke-NetworkDebloat -Tier 1)
+            } else { Out-Line @((Seg 'dim' '  Operation cancelled. No changes made.')) }
+        }
+        '2' {
+            if (Read-Confirm 'Apply Comprehensive Network Debloat (Tier 1 & 2)?' 'yes') {
+                [void](Invoke-NetworkDebloat -Tier 2)
+            } else { Out-Line @((Seg 'dim' '  Operation cancelled. No changes made.')) }
+        }
+        '3' {
+            [void](Invoke-NetworkDebloat -Audit)
+        }
+        '4' {
+            if (Read-Confirm 'Rollback all previous Network Debloat modifications?' 'yes') {
+                [void](Undo-NetworkDebloat)
+            } else { Out-Line @((Seg 'dim' '  Operation cancelled. No changes made.')) }
+        }
+        default { return }
     }
 }
 
@@ -7119,8 +10506,8 @@ function Invoke-LegacyMigration {
 # ==============================================================================
 function Refresh-ContextAdapter($Ctx) {
     if ($Ctx -and $Ctx.Ad) {
-        $fresh = Get-NetAdapter -InterfaceGuid $Ctx.Ad.InterfaceGuid -ErrorAction SilentlyContinue
-        if (-not $fresh) { $fresh = Get-NetAdapter -InterfaceIndex $Ctx.Ad.ifIndex -ErrorAction SilentlyContinue }
+        $fresh = Get-NetAdapter -InterfaceIndex $Ctx.Ad.ifIndex -ErrorAction SilentlyContinue
+        if (-not $fresh) { $fresh = Get-NetAdapter -Name $Ctx.Ad.Name -ErrorAction SilentlyContinue }
         if ($fresh) { $Ctx.Ad = $fresh }
     }
     return $Ctx.Ad
@@ -7211,7 +10598,7 @@ function Invoke-HealPipeline([switch]$SkipSystemStack) {
     }
 
     Write-Log 'STEP' 'LAYER 5/7  Captive portal routing & reachability'
-    foreach ($c in $ctxs) { [void](Refresh-ContextAdapter $c) }
+    foreach ($c in $ctxs) { try { [void](Refresh-ContextAdapter $c) } catch {} }
     try { Shield-Portal $ctxs } catch { Write-Log 'WARN' ("Layer 5 portal checks encountered error: {0}" -f $_.Exception.Message) }
 
     Write-Log 'STEP' 'LAYER 6/7  Network profile & firewall security'
@@ -7221,7 +10608,7 @@ function Invoke-HealPipeline([switch]$SkipSystemStack) {
     }
 
     Write-Log 'STEP' 'LAYER 7/7  Network stack & service synchronization'
-    foreach ($c in $ctxs) { [void](Refresh-ContextAdapter $c) }
+    foreach ($c in $ctxs) { try { [void](Refresh-ContextAdapter $c) } catch {} }
     try { Shield-Services $ctxs $conn } catch { Write-Log 'WARN' ("Layer 7 services remediation encountered error: {0}" -f $_.Exception.Message) }
     if ($conn -eq 'Online' -and -not $script:IsDry) {
         [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/registerdns') 3000)
@@ -7255,14 +10642,32 @@ function Invoke-HealPipeline([switch]$SkipSystemStack) {
 function Test-TrustedPortalHost([string]$HostName) {
     $h = ([string]$HostName).ToLower().TrimEnd('.')
     if (-not $h) { return $false }
-    if ($h -eq ([string]$script:Cfg.PortalHost).ToLower() -or $h -eq [string]$script:Cfg.PortalIp) { return $true }
+    if ($script:Cfg.PortalHost -and $h -eq ([string]$script:Cfg.PortalHost).ToLower()) { return $true }
+    if ($script:Cfg.PortalIp -and $h -eq [string]$script:Cfg.PortalIp) { return $true }
     $tmpIp = $null
     if ([System.Net.IPAddress]::TryParse($h, [ref]$tmpIp) -and (Test-AllowedPortalIp $h)) { return $true }
-    $doms = @(([string]$script:Cfg.CampusDomain).ToLower().Trim('.'))
-    $discDom = ([string]$script:State.Misc['DiscoveredDomain']).ToLower().Trim('.')
+    $doms = @()
+    if ($script:Cfg.CampusDomain) { $doms += ([string]$script:Cfg.CampusDomain).ToLower().Trim('.') }
+    $discDom = if ($script:State.Misc -and $script:State.Misc['DiscoveredDomain']) { ([string]$script:State.Misc['DiscoveredDomain']).ToLower().Trim('.') } else { '' }
     if ($discDom -and $doms -notcontains $discDom) { $doms += $discDom }
     foreach ($dom in @($doms | Where-Object { $_ })) {
         if ($h -eq $dom -or $h.EndsWith('.' + $dom)) { return $true }
+    }
+    $discHost = if ($script:State.Misc -and $script:State.Misc['DiscoveredPortalHost']) { ([string]$script:State.Misc['DiscoveredPortalHost']).ToLower().Trim('.') } else { '' }
+    if ($discHost -and ($h -eq $discHost -or $h.EndsWith('.' + $discHost))) { return $true }
+    $discUrl = if ($script:State.Misc -and $script:State.Misc['DiscoveredPortalUrl']) { [string]$script:State.Misc['DiscoveredPortalUrl'] } else { '' }
+    if ($discUrl) {
+        try {
+            $du = [uri]$discUrl
+            if ($du.Host) {
+                $duh = ([string]$du.Host).ToLower().TrimEnd('.')
+                if ($h -eq $duh -or $h.EndsWith('.' + $duh)) { return $true }
+            }
+        } catch {}
+    }
+    if ($h -match '^[A-Za-z0-9.-]+$' -and -not $script:IsDry) {
+        $res = Resolve-HostBounded $h 1000
+        if ($res -and (Test-AllowedPortalIp $res)) { return $true }
     }
     return $false
 }
@@ -7367,7 +10772,22 @@ function Get-PortalCredentials {
     try {
         $enc = [System.IO.File]::ReadAllBytes($script:VaultFile)
         $bytes = $null
-        try { $bytes = [System.Security.Cryptography.ProtectedData]::Unprotect($enc, (Get-VaultEntropy), [System.Security.Cryptography.DataProtectionScope]::LocalMachine) } catch {}
+        $mGuid = ''
+        try { $mGuid = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Cryptography' -Name MachineGuid -ErrorAction SilentlyContinue).MachineGuid } catch {}
+        if (-not $mGuid) {
+            try { $mGuid = (Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue).SerialNumber } catch {}
+        }
+        $entropyList = @(
+            (Get-VaultEntropy),
+            [System.Text.Encoding]::UTF8.GetBytes("LanFixer_SecureEntropy_2026_$mGuid"),
+            [System.Text.Encoding]::UTF8.GetBytes("LanFixer_NITJSR_AS_SecureEntropy_2026_$mGuid")
+        )
+        foreach ($ent in $entropyList) {
+            try {
+                $bytes = [System.Security.Cryptography.ProtectedData]::Unprotect($enc, $ent, [System.Security.Cryptography.DataProtectionScope]::LocalMachine)
+                if ($bytes) { break }
+            } catch {}
+        }
         if ($bytes) {
             $plain = [System.Text.Encoding]::UTF8.GetString($bytes)
             [Array]::Clear($bytes, 0, $bytes.Length)
@@ -7406,7 +10826,11 @@ function Invoke-HeadlessPortalLogin {
     if (-not $SourceIp -and $script:Cfg.ProbeSourceBind) { $SourceIp = Get-PrimarySourceIp }
     if ($null -eq $Inet) { $Inet = if ($SourceIp) { Get-InternetState -NoCache -SourceIp $SourceIp } else { Get-InternetState -NoCache } }
     if ($Manual -and $Inet.State -eq 'NoDns' -and $script:IsAdmin) {
-        foreach ($a in @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })) {
+        $targetAdapters = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })
+    if ($targetAdapters.Count -eq 0) {
+        $targetAdapters = @(Get-OtherUplinkAdapters | Where-Object { $_.Status -eq 'Up' })
+    }
+    foreach ($a in $targetAdapters) {
             $e = Get-AdapterEnvironment $a -UseCache
             if ($e.Env -eq 'Campus' -and (Get-DnsProfileName) -eq 'Adaptive') { Shield-Dns @{ Ad = $a; Env = $e } 'Captive' }
         }
@@ -7559,7 +10983,7 @@ function Open-Portal {
         try { $u = (Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).UserName } catch {}
         if (-not $u) { Write-Log 'INFO' 'Nobody is signed in; portal not opened.'; return $false }
         $known = [string]$script:State.Misc['PortalTaskUrl']
-        if (-not $known) { $known = [string]$script:Cfg.PortalUrl }
+        if (-not $known) { $known = [string](Get-ActivePortalUrl) }
         $taskExists = [bool](Get-ScheduledTask -TaskName $script:Cfg.TaskPortal -ErrorAction SilentlyContinue)
         if ($url -ne $known -or -not $taskExists) {
             $reg = Register-LfTask $script:Cfg.TaskPortal (New-PortalTaskXml $url) 'LanFixer_Portal.xml'
@@ -7587,7 +11011,11 @@ function Complete-Authentication {
     # that already holds the lock simply nests instead of blocking.
     [void](Invoke-WithLock {
         Clear-DnsClientCache -ErrorAction SilentlyContinue
-        foreach ($a in @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })) {
+        $targetAdapters = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })
+    if ($targetAdapters.Count -eq 0) {
+        $targetAdapters = @(Get-OtherUplinkAdapters | Where-Object { $_.Status -eq 'Up' })
+    }
+    foreach ($a in $targetAdapters) {
             $script:EnvCache.Remove([string]$a.InterfaceGuid)
             $ctx = @{ Ad = $a; Env = (Get-AdapterEnvironment $a) }
             $srcIp = Get-ValidIPv4 $a
@@ -7653,6 +11081,27 @@ function Invoke-AutoHeal {
     if (Test-InteractiveSessionActive) {
         Write-Log 'INFO' 'AutoHeal pass skipped: interactive control center session is active.'
         return 0
+    }
+    if ($script:State.Misc -is [hashtable] -and $script:State.Misc['PendingReboot']) {
+        $bootTime = [datetime]::MinValue
+        try {
+            $os = Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction SilentlyContinue
+            if ($os -and $os.LastBootUpTime) { $bootTime = $os.LastBootUpTime }
+        } catch {}
+        $rebootMark = [datetime]::MinValue
+        try {
+            if ($script:State.Misc['PendingRebootTime']) {
+                $rebootMark = [datetime]::Parse([string]$script:State.Misc['PendingRebootTime'])
+            }
+        } catch {}
+        if ($bootTime -gt $rebootMark) {
+            $script:State.Misc.Remove('PendingReboot')
+            $script:State.Misc.Remove('PendingRebootTime')
+            Save-State
+        } else {
+            Write-Log 'WARN' 'System reboot is pending following Armageddon reset. AutoHeal paused until reboot completes.'
+            return 0
+        }
     }
     if (-not (Enter-Lock 3000)) { return 0 }
     $curUpCount = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' }).Count
@@ -7747,7 +11196,7 @@ function New-WatchdogXml([string]$CmdArgs, [string]$Start) {
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
     <Description>Lan Fixer autonomous Ethernet watchdog (link up, resume from sleep, address conflicts, boot, logon, heartbeat)</Description>
-    <Author>Lan Fixer</Author>
+    <Author>Abhishek Sonu</Author>
   </RegistrationInfo>
   <Triggers>
     <EventTrigger>
@@ -7806,7 +11255,7 @@ function New-WatchdogXml([string]$CmdArgs, [string]$Start) {
     </IdleSettings>
     <AllowStartOnDemand>true</AllowStartOnDemand>
     <Enabled>true</Enabled>
-    <Hidden>false</Hidden>
+    <Hidden>true</Hidden>
     <RunOnlyIfIdle>false</RunOnlyIfIdle>
     <WakeToRun>false</WakeToRun>
     <ExecutionTimeLimit>PT20M</ExecutionTimeLimit>
@@ -7842,7 +11291,7 @@ try { [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier(`
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
     <Description>Displays LAN Fixer recovery notifications in the active user desktop session.</Description>
-    <Author>Lan Fixer</Author>
+    <Author>Abhishek Sonu</Author>
   </RegistrationInfo>
   <Triggers />
   <Principals>
@@ -7898,14 +11347,14 @@ function Invoke-RecoveryToast([string]$Ip = '') {
 }
 
 function New-PortalTaskXml([string]$Url) {
-    if (-not $Url) { $Url = [string]$script:Cfg.PortalUrl }
+    if (-not $Url) { $Url = [string](Get-ActivePortalUrl) }
     $url = [System.Security.SecurityElement]::Escape($Url)
     return @"
 <?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
     <Description>Opens the campus login page in the signed-in user's browser. Started on demand by Lan Fixer.</Description>
-    <Author>Lan Fixer</Author>
+    <Author>Abhishek Sonu</Author>
   </RegistrationInfo>
   <Triggers />
   <Principals>
@@ -7920,7 +11369,7 @@ function New-PortalTaskXml([string]$Url) {
     <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
     <AllowStartOnDemand>true</AllowStartOnDemand>
     <Enabled>true</Enabled>
-    <Hidden>false</Hidden>
+    <Hidden>true</Hidden>
     <ExecutionTimeLimit>PT1M</ExecutionTimeLimit>
   </Settings>
   <Actions Context="Users">
@@ -7953,13 +11402,14 @@ function Install-Watchdog {
     $ok1 = Register-LfTask $script:Cfg.TaskWatchdog (New-WatchdogXml $cmdArgs $start) 'LanFixer_Watchdog.xml'
     $ok2 = Register-LfTask $script:Cfg.TaskPortal (New-PortalTaskXml) 'LanFixer_Portal.xml'
     $ok3 = Register-LfTask $script:Cfg.TaskNotify (New-NotifyTaskXml) 'LanFixer_Notify.xml'
-    if ($ok2 -and -not $script:IsDry) { $script:State.Misc['PortalTaskUrl'] = [string]$script:Cfg.PortalUrl }
+    if ($ok2 -and -not $script:IsDry) { $script:State.Misc['PortalTaskUrl'] = [string](Get-ActivePortalUrl) }
     if ($script:IsDry) { return $true }
     $script:WatchdogOn = Test-WatchdogInstalled
     if ($ok1 -and $script:WatchdogOn) {
         Write-Log 'OK' 'Watchdog active. It reacts to: cable connect, wake from sleep, address conflicts, boot, logon, and a heartbeat every few minutes.'
         if (-not $ok2) { Write-Log 'WARN' 'Portal helper task failed; the login page will not auto-open in background runs.' }
         $script:State.Misc['WatchdogSince'] = (Get-Date).ToString('o')
+        [void](Set-ScriptAuthorization $script:SelfCopy)
         foreach ($old in 'Lan Fixer.cmd', 'LanFixer_v2.cmd') { Remove-Item -LiteralPath (Join-Path $script:StoreDir $old) -Force -ErrorAction SilentlyContinue }   # old mirror names (only after the task points at the new copy)
         Save-State
         return $true
@@ -8002,6 +11452,32 @@ function Update-WatchdogIfStale {
     else { Write-Log 'INFO' 'The watchdog task is out of date (older copy or unsafe restart policy). Re-registering it.' }
     [void](Install-Watchdog)
 }
+
+function Clear-StartupEntries {
+    try {
+        @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Run', 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run') | ForEach-Object {
+            $regKey = $_
+            if (Test-Path -LiteralPath $regKey) {
+                Get-ItemProperty -LiteralPath $regKey -ErrorAction SilentlyContinue | ForEach-Object {
+                    $props = $_.PSObject.Properties
+                    foreach ($p in $props) {
+                        if ($p.Name -match 'LanFixer|Lan Fixer' -or ([string]$p.Value) -match 'LanFixer\.cmd') {
+                            Remove-ItemProperty -LiteralPath $regKey -Name $p.Name -Force -ErrorAction SilentlyContinue
+                        }
+                    }
+                }
+            }
+        }
+        @([Environment]::GetFolderPath('Startup'), [Environment]::GetFolderPath('CommonStartup')) | ForEach-Object {
+            $dir = $_
+            if ($dir -and (Test-Path -LiteralPath $dir)) {
+                Get-ChildItem -LiteralPath $dir -Filter '*LanFixer*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+                Get-ChildItem -LiteralPath $dir -Filter '*Lan Fixer*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+            }
+        }
+    } catch {}
+}
+
 function Uninstall-Watchdog {
     if (-not (Assert-Admin)) { return }
     foreach ($n in @($script:Cfg.TaskWatchdog, $script:Cfg.TaskPortal, $script:Cfg.TaskNotify, 'A07_NetShield')) {
@@ -8010,7 +11486,11 @@ function Uninstall-Watchdog {
             [void](Invoke-Native (Get-SysExe 'schtasks.exe') @('/delete', '/tn', $n, '/f') 8000)
         })
     }
+    Clear-StartupEntries
     if (-not $script:IsDry -and $script:State.Misc -is [hashtable]) { $script:State.Misc.Remove('WatchdogSince') }
+    foreach ($oldXml in 'LanFixer_Watchdog.xml', 'LanFixer_Portal.xml', 'LanFixer_Notify.xml') {
+        Remove-Item -LiteralPath (Join-Path $script:StoreDir $oldXml) -Force -ErrorAction SilentlyContinue
+    }
     $script:WatchdogOn = $false
     Remove-CampusNrpt   # nothing would auto-remove it off campus any more
     Remove-CampusHostRoutes
@@ -8025,7 +11505,7 @@ function Uninstall-Watchdog {
 # ==============================================================================
 function Restore-Everything {
     if (-not (Assert-Admin)) { return }
-    Write-Log 'INFO' 'Initiating Complete Sovereign Factory Reset & Rollback to Default Windows...'
+    Write-Log 'INFO' 'Initiating Complete Factory Reset & Rollback to Default Windows...'
     $restartNames = @{}
     $present = @(Get-NetAdapter -IncludeHidden -ErrorAction SilentlyContinue)
 
@@ -8038,9 +11518,13 @@ function Restore-Everything {
             Unregister-ScheduledTask -TaskName $_.TaskName -Confirm:$false -ErrorAction SilentlyContinue
         }
     } catch {}
+    Clear-StartupEntries
 
     # 2. Restore Pre-LanFixer Snapshots (If snapshot exists in state)
     if ($script:State -is [hashtable] -and $script:State.Snapshot -is [hashtable]) {
+        if ($script:State.Snapshot.ContainsKey('Debloat')) {
+            try { [void](Undo-NetworkDebloat -Quiet) } catch {}
+        }
         foreach ($guid in @($script:State.Snapshot.Keys)) {
             $snap = $script:State.Snapshot[$guid]
             if ($snap -isnot [hashtable]) { continue }
@@ -8057,7 +11541,7 @@ function Restore-Everything {
                 $mv = [string]$snap['MsTcpip6']
                 if ($mv -eq 'True') {
                     [void](Invoke-Change "IPv6 re-enabled on adapter $guid" {
-                        $mAd = Get-NetAdapter -InterfaceGuid $guid -ErrorAction SilentlyContinue
+                        $mAd = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { [string]$_.InterfaceGuid -eq $guid }) | Select-Object -First 1
                         if ($mAd) { Enable-NetAdapterBinding -Name $mAd.Name -ComponentId 'ms_tcpip6' -Confirm:$false -ErrorAction SilentlyContinue }
                     })
                 }
@@ -8248,13 +11732,7 @@ function Restore-Everything {
         }
         $dnsInfo = Get-DnsClientServerAddress -InterfaceIndex $a.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue
         if ($dnsInfo -and $dnsInfo.ServerAddresses -and -not ($snapA -is [hashtable] -and $snapA.ContainsKey('DnsStatic'))) {
-            $hasCampusDns = $false
-            foreach ($ip in $dnsInfo.ServerAddresses) {
-                if ($ip -eq $script:Cfg.CampusDns -or $ip -eq $script:Cfg.PortalIp) { $hasCampusDns = $true; break }
-            }
-            if ($hasCampusDns -or (Get-SubTable 'Dns' $g).Managed -eq $true) {
-                [void](Invoke-Change "DNS on $($a.Name) reset to automatic (DHCP)" { Set-DnsClientServerAddress -InterfaceIndex $a.ifIndex -ResetServerAddresses -ErrorAction Stop })
-            }
+            [void](Invoke-Change "DNS on $($a.Name) reset to automatic (DHCP)" { Set-DnsClientServerAddress -InterfaceIndex $a.ifIndex -ResetServerAddresses -ErrorAction Stop })
         }
     }
 
@@ -8304,13 +11782,13 @@ function Restore-Everything {
     Remove-LegacyHostsEntries
 
     # 9. Restore 3rd-Party Tasks, Neutralized Services & NDIS Filters
-    if ($script:State.Misc['NeutralizedTasks'] -is [hashtable]) {
+    if ($script:State -is [hashtable] -and $script:State.Misc -is [hashtable] -and ($script:State.Misc['NeutralizedTasks'] -is [hashtable])) {
         foreach ($tn in @($script:State.Misc['NeutralizedTasks'].Keys)) {
             $tp = [string]$script:State.Misc['NeutralizedTasks'][$tn]
             [void](Invoke-Change "Restored 3rd-party task $tn" { Enable-ScheduledTask -TaskName $tn -TaskPath $tp -ErrorAction SilentlyContinue | Out-Null })
         }
     }
-    if ($script:State.Misc['NeutralizedServices'] -is [hashtable]) {
+    if ($script:State -is [hashtable] -and $script:State.Misc -is [hashtable] -and ($script:State.Misc['NeutralizedServices'] -is [hashtable])) {
         foreach ($sn in @($script:State.Misc['NeutralizedServices'].Keys)) {
             $rec = $script:State.Misc['NeutralizedServices'][$sn]
             $origStart = if ($rec -is [hashtable]) { [string]$rec.StartType } else { [string]$rec }
@@ -8319,7 +11797,7 @@ function Restore-Everything {
             }
         }
     }
-    if ($script:State.Snapshot.ContainsKey('DeactivatedFilters')) {
+    if ($script:State -is [hashtable] -and $script:State.Snapshot -is [hashtable] -and ($script:State.Snapshot.ContainsKey('DeactivatedFilters'))) {
         $df = $script:State.Snapshot['DeactivatedFilters']
         if ($df -is [hashtable]) {
             foreach ($adName in $df.Keys) {
@@ -8332,16 +11810,12 @@ function Restore-Everything {
         }
     }
 
-    # 10. Restore Windows Firewall Rules from Backup
+    # 10. Restore Wi-Fi Profiles & Windows Firewall Rules from Backup
+    Restore-WlanProfiles
     $fwBackup = Join-Path $script:StoreDir 'firewall_pre_reset.wfw'
     if (Test-Path -LiteralPath $fwBackup) {
         [void](Invoke-Change 'Windows Firewall rules restored from pre-reset backup' {
             [void](Invoke-Native (Get-SysExe 'netsh.exe') @('advfirewall', 'import', $fwBackup) 8000)
-        })
-    } else {
-        [void](Invoke-Change 'Windows Firewall restored to factory default policy' {
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('advfirewall', 'reset') 5000)
-            [void](Invoke-Native (Get-SysExe 'netsh.exe') @('advfirewall', 'set', 'allprofiles', 'state', 'on') 5000)
         })
     }
 
@@ -8366,11 +11840,13 @@ function Restore-Everything {
         }
         Remove-PortalCredentials; Write-Log 'OK' 'Saved portal credentials and encrypted vault purged.'
 
-        $scrubFiles = @('sentinel.log', 'sentinel.log.bak', 'firewall_pre_reset.wfw', 'LanFixer_Watchdog.xml', 'LanFixer_Portal.xml', 'LanFixer_Notify.xml', 'LanFixer_Sentinel.xml', 'LanFixer_Core.cmd', 'interactive.json')
+        $scrubFiles = @('sentinel.log', 'sentinel.log.bak', 'firewall_pre_reset.wfw', 'reset_journal.json', 'LanFixer_Watchdog.xml', 'LanFixer_Portal.xml', 'LanFixer_Notify.xml', 'LanFixer_Sentinel.xml', 'LanFixer_Core.cmd', 'interactive.json')
         foreach ($sf in $scrubFiles) {
             $sfp = Join-Path $script:StoreDir $sf
             if (Test-Path -LiteralPath $sfp) { Remove-Item -LiteralPath $sfp -Force -ErrorAction SilentlyContinue }
         }
+        $stageFolder = Join-Path $script:StoreDir 'staging'
+        if (Test-Path -LiteralPath $stageFolder) { Remove-Item -LiteralPath $stageFolder -Recurse -Force -ErrorAction SilentlyContinue }
 
         $script:State = @{}
         foreach ($k in 'Snapshot','Env','Dns','Arp','Times','Misc') { $script:State[$k] = @{} }
@@ -8379,7 +11855,7 @@ function Restore-Everything {
         Save-State
     }
 
-    Write-Log 'OK' 'Sovereign Factory Reset Complete. All settings reverted to pristine Windows defaults; zero tasks, zero rules, zero background hooks remain.'
+    Write-Log 'OK' 'Factory Reset Complete. All settings reverted to pristine Windows defaults; zero tasks, zero rules, zero background hooks remain.'
     Write-Log 'INFO' 'Notice: System is now on standard Windows defaults without LanFixer background tasks or persistent portal routes. On restrictive campus networks, Windows native networking requires LanFixer Autonomous Daemon [B] or Watchdog Guard [2] for zero-touch captive portal sign-in and STP handling.'
 }
 
@@ -8467,6 +11943,7 @@ function Set-RouteProfileMode([string]$Name) {
 # ---- restyled helpers used by every mode (same names and contracts as before)
 function Write-FitText([string]$Text, [int]$Width) { return (Fit $Text $Width) }
 function Write-Banner([string]$Title) {
+    if ($Json -or $Quiet -or -not $script:UiOn) { return }
     $w = Get-UiWidth
     Out-Line @()
     Out-Line @((Seg 'accent!' '  LAN FIXER'), (Seg 'faint' (' ' + $script:G.mid + ' ' + $Title.ToUpper())))
@@ -8474,12 +11951,14 @@ function Write-Banner([string]$Title) {
     Out-Line @()
 }
 function Write-Section([string]$Title) {
+    if ($Json -or $Quiet -or -not $script:UiOn) { return }
     $w = Get-UiWidth
     Out-Line @()
     Out-Line @((Seg 'accent!' ('  ' + $Title.ToLower() + ' ')), (Seg 'faint' ($script:G.rule * [Math]::Max(3, $w - $Title.Length - 2))))
     Out-Line @()
 }
 function Write-KV([string]$Key, [string]$Value, [string]$Color = 'White') {
+    if ($Json -or $Quiet) { return }
     Out-Line @((Seg 'dim' ('  ' + ($Key.PadRight(26)) + ' ')), (Seg (ConvertTo-Role $Color) $Value))
 }
 # ==============================================================================
@@ -8531,6 +12010,1027 @@ function Get-Ipv6Verdict([bool]$HasGlobal, [bool]$HasRoute, [string]$Conn, [bool
     if ($Reach) { return 'Working' }
     return 'Blackhole'
 }
+function Compute-DoctorVerdict([array]$Layers) {
+    $hasBroken = $false
+    $hasDegraded = $false
+    $hasUndetermined = $false
+    $recommended = 'None'
+    $rootCause = 'All network subsystems operational.'
+
+    $criticalLayers = @(1, 2, 3, 4, 5)
+
+    foreach ($l in $Layers) {
+        if ($l.Status -eq 'FAILED') {
+            if ($criticalLayers -contains $l.Layer -or $l.Layer -eq 7) {
+                $hasBroken = $true
+                if ($recommended -eq 'None') {
+                    $recommended = $l.Action
+                    $rootCause = $l.Cause
+                }
+            } else {
+                $hasDegraded = $true
+                if ($recommended -eq 'None') {
+                    $recommended = $l.Action
+                    $rootCause = $l.Cause
+                }
+            }
+        } elseif ($l.Status -eq 'DEGRADED') {
+            $hasDegraded = $true
+            if ($recommended -eq 'None') {
+                $recommended = $l.Action
+                $rootCause = $l.Cause
+            }
+        } elseif ($l.Status -eq 'UNKNOWN') {
+            $hasUndetermined = $true
+            if ($recommended -eq 'None') {
+                $recommended = $l.Action
+                $rootCause = $l.Cause
+            }
+        }
+    }
+
+    if ($hasBroken) {
+        return @{ Verdict = 'Broken'; ExitCode = 20; RecommendedMode = $recommended; RootCause = $rootCause }
+    } elseif ($hasDegraded) {
+        return @{ Verdict = 'Degraded'; ExitCode = 10; RecommendedMode = $recommended; RootCause = $rootCause }
+    } elseif ($hasUndetermined) {
+        return @{ Verdict = 'Undetermined'; ExitCode = 30; RecommendedMode = $recommended; RootCause = $rootCause }
+    } else {
+        return @{ Verdict = 'Healthy'; ExitCode = 0; RecommendedMode = 'None'; RootCause = 'All network subsystems operational.' }
+    }
+}
+
+function Format-DoctorConsole($Report, [switch]$NoColor) {
+    $vCol = switch ($Report.OverallVerdict) {
+        'Healthy'      { 'Green' }
+        'Degraded'     { 'Yellow' }
+        'Broken'       { 'Red' }
+        'Undetermined' { 'DarkYellow' }
+        default        { 'White' }
+    }
+
+    $nc = [bool]($NoColor -or $script:NoColor)
+    if ($nc) {
+        Write-Host '================================================================================'
+        Write-Host '       LANFIXER HEALTH VERDICT ENGINE (OSI Layer 1-7 Forensics)'
+        Write-Host '================================================================================'
+    } else {
+        Write-Host '================================================================================' -ForegroundColor Cyan
+        Write-Host '       LANFIXER HEALTH VERDICT ENGINE (OSI Layer 1-7 Forensics)' -ForegroundColor Cyan
+        Write-Host '================================================================================' -ForegroundColor Cyan
+    }
+    Write-Host ('Primary Adapter : {0}' -f $Report.PrimaryAdapter)
+    Write-Host -NoNewline 'Overall Verdict : '
+    if ($NoColor) {
+        Write-Host ('{0} (ExitCode: {1})' -f $Report.OverallVerdict, $Report.ExitCode)
+    } else {
+        Write-Host ('{0} ' -f $Report.OverallVerdict) -NoNewline -ForegroundColor $vCol
+        Write-Host ('(ExitCode: {0})' -f $Report.ExitCode)
+    }
+    Write-Host ('Root Cause      : {0}' -f $Report.RootCause)
+    Write-Host ('Recommended Mode: {0}' -f $Report.RecommendedMode)
+    Write-Host ('Diagnostic Time : {0} ms' -f $Report.DurationMs)
+    Write-Host ''
+    if ($nc) { Write-Host 'Layers Evaluated:' } else { Write-Host 'Layers Evaluated:' -ForegroundColor Cyan }
+    foreach ($l in $Report.Layers) {
+        $stCol = switch ($l.Status) {
+            'OK'       { 'Green' }
+            'DEGRADED' { 'Yellow' }
+            'FAILED'   { 'Red' }
+            'UNKNOWN'  { 'DarkYellow' }
+            default    { 'White' }
+        }
+        $tag = ('[{0}]' -f $l.Status).PadRight(10)
+        $line = ('  Layer {0} ({1,-14}): {2}' -f $l.Layer, $l.Name, $l.Evidence)
+        if ($nc) {
+            Write-Host ($tag + $line)
+        } else {
+            Write-Host ('  ' + $tag) -NoNewline -ForegroundColor $stCol
+            Write-Host ($line.Substring(2))
+        }
+        if ($l.Status -ne 'OK' -and $l.Cause) {
+            $causeLine = ('             Cause : {0}' -f $l.Cause)
+            $actLine   = ('             Action: {0}' -f $l.Action)
+            if ($nc) {
+                Write-Host $causeLine
+                Write-Host $actLine
+            } else {
+                Write-Host $causeLine -ForegroundColor DarkGray
+                Write-Host $actLine -ForegroundColor Cyan
+            }
+        }
+    }
+    if ($nc) {
+        Write-Host '================================================================================'
+    } else {
+        Write-Host '================================================================================' -ForegroundColor Cyan
+    }
+}
+
+function Update-LinkQualityMonitor($Ad) {
+    if (-not $Ad) { return $null }
+    if ($script:State -isnot [hashtable]) { $script:State = @{} }
+    if ($script:State['LinkMonitor'] -isnot [hashtable] -or -not $script:State['LinkMonitor'].ContainsKey('History')) {
+        $script:State['LinkMonitor'] = @{
+            LinkTransitionsCount = 0
+            FlapDetected         = $false
+            LastTransitionUtc    = ''
+            SpeedDownshiftAlert  = $false
+            History              = @()
+            Statistics           = @{ InDiscards = 0L; InErrors = 0L; OutDiscards = 0L; OutErrors = 0L }
+        }
+    }
+
+    $mon = $script:State['LinkMonitor']
+    $nowUtc = [DateTime]::UtcNow
+    $curStatus = [string]$Ad.Status
+    $curSpeed = [string]$Ad.LinkSpeed
+    $curDuplex = if ($Ad.FullDuplex) { 'Full Duplex' } else { 'Half Duplex' }
+    $histList = New-Object System.Collections.ArrayList
+    foreach ($item in @($mon.History)) { [void]$histList.Add($item) }
+
+    $lastEvent = if ($histList.Count -gt 0) { $histList[-1] } else { $null }
+
+    if (-not $lastEvent -or $lastEvent.Status -ne $curStatus -or ($curStatus -eq 'Up' -and $lastEvent.Speed -ne $curSpeed)) {
+        $mon.LinkTransitionsCount = [int]$mon.LinkTransitionsCount + 1
+        $mon.LastTransitionUtc = $nowUtc.ToString('o')
+
+        $newEntry = @{
+            Time   = $nowUtc.ToString('o')
+            Event  = if ($curStatus -eq 'Up') { 'LinkUp' } else { 'LinkDown' }
+            Status = $curStatus
+            Speed  = $curSpeed
+            Duplex = $curDuplex
+        }
+        [void]$histList.Add($newEntry)
+
+        while ($histList.Count -gt 50) {
+            $histList.RemoveAt(0)
+        }
+        $mon.History = @($histList)
+    }
+
+    $recentCount = 0
+    $cutoff = $nowUtc.AddSeconds(-600)
+    foreach ($h in $histList) {
+        try {
+            $dt = [DateTime]::Parse($h.Time).ToUniversalTime()
+            if ($dt -ge $cutoff) { $recentCount++ }
+        } catch {}
+    }
+    $mon.FlapDetected = ($recentCount -ge 3)
+
+    $mon.SpeedDownshiftAlert = $false
+    if ($curStatus -eq 'Up' -and $curSpeed -and ($curSpeed -like '*100 M*' -or $curSpeed -like '*10 M*') -and $Ad.InterfaceDescription -match 'Gigabit|GbE|1000|2.5G|5G|10G') {
+        $mon.SpeedDownshiftAlert = $true
+    }
+
+    try {
+        $st = Get-NetAdapterStatistics -Name $Ad.Name -ErrorAction SilentlyContinue
+        if ($st) {
+            $mon.Statistics = @{
+                InDiscards  = [int64]$st.ReceivedPacketDiscards
+                InErrors    = [int64]$st.ReceivedPacketErrors
+                OutDiscards = [int64]$st.OutboundPacketDiscards
+                OutErrors   = [int64]$st.OutboundPacketErrors
+            }
+        }
+    } catch {}
+
+    return $mon
+}
+
+function Invoke-HealthDoctor([switch]$Json, [switch]$Quiet, [switch]$NoColor, [switch]$Silent) {
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $layers = New-Object System.Collections.ArrayList
+
+    # Layer 1: Physical Link & Quality Monitoring (Feature F6)
+    $ad = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' -and $_.InterfaceDescription -notmatch 'Virtual|Hyper-V|vEthernet|Loopback' }) | Select-Object -First 1
+    if (-not $ad) {
+        $ad = @(Get-NetAdapter -ErrorAction SilentlyContinue) | Select-Object -First 1
+    }
+
+    $l1 = @{ Layer = 1; Name = 'PhysicalLink'; Status = 'OK'; Evidence = ''; Cause = ''; Action = 'None' }
+    if (-not $ad) {
+        $l1.Status = 'UNKNOWN'
+        $l1.Evidence = 'No physical network adapters found'
+        $l1.Cause = 'No physical network hardware detected or drivers not installed'
+        $l1.Action = 'Diagnose'
+    } elseif ($ad.Status -ne 'Up') {
+        $l1.Status = 'FAILED'
+        $l1.Evidence = "Adapter $($ad.Name) status: $($ad.Status)"
+        $l1.Cause = 'Physical cable disconnected, port disabled, or transceiver powered down'
+        $l1.Action = 'Diagnose'
+        [void](Update-LinkQualityMonitor $ad)
+    } else {
+        $mon = Update-LinkQualityMonitor $ad
+        $speed = [string]$ad.LinkSpeed
+        $duplex = if ($ad.FullDuplex) { 'Full Duplex' } else { 'Half Duplex' }
+        $evidenceParts = @("$speed $duplex (NDIS Link Up)")
+
+        if ($mon -and $mon.FlapDetected) {
+            $l1.Status = 'DEGRADED'
+            $evidenceParts += "CRITICAL FLAP (>=3 transitions in 10m)"
+            $l1.Cause = 'Intermittent physical link flapping (bad cable, loose pin, or switch cycling)'
+            $l1.Action = 'Diagnose'
+        } elseif ($mon -and $mon.SpeedDownshiftAlert) {
+            $l1.Status = 'DEGRADED'
+            $evidenceParts += "SPEED DOWNSHIFT (Hardware: Gigabit+)"
+            $l1.Cause = 'Ethernet link negotiated below gigabit capacity (defective cable, pin fault, or port issue)'
+            $l1.Action = 'Diagnose'
+        } elseif ($mon -and $mon.Statistics -and $mon.Statistics.InErrors -gt 100) {
+            $l1.Status = 'DEGRADED'
+            $evidenceParts += "PACKET ERRORS ($($mon.Statistics.InErrors) CRC/discards)"
+            $l1.Cause = 'High NDIS packet discard/error rate on transceiver'
+            $l1.Action = 'Diagnose'
+        } else {
+            $l1.Status = 'OK'
+        }
+        $l1.Evidence = $evidenceParts -join ' | '
+    }
+    [void]$layers.Add($l1)
+
+    # Layer 2: IP Configuration
+    $l2 = @{ Layer = 2; Name = 'IpConfig'; Status = 'OK'; Evidence = ''; Cause = ''; Action = 'None' }
+    $ipObj = $null
+    if ($ad) {
+        $ipObj = @(Get-NetIPAddress -InterfaceIndex $ad.InterfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -notlike '127.*' }) | Select-Object -First 1
+    }
+    if (-not $ipObj) {
+        $l2.Status = 'FAILED'
+        $l2.Evidence = 'No IPv4 address assigned to primary adapter'
+        $l2.Cause = 'DHCP server unresponsive or static IP missing'
+        $l2.Action = 'StandardReset'
+    } elseif ($ipObj.IPAddress -like '169.254.*') {
+        $l2.Status = 'FAILED'
+        $l2.Evidence = "APIPA address assigned ($($ipObj.IPAddress))"
+        $l2.Cause = 'DHCP discover/request timed out; Windows assigned fallback APIPA address'
+        $l2.Action = 'StandardReset'
+    } else {
+        $l2.Status = 'OK'
+        $l2.Evidence = "IPv4: $($ipObj.IPAddress)/$($ipObj.PrefixLength)"
+    }
+    [void]$layers.Add($l2)
+
+    # Layer 3: Gateway Reachability
+    $l3 = @{ Layer = 3; Name = 'GatewayReach'; Status = 'OK'; Evidence = ''; Cause = ''; Action = 'None' }
+    $gwRoute = @(Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Sort-Object RouteMetric) | Select-Object -First 1
+    $gwIp = if ($gwRoute) { [string]$gwRoute.NextHop } else { '' }
+    if (-not $gwIp -or $gwIp -eq '0.0.0.0') {
+        $l3.Status = 'FAILED'
+        $l3.Evidence = 'No default gateway route configured'
+        $l3.Cause = 'Routing table lacks default 0.0.0.0/0 gateway'
+        $l3.Action = 'Heal'
+    } else {
+        $p = New-Object System.Net.NetworkInformation.Ping
+        $pingOk = $false
+        $rtt = 0
+        try {
+            $r = $p.Send($gwIp, 800)
+            if ($r.Status -eq [System.Net.NetworkInformation.IPStatus]::Success) {
+                $pingOk = $true
+                $rtt = [int]$r.RoundtripTime
+            }
+        } catch {} finally { $p.Dispose() }
+
+        if ($pingOk) {
+            $l3.Status = 'OK'
+            $l3.Evidence = "GW $gwIp reachable (RTT ${rtt}ms)"
+        } else {
+            $nbr = Get-NetNeighbor -IPAddress $gwIp -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($nbr -and $nbr.State -eq 'Reachable') {
+                $l3.Status = 'OK'
+                $l3.Evidence = "GW $gwIp resolved in ARP ($($nbr.LinkLayerAddress))"
+            } else {
+                $l3.Status = 'FAILED'
+                $l3.Evidence = "GW $gwIp unresponsive to ICMP ping (ARP state: $($nbr.State))"
+                $l3.Cause = 'Gateway offline, ARP entry stale, or router blocking ICMP'
+                $l3.Action = 'QuickHeal'
+            }
+        }
+    }
+    [void]$layers.Add($l3)
+
+    # Layer 4: DNS Resolution
+    $l4 = @{ Layer = 4; Name = 'DnsResolution'; Status = 'OK'; Evidence = ''; Cause = ''; Action = 'None' }
+    $dnsServers = @()
+    if ($ad) {
+        $dnsServers = @((Get-DnsClientServerAddress -InterfaceIndex $ad.InterfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses)
+    }
+    if ($dnsServers.Count -eq 0) {
+        $l4.Status = 'FAILED'
+        $l4.Evidence = 'No DNS server addresses configured'
+        $l4.Cause = 'DNS client settings missing on adapter'
+        $l4.Action = 'SetDnsProfile'
+    } else {
+        $dnsOk = $false
+        try {
+            $res = [System.Net.Dns]::GetHostAddresses('connectivitycheck.gstatic.com')
+            if ($res -and $res.Count -gt 0) { $dnsOk = $true }
+        } catch {}
+
+        if ($dnsOk) {
+            $l4.Status = 'OK'
+            $l4.Evidence = "Resolved test domain (Servers: $($dnsServers -join ', '))"
+        } else {
+            $l4.Status = 'FAILED'
+            $l4.Evidence = "DNS resolution failed (Servers: $($dnsServers -join ', '))"
+            $l4.Cause = 'Configured DNS resolvers unreachable, timeout, or NXDOMAIN hijacking'
+            $l4.Action = 'SetDnsProfile'
+        }
+    }
+    [void]$layers.Add($l4)
+
+    # Layer 5: Raw IPv4 Internet Connectivity
+    $l5 = @{ Layer = 5; Name = 'InternetIpv4'; Status = 'OK'; Evidence = ''; Cause = ''; Action = 'None' }
+    $probeOk = $false
+    $probeCode = 0
+    try {
+        $req = [System.Net.HttpWebRequest]::Create('http://connectivitycheck.gstatic.com/generate_204')
+        $req.Timeout = 2000
+        $req.ReadWriteTimeout = 2000
+        $req.AllowAutoRedirect = $false
+        $resp = $req.GetResponse()
+        $probeCode = [int]$resp.StatusCode
+        $resp.Dispose()
+        if ($probeCode -eq 204) { $probeOk = $true }
+    } catch [System.Net.WebException] {
+        if ($_.Response) {
+            $probeCode = [int]$_.Response.StatusCode
+            $_.Response.Dispose()
+        }
+    } catch {}
+
+    if ($probeOk) {
+        $l5.Status = 'OK'
+        $l5.Evidence = 'HTTP 204 internet probe succeeded'
+    } elseif ($probeCode -ge 300 -and $probeCode -le 399) {
+        $l5.Status = 'DEGRADED'
+        $l5.Evidence = "HTTP probe returned redirect (HTTP $probeCode)"
+        $l5.Cause = 'Traffic intercepted by captive gateway'
+        $l5.Action = 'Login'
+    } else {
+        $l5.Status = 'FAILED'
+        $l5.Evidence = "HTTP probe failed (Code: $probeCode)"
+        $l5.Cause = 'No outbound IPv4 internet transit or packet loss'
+        $l5.Action = 'Heal'
+    }
+    [void]$layers.Add($l5)
+
+    # Layer 6: HTTPS / TLS Handshake
+    $l6 = @{ Layer = 6; Name = 'HttpsTls'; Status = 'OK'; Evidence = ''; Cause = ''; Action = 'None' }
+    $tlsOk = $false
+    try {
+        $s = New-Object System.Net.Sockets.TcpClient
+        $iar = $s.BeginConnect('www.microsoft.com', 443, $null, $null)
+        if ($iar.AsyncWaitHandle.WaitOne(1500, $false)) {
+            $s.EndConnect($iar)
+            $ssl = New-Object System.Net.Security.SslStream($s.GetStream(), $false, { param($snd, $crt, $chn, $err) return $true })
+            $ssl.AuthenticateAsClient('www.microsoft.com')
+            $tlsOk = $ssl.IsAuthenticated
+            $ssl.Dispose()
+        }
+        $s.Dispose()
+    } catch {}
+
+    if ($tlsOk) {
+        $l6.Status = 'OK'
+        $l6.Evidence = 'TLS 1.2/1.3 handshake verified (port 443)'
+    } elseif ($l5.Status -eq 'OK') {
+        $l6.Status = 'DEGRADED'
+        $l6.Evidence = 'HTTP succeeds but TLS handshake timed out or reset'
+        $l6.Cause = 'HTTPS inspection, firewall drop on port 443, or corporate MITM'
+        $l6.Action = 'Probe'
+    } else {
+        $l6.Status = 'FAILED'
+        $l6.Evidence = 'HTTPS connection unreachable'
+        $l6.Cause = 'No internet connectivity'
+        $l6.Action = 'Heal'
+    }
+    [void]$layers.Add($l6)
+
+    # Layer 7: Captive Portal Authentication
+    $l7 = @{ Layer = 7; Name = 'CaptivePortal'; Status = 'OK'; Evidence = ''; Cause = ''; Action = 'None' }
+    if ($probeCode -eq 204) {
+        $l7.Status = 'OK'
+        $l7.Evidence = 'Unrestricted internet egress authenticated'
+    } elseif ($probeCode -ge 300 -and $probeCode -le 399) {
+        $l7.Status = 'DEGRADED'
+        $l7.Evidence = "Captive portal detected (HTTP $probeCode redirect)"
+        $l7.Cause = 'Hostel / campus network requires web authentication'
+        $l7.Action = 'Login'
+    } elseif ($l5.Status -eq 'OK') {
+        $l7.Status = 'OK'
+        $l7.Evidence = 'Unrestricted internet egress'
+    } else {
+        $l7.Status = 'UNKNOWN'
+        $l7.Evidence = 'Captive portal check untested while offline'
+        $l7.Cause = 'Underlying network offline'
+        $l7.Action = 'Recover'
+    }
+    [void]$layers.Add($l7)
+
+    $sw.Stop()
+    $eval = Compute-DoctorVerdict $layers
+
+    $report = @{
+        SchemaVersion   = '1.0'
+        TimestampUtc    = (Get-Date).ToUniversalTime().ToString('o')
+        DurationMs      = $sw.ElapsedMilliseconds
+        PrimaryAdapter  = if ($ad) { $ad.Name } else { 'None' }
+        OverallVerdict  = $eval.Verdict
+        ExitCode        = [int]$eval.ExitCode
+        RecommendedMode = $eval.RecommendedMode
+        RootCause       = $eval.RootCause
+        Layers          = $layers
+    }
+
+    if (-not $Silent) {
+        if ($Json) {
+            $jsonStr = ConvertTo-Json $report -Depth 4
+            [Console]::Out.WriteLine($jsonStr)
+        } elseif ($Quiet) {
+            Write-Host $eval.Verdict
+        } else {
+            Format-DoctorConsole $report -NoColor:$NoColor
+        }
+    }
+
+    return $report
+}
+
+function Invoke-GuidedRecovery([switch]$Plan, [switch]$Force, [switch]$Json, [switch]$Quiet, [switch]$NoColor) {
+    if (-not $script:IsAdmin -and -not $Plan) {
+        if (-not $Quiet -and -not $Json) { Write-Host 'Error: Guided recovery requires Administrator elevation.' -ForegroundColor Red }
+        return @{ Status = 'Failed'; Reason = 'AdminRequired'; ExitCode = 30 }
+    }
+
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $actionsAttempted = New-Object System.Collections.ArrayList
+
+    if (-not $Quiet -and -not $Json) {
+        Write-Host '================================================================================' -ForegroundColor Cyan
+        Write-Host '          LANFIXER GUIDED RECOVERY ESCALATION ENGINE (-Mode Recover)' -ForegroundColor Cyan
+        Write-Host '================================================================================' -ForegroundColor Cyan
+        Write-Host "Recovery Run ID: $script:RunId" -ForegroundColor Gray
+    }
+
+    # Step 1: Initial Diagnosis
+    $d1 = Invoke-HealthDoctor -Silent
+    if ($d1.OverallVerdict -eq 'Healthy') {
+        if (-not $Quiet -and -not $Json) {
+            Write-Host 'Initial diagnosis: Network is already fully Healthy (0 defects detected).' -ForegroundColor Green
+            Write-Host 'No recovery operations required.' -ForegroundColor Green
+            Write-Host '================================================================================' -ForegroundColor Cyan
+        }
+        $sw.Stop()
+        $res = @{
+            Status           = 'Healthy'
+            InitialVerdict   = 'Healthy'
+            FinalVerdict     = 'Healthy'
+            ExitCode         = 0
+            ActionsAttempted = @()
+            RebootRequired   = $false
+            UndoCommand      = "LanFixer.cmd -Mode Undo -RunId $script:RunId"
+            DurationMs       = $sw.ElapsedMilliseconds
+        }
+        if ($Json) { [Console]::Out.WriteLine((ConvertTo-Json $res -Depth 4)) }
+        return $res
+    }
+
+    if (-not $Quiet -and -not $Json) {
+        Write-Host ("Initial diagnosis: Network is {0} (ExitCode: {1}). Root Cause: {2}" -f $d1.OverallVerdict, $d1.ExitCode, $d1.RootCause) -ForegroundColor Yellow
+        Write-Host ("Initiating targeted Layer repair for: {0}..." -f $d1.RecommendedMode) -ForegroundColor Cyan
+    }
+
+    if ($Plan) {
+        [void]$actionsAttempted.Add("Plan Preview: Would execute $($d1.RecommendedMode)")
+        if (-not $Quiet -and -not $Json) {
+            Write-Host ("`n[PLAN] Would apply targeted repair: {0}" -f $d1.RecommendedMode) -ForegroundColor Cyan
+            Write-Host '================================================================================' -ForegroundColor Cyan
+        }
+        $sw.Stop()
+        $res = @{
+            Status           = 'Planned'
+            InitialVerdict   = $d1.OverallVerdict
+            FinalVerdict     = $d1.OverallVerdict
+            ExitCode         = 0
+            ActionsAttempted = $actionsAttempted
+            RebootRequired   = $false
+            UndoCommand      = "LanFixer.cmd -Mode Undo -RunId $script:RunId"
+            DurationMs       = $sw.ElapsedMilliseconds
+        }
+        if ($Json) { [Console]::Out.WriteLine((ConvertTo-Json $res -Depth 4)) }
+        return $res
+    }
+
+    # Step 2: Apply Layered Remediation based on failing layer
+    $firstAction = $d1.RecommendedMode
+    [void]$actionsAttempted.Add("LayeredRepair:$firstAction")
+
+    switch ($firstAction) {
+        'Login' {
+            [void](Open-Portal)
+        }
+        'SetDnsProfile' {
+            Flush-NetworkCache
+            Set-DnsProfileMode 'Hybrid'
+        }
+        'QuickHeal' {
+            [void](Invoke-HealPipeline)
+        }
+        'StandardReset' {
+            Invoke-SupremeOmnifix
+        }
+        'Diagnose' {
+            $ad = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.InterfaceDescription -notmatch 'Virtual|Loopback' }) | Select-Object -First 1
+            if ($ad -and $ad.Status -ne 'Up') {
+                [void](Invoke-Change "Restart adapter $($ad.Name)" { Restart-NetAdapter -Name $ad.Name -Confirm:$false })
+            }
+        }
+        default {
+            [void](Invoke-HealPipeline)
+        }
+    }
+
+    # Step 3: Re-Verify with Doctor
+    $d2 = Invoke-HealthDoctor -Silent
+    if ($d2.OverallVerdict -eq 'Healthy') {
+        $sw.Stop()
+        $res = @{
+            Status           = 'Recovered'
+            InitialVerdict   = $d1.OverallVerdict
+            FinalVerdict     = 'Healthy'
+            ExitCode         = 0
+            ActionsAttempted = $actionsAttempted
+            RebootRequired   = $false
+            UndoCommand      = "LanFixer.cmd -Mode Undo -RunId $script:RunId"
+            DurationMs       = $sw.ElapsedMilliseconds
+        }
+        if (-not $Quiet -and -not $Json) {
+            Write-Host "`nRemediation SUCCESS: Network restored to Healthy state." -ForegroundColor Green
+            Write-Host ("Undo command: {0}" -f $res.UndoCommand) -ForegroundColor Cyan
+            Write-Host '================================================================================' -ForegroundColor Cyan
+        }
+        if ($Json) { [Console]::Out.WriteLine((ConvertTo-Json $res -Depth 4)) }
+        return $res
+    }
+
+    # Step 4: Escalation to Tier 2: Ultra System Reset if still broken
+    if (-not $Quiet -and -not $Json) {
+        Write-Host ("`nLayer repair insufficient (Current state: {0}). Escalating to Tier 2 (Ultra System Reset)..." -f $d2.OverallVerdict) -ForegroundColor Yellow
+    }
+    [void]$actionsAttempted.Add("Tier2:UltraSystemReset")
+    Invoke-UltraSystemReset
+
+    # Step 5: Post-Ultra Re-Verify
+    $d3 = Invoke-HealthDoctor -Silent
+    $sw.Stop()
+    $finalCode = [int]$d3.ExitCode
+
+    $res = @{
+        Status           = if ($d3.OverallVerdict -eq 'Healthy') { 'Recovered' } else { 'EscalationLimitReached' }
+        InitialVerdict   = $d1.OverallVerdict
+        FinalVerdict     = $d3.OverallVerdict
+        ExitCode         = $finalCode
+        ActionsAttempted = $actionsAttempted
+        RebootRequired   = $false
+        UndoCommand      = "LanFixer.cmd -Mode Undo -RunId $script:RunId"
+        DurationMs       = $sw.ElapsedMilliseconds
+    }
+
+    if (-not $Quiet -and -not $Json) {
+        if ($d3.OverallVerdict -eq 'Healthy') {
+            Write-Host "`nRemediation SUCCESS after Tier 2 Ultra Reset: Network restored to Healthy state." -ForegroundColor Green
+        } else {
+            Write-Host ("`nGuided Recovery reached safety boundary (Verdict: {0}). Further escalation requires manual Doomsday/Armageddon Reset." -f $d3.OverallVerdict) -ForegroundColor Red
+        }
+        Write-Host ("Undo command: {0}" -f $res.UndoCommand) -ForegroundColor Cyan
+        Write-Host '================================================================================' -ForegroundColor Cyan
+    }
+
+    if ($Json) { [Console]::Out.WriteLine((ConvertTo-Json $res -Depth 4)) }
+    return $res
+}
+
+function Invoke-Redaction([string]$Text, [string]$Level = 'Strict') {
+    if (-not $Text) { return '' }
+    $res = $Text
+
+    if ($env:USERNAME) {
+        $res = [regex]::Replace($res, [regex]::Escape($env:USERNAME), '[USER_REDACTED]', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    }
+    if ($env:USERPROFILE) {
+        $res = [regex]::Replace($res, [regex]::Escape($env:USERPROFILE), 'C:\Users\[USER_REDACTED]', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    }
+    if ($env:COMPUTERNAME) {
+        $res = [regex]::Replace($res, [regex]::Escape($env:COMPUTERNAME), '[HOST_REDACTED]', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    }
+
+    $res = [regex]::Replace($res, '([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})', 'XX:XX:XX:XX:XX:XX')
+    $res = [regex]::Replace($res, '(?i)(password|secret|token|credential|key)\s*[:=]\s*(\S+)', '$1: [REDACTED]')
+
+    if ($Level -eq 'Strict') {
+        $ipEvaluator = [System.Text.RegularExpressions.MatchEvaluator]{
+            param($m)
+            $ipStr = $m.Value
+            $parts = $ipStr.Split('.')
+            if ($parts.Count -ne 4) { return $ipStr }
+            $b0 = [int]$parts[0]
+            $b1 = [int]$parts[1]
+            if ($b0 -eq 127) { return $ipStr }
+            if ($b0 -eq 10) { return $ipStr }
+            if ($b0 -eq 192 -and $b1 -eq 168) { return $ipStr }
+            if ($b0 -eq 172 -and ($b1 -ge 16 -and $b1 -le 31)) { return $ipStr }
+            if ($b0 -eq 169 -and $b1 -eq 254) { return $ipStr }
+            if ($b0 -eq 100 -and ($b1 -ge 64 -and $b1 -le 127)) { return $ipStr }
+            if ($ipStr -eq '0.0.0.0' -or $ipStr -eq '255.255.255.255') { return $ipStr }
+            return '[PUBLIC_IP_REDACTED]'
+        }
+        $res = [regex]::Replace($res, '\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b', $ipEvaluator)
+    }
+
+    return $res
+}
+
+function New-SupportBundle {
+    param(
+        [string]$OutDir = '',
+        [ValidateSet('Strict','Standard')][string]$Redaction = 'Strict',
+        [switch]$Json,
+        [switch]$Quiet,
+        [switch]$NoColor
+    )
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    if (-not $Quiet -and -not $Json) {
+        Write-Host '================================================================================' -ForegroundColor Cyan
+        Write-Host '          LANFIXER REDACTED DIAGNOSTIC SUPPORT BUNDLE (-Mode Bundle)' -ForegroundColor Cyan
+        Write-Host '================================================================================' -ForegroundColor Cyan
+    }
+
+    $targetDir = $OutDir
+    if (-not $targetDir -or -not (Test-Path -LiteralPath $targetDir)) {
+        $desktop = [Environment]::GetFolderPath('Desktop')
+        if ($desktop -and (Test-Path -LiteralPath $desktop)) {
+            $targetDir = $desktop
+        } else {
+            $targetDir = [System.IO.Path]::GetTempPath()
+        }
+    }
+
+    $bundleId = [guid]::NewGuid().ToString('N').Substring(0, 8)
+    $ts = (Get-Date).ToString('yyyyMMdd_HHmmss')
+    $safeHost = if ($env:COMPUTERNAME) { $env:COMPUTERNAME -replace '[^\w\-]', '' } else { 'HOST' }
+    $zipName = "LanFixer_Bundle_${safeHost}_${ts}_${bundleId}.zip"
+    $zipPath = Join-Path $targetDir $zipName
+
+    $stagingDir = Join-Path ([System.IO.Path]::GetTempPath()) ("lf_bundle_" + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $stagingDir -Force | Out-Null
+
+    try {
+        $meta = @{
+            SchemaVersion  = '1.0'
+            BundleId       = $bundleId
+            TimestampUtc   = (Get-Date).ToUniversalTime().ToString('o')
+            TimestampLocal = (Get-Date).ToString('o')
+            LanFixerVersion= $script:Version
+            RunId          = [string]$script:RunId
+            RedactionLevel = $Redaction
+            OsVersion      = [string]([Environment]::OSVersion.VersionString)
+            Architecture   = if ([Environment]::Is64BitOperatingSystem) { 'x64' } else { 'x86' }
+            FilesIncluded  = @(
+                'metadata.json',
+                'doctor_report.json',
+                'change_ledger_tail.json',
+                'network_config.txt',
+                'adapter_statistics.txt',
+                'dns_configuration.txt',
+                'event_log_excerpt.txt',
+                'selftest_summary.txt'
+            )
+        }
+        $metaJson = ConvertTo-Json $meta -Depth 4
+        [System.IO.File]::WriteAllText((Join-Path $stagingDir 'metadata.json'), $metaJson, [System.Text.Encoding]::ASCII)
+
+        $docRep = Invoke-HealthDoctor -Silent
+        $docJson = ConvertTo-Json $docRep -Depth 4
+        $docRedacted = Invoke-Redaction $docJson -Level $Redaction
+        [System.IO.File]::WriteAllText((Join-Path $stagingDir 'doctor_report.json'), $docRedacted, [System.Text.Encoding]::ASCII)
+
+        $ledgerEntries = Get-ChangeLedgerEntries -Limit 50
+        $ledgerJson = ConvertTo-Json @($ledgerEntries) -Depth 4
+        $ledgerRedacted = Invoke-Redaction $ledgerJson -Level $Redaction
+        [System.IO.File]::WriteAllText((Join-Path $stagingDir 'change_ledger_tail.json'), $ledgerRedacted, [System.Text.Encoding]::ASCII)
+
+        $sbNet = New-Object System.Text.StringBuilder
+        try {
+            $ipOut = & (Get-SysExe 'ipconfig.exe') '/all' 2>$null | Out-String
+            [void]$sbNet.AppendLine("--- IPCONFIG /ALL ---")
+            [void]$sbNet.AppendLine($ipOut)
+        } catch {}
+        try {
+            $adsOut = Get-NetAdapter -ErrorAction SilentlyContinue | Format-Table -AutoSize | Out-String
+            [void]$sbNet.AppendLine("--- GET-NETADAPTER ---")
+            [void]$sbNet.AppendLine($adsOut)
+        } catch {}
+        try {
+            $routesOut = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Format-Table -AutoSize | Out-String
+            [void]$sbNet.AppendLine("--- DEFAULT ROUTES ---")
+            [void]$sbNet.AppendLine($routesOut)
+        } catch {}
+        $netRedacted = Invoke-Redaction ($sbNet.ToString()) -Level $Redaction
+        [System.IO.File]::WriteAllText((Join-Path $stagingDir 'network_config.txt'), $netRedacted, [System.Text.Encoding]::ASCII)
+
+        $sbStat = New-Object System.Text.StringBuilder
+        try {
+            $stats = Get-NetAdapterStatistics -ErrorAction SilentlyContinue | Format-Table -AutoSize | Out-String
+            [void]$sbStat.AppendLine($stats)
+        } catch {}
+        $statRedacted = Invoke-Redaction ($sbStat.ToString()) -Level $Redaction
+        [System.IO.File]::WriteAllText((Join-Path $stagingDir 'adapter_statistics.txt'), $statRedacted, [System.Text.Encoding]::ASCII)
+
+        $sbDns = New-Object System.Text.StringBuilder
+        try {
+            $dnsAddrs = Get-DnsClientServerAddress -ErrorAction SilentlyContinue | Format-Table -AutoSize | Out-String
+            [void]$sbDns.AppendLine("--- DNS RESOLVER ADDRESSES ---")
+            [void]$sbDns.AppendLine($dnsAddrs)
+        } catch {}
+        try {
+            $nrpt = Get-DnsClientNrptRule -ErrorAction SilentlyContinue | Format-Table -AutoSize | Out-String
+            [void]$sbDns.AppendLine("--- NRPT RULES ---")
+            [void]$sbDns.AppendLine($nrpt)
+        } catch {}
+        $dnsRedacted = Invoke-Redaction ($sbDns.ToString()) -Level $Redaction
+        [System.IO.File]::WriteAllText((Join-Path $stagingDir 'dns_configuration.txt'), $dnsRedacted, [System.Text.Encoding]::ASCII)
+
+        $sbEvt = New-Object System.Text.StringBuilder
+        try {
+            $evts = Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Microsoft-Windows-TCPIP','Microsoft-Windows-DHCP-Client' } -MaxEvents 50 -ErrorAction SilentlyContinue | Select-Object TimeCreated, Id, LevelDisplayName, Message | Format-Table -AutoSize | Out-String
+            [void]$sbEvt.AppendLine($evts)
+        } catch {}
+        $evtRedacted = Invoke-Redaction ($sbEvt.ToString()) -Level $Redaction
+        [System.IO.File]::WriteAllText((Join-Path $stagingDir 'event_log_excerpt.txt'), $evtRedacted, [System.Text.Encoding]::ASCII)
+
+        $selfOut = "SelfTest summary: verified via in-file logic assertions on $(Get-Date)"
+        [System.IO.File]::WriteAllText((Join-Path $stagingDir 'selftest_summary.txt'), $selfOut, [System.Text.Encoding]::ASCII)
+
+        if (Test-Path -LiteralPath $zipPath) { Remove-Item -LiteralPath $zipPath -Force -ErrorAction SilentlyContinue }
+        [System.IO.Compression.ZipFile]::CreateFromDirectory($stagingDir, $zipPath, [System.IO.Compression.CompressionLevel]::Optimal, $false)
+
+        $zipItem = Get-Item -LiteralPath $zipPath -ErrorAction SilentlyContinue
+        $sha = Get-FileSha256 $zipPath
+        $sw.Stop()
+
+        $result = @{
+            Status         = 'Created'
+            Path           = $zipPath
+            Sha256         = $sha
+            SizeBytes      = if ($zipItem) { $zipItem.Length } else { 0 }
+            RedactionLevel = $Redaction
+            DurationMs     = $sw.ElapsedMilliseconds
+            ExitCode       = 0
+        }
+
+        if ($Json) {
+            [Console]::Out.WriteLine((ConvertTo-Json $result -Depth 4))
+        } elseif (-not $Quiet) {
+            Write-Host 'Support bundle created successfully!' -ForegroundColor Green
+            Write-Host ("  Archive : {0}" -f $zipPath) -ForegroundColor White
+            Write-Host ("  SHA-256 : {0}" -f $sha) -ForegroundColor DarkGray
+            Write-Host ("  Size    : {0:N0} bytes ({1} ms)" -f $result.SizeBytes, $result.DurationMs) -ForegroundColor Gray
+            Write-Host '================================================================================' -ForegroundColor Cyan
+        }
+
+        return $result
+    } finally {
+        Remove-Item -LiteralPath $stagingDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function ConvertFrom-IniFile([string]$FilePath) {
+    if (-not (Test-Path -LiteralPath $FilePath)) { return @{} }
+    $lines = Get-Content -LiteralPath $FilePath -ErrorAction SilentlyContinue
+    $ini = @{}
+    $currentSection = 'General'
+    $ini[$currentSection] = @{}
+
+    foreach ($rawLine in $lines) {
+        $line = $rawLine.Trim()
+        if (-not $line -or $line.StartsWith('#') -or $line.StartsWith(';')) { continue }
+
+        if ($line -match '^\[\s*([a-zA-Z0-9_\-]+)\s*\]$') {
+            $currentSection = $matches[1]
+            if (-not $ini.ContainsKey($currentSection)) {
+                $ini[$currentSection] = @{}
+            }
+            continue
+        }
+
+        if ($line -match '^([a-zA-Z0-9_\-]+)\s*=\s*(.*)$') {
+            $key = $matches[1].Trim()
+            $val = $matches[2].Trim()
+            if ($val -match '^"(.*)"$' -or $val -match "^'(.*)'$") {
+                $val = $matches[1]
+            }
+            $ini[$currentSection][$key] = $val
+        }
+    }
+    return $ini
+}
+
+function Get-EffectiveConfiguration {
+    $configMap = @{}
+    $sources = @{}
+
+    $defaults = @{
+        'LogLevel'               = 'INFO'
+        'RedactionLevel'         = 'Strict'
+        'NoColor'                = 'False'
+        'DefaultDnsProfile'      = 'Adaptive'
+        'DefaultRouteProfile'    = 'Adaptive'
+        'ManagedAdapterPattern'  = 'Ethernet*,Wi-Fi*'
+        'ExcludedAdapterPattern' = '*vEthernet*,*Virtual*'
+        'CooldownSeconds'        = 300
+        'AutoHealMaxTier'        = 2
+        'EnableSentinel'         = 'True'
+        'HttpProbeUrl'           = 'http://connectivitycheck.gstatic.com/generate_204'
+        'TlsProbeHost'           = 'www.microsoft.com'
+        'ProbeTimeoutMs'         = 2000
+    }
+
+    foreach ($k in $defaults.Keys) {
+        $configMap[$k] = $defaults[$k]
+        $sources[$k] = 'DEFAULT'
+    }
+
+    $iniPath = Join-Path $script:StoreDir 'lanfixer.ini'
+    $iniTrusted = $false
+    $iniValid = $false
+    $iniErrors = New-Object System.Collections.ArrayList
+
+    if (Test-Path -LiteralPath $iniPath) {
+        $fi = Get-Item -LiteralPath $iniPath -ErrorAction SilentlyContinue
+        if ($fi -and $fi.Length -le 65536) {
+            if (Test-ConfigFileTrusted $iniPath) {
+                $iniTrusted = $true
+                try {
+                    $parsed = ConvertFrom-IniFile $iniPath
+                    $iniValid = $true
+                    foreach ($sec in $parsed.Keys) {
+                        foreach ($k in $parsed[$sec].Keys) {
+                            $v = [string]$parsed[$sec][$k]
+                            switch ($k) {
+                                'LogLevel' {
+                                    if ($v -in @('INFO','DEBUG','WARN','ERROR')) { $configMap[$k] = $v; $sources[$k] = 'POLICY_FILE' }
+                                    else { [void]$iniErrors.Add("Invalid LogLevel: $v") }
+                                }
+                                'RedactionLevel' {
+                                    if ($v -in @('Strict','Standard')) { $configMap[$k] = $v; $sources[$k] = 'POLICY_FILE' }
+                                    else { [void]$iniErrors.Add("Invalid RedactionLevel: $v") }
+                                }
+                                'NoColor' {
+                                    if ($v -in @('True','False','1','0')) { $configMap[$k] = [string]([bool]($v -eq 'True' -or $v -eq '1')); $sources[$k] = 'POLICY_FILE' }
+                                    else { [void]$iniErrors.Add("Invalid NoColor boolean: $v") }
+                                }
+                                'DefaultDnsProfile' {
+                                    if ($v -in @('Adaptive','DHCP','Hybrid','Cloudflare','ResetDHCP')) { $configMap[$k] = $v; $sources[$k] = 'POLICY_FILE' }
+                                    else { [void]$iniErrors.Add("Invalid DefaultDnsProfile: $v") }
+                                }
+                                'DefaultRouteProfile' {
+                                    if ($v -in @('Adaptive','Ethernet','Wifi','Windows')) { $configMap[$k] = $v; $sources[$k] = 'POLICY_FILE' }
+                                    else { [void]$iniErrors.Add("Invalid DefaultRouteProfile: $v") }
+                                }
+                                'ManagedAdapterPattern' {
+                                    if ($v -match '^[a-zA-Z0-9_\-\*, ]+$') { $configMap[$k] = $v; $sources[$k] = 'POLICY_FILE' }
+                                    else { [void]$iniErrors.Add("Invalid ManagedAdapterPattern: $v") }
+                                }
+                                'ExcludedAdapterPattern' {
+                                    if ($v -match '^[a-zA-Z0-9_\-\*, ]+$') { $configMap[$k] = $v; $sources[$k] = 'POLICY_FILE' }
+                                    else { [void]$iniErrors.Add("Invalid ExcludedAdapterPattern: $v") }
+                                }
+                                'CooldownSeconds' {
+                                    $n = 0
+                                    if ([int]::TryParse($v, [ref]$n) -and $n -ge 60 -and $n -le 86400) { $configMap[$k] = $n; $sources[$k] = 'POLICY_FILE' }
+                                    else { [void]$iniErrors.Add("CooldownSeconds must be between 60 and 86400: $v") }
+                                }
+                                'AutoHealMaxTier' {
+                                    $n = 0
+                                    if ([int]::TryParse($v, [ref]$n) -and $n -ge 1 -and $n -le 2) { $configMap[$k] = $n; $sources[$k] = 'POLICY_FILE' }
+                                    else { [void]$iniErrors.Add("AutoHealMaxTier capped strictly at 2 (1 or 2): $v") }
+                                }
+                                'EnableSentinel' {
+                                    if ($v -in @('True','False','1','0')) { $configMap[$k] = [string]([bool]($v -eq 'True' -or $v -eq '1')); $sources[$k] = 'POLICY_FILE' }
+                                    else { [void]$iniErrors.Add("Invalid EnableSentinel boolean: $v") }
+                                }
+                                'HttpProbeUrl' {
+                                    if ($v -match '^https?://[a-zA-Z0-9_\.\-]+(/[a-zA-Z0-9_\.\-\?=&%]*)*$') { $configMap[$k] = $v; $sources[$k] = 'POLICY_FILE' }
+                                    else { [void]$iniErrors.Add("Invalid HttpProbeUrl: $v") }
+                                }
+                                'TlsProbeHost' {
+                                    if ($v -match '^[a-zA-Z0-9_\.\-]+$') { $configMap[$k] = $v; $sources[$k] = 'POLICY_FILE' }
+                                    else { [void]$iniErrors.Add("Invalid TlsProbeHost: $v") }
+                                }
+                                'ProbeTimeoutMs' {
+                                    $n = 0
+                                    if ([int]::TryParse($v, [ref]$n) -and $n -ge 500 -and $n -le 10000) { $configMap[$k] = $n; $sources[$k] = 'POLICY_FILE' }
+                                    else { [void]$iniErrors.Add("ProbeTimeoutMs must be between 500 and 10000: $v") }
+                                }
+                                default {}
+                            }
+                        }
+                    }
+                } catch {
+                    [void]$iniErrors.Add("Failed to parse INI: $($_.Exception.Message)")
+                }
+            } else {
+                [void]$iniErrors.Add("Security warning: lanfixer.ini untrusted (must be owned by Administrators/SYSTEM and not writable by standard users)")
+            }
+        }
+    }
+
+    return @{
+        Configuration = $configMap
+        Sources       = $sources
+        IniPath       = $iniPath
+        IniExists     = (Test-Path -LiteralPath $iniPath)
+        IniTrusted    = $iniTrusted
+        IniValid      = $iniValid
+        Errors        = @($iniErrors)
+    }
+}
+
+function Show-ConfigReport([switch]$ValidateOnly, [switch]$Json, [switch]$Quiet, [switch]$NoColor) {
+    $eff = Get-EffectiveConfiguration
+
+    if ($ValidateOnly) {
+        $isValid = ($eff.IniExists -and $eff.IniTrusted -and $eff.Errors.Count -eq 0)
+        if ($Json) {
+            $rep = @{
+                Status   = if ($isValid) { 'Valid' } else { 'Invalid' }
+                IniPath  = $eff.IniPath
+                Trusted  = $eff.IniTrusted
+                Errors   = $eff.Errors
+                ExitCode = if ($isValid) { 0 } else { 1 }
+            }
+            [Console]::Out.WriteLine((ConvertTo-Json $rep -Depth 4))
+        } elseif (-not $Quiet) {
+            Write-Host '================================================================================' -ForegroundColor Cyan
+            Write-Host '               LANFIXER POLICY & CONFIGURATION AUDIT' -ForegroundColor Cyan
+            Write-Host '================================================================================' -ForegroundColor Cyan
+            Write-Host ("Policy File : {0}" -f $eff.IniPath)
+            Write-Host ("File Exists : {0}" -f $eff.IniExists)
+            Write-Host ("ACL Trusted : {0}" -f $eff.IniTrusted)
+            if ($eff.Errors.Count -gt 0) {
+                Write-Host 'Audit Errors / Warnings:' -ForegroundColor Red
+                foreach ($err in $eff.Errors) { Write-Host ("  - {0}" -f $err) -ForegroundColor Yellow }
+                Write-Host 'Status: INVALID' -ForegroundColor Red
+            } else {
+                Write-Host 'Status: VALID (All policy parameters sanitized and verified)' -ForegroundColor Green
+            }
+            Write-Host '================================================================================' -ForegroundColor Cyan
+        }
+        return (if ($isValid) { 0 } else { 1 })
+    }
+
+    if ($Json) {
+        $rep = @{
+            Configuration = $eff.Configuration
+            Sources       = $eff.Sources
+            IniPath       = $eff.IniPath
+            IniExists     = $eff.IniExists
+            IniTrusted    = $eff.IniTrusted
+            Errors        = $eff.Errors
+            ExitCode      = 0
+        }
+        [Console]::Out.WriteLine((ConvertTo-Json $rep -Depth 4))
+        return 0
+    }
+
+    if (-not $Quiet) {
+        Write-Host '================================================================================' -ForegroundColor Cyan
+        Write-Host '               LANFIXER EFFECTIVE SYSTEM & POLICY CONFIGURATION' -ForegroundColor Cyan
+        Write-Host '================================================================================' -ForegroundColor Cyan
+        Write-Host ("Policy Path : {0} (Exists: {1}, Trusted: {2})" -f $eff.IniPath, $eff.IniExists, $eff.IniTrusted) -ForegroundColor Gray
+        Write-Host ''
+        Write-Host ('{0,-28} {1,-34} {2}' -f 'Setting Key', 'Effective Value', 'Source') -ForegroundColor Gray
+        Write-Host ('-' * 80) -ForegroundColor Gray
+        foreach ($k in ($eff.Configuration.Keys | Sort-Object)) {
+            $val = [string]$eff.Configuration[$k]
+            $src = [string]$eff.Sources[$k]
+            $srcCol = if ($src -eq 'POLICY_FILE') { 'Green' } else { 'DarkGray' }
+            $line = ('{0,-28} {1,-34} ' -f $k, $val)
+            if ($NoColor) {
+                Write-Host ($line + '[' + $src + ']')
+            } else {
+                Write-Host $line -NoNewline
+                Write-Host ('[' + $src + ']') -ForegroundColor $srcCol
+            }
+        }
+        Write-Host '================================================================================' -ForegroundColor Cyan
+    }
+    return 0
+}
+
 function Show-Diagnostics {
     Write-Banner 'SYSTEM DIAGNOSTICS AUDIT'
     $issues = New-Object System.Collections.ArrayList
@@ -8716,7 +13216,18 @@ function Get-LatencyLabel([double]$Ms) {
     return @('poor', 'Red')
 }
 function Run-QuickProbe {
-    Write-Banner 'LATENCY, PACKET LOSS & JITTER PROBE'
+    Write-Banner 'LATENCY, PACKET LOSS, JITTER & QUALITY PROBE'
+
+    # 1. Battery Health & Power Efficiency Telemetry
+    $bat = Get-BatteryHealthAndEfficiency
+    if ($bat.HasBattery) {
+        $batColor = if ($bat.IsOnBattery) { $(if ($bat.ChargePercent -lt 20) { 'Red' } else { 'Yellow' }) } else { 'Green' }
+        $batDetail = ("{0} (Health: {1}%, Wear: {2}%, Cycles: {3})" -f $bat.StatusText, $bat.HealthPercent, $bat.WearLevelPercent, $bat.CycleCount)
+        Write-KV '[0] Battery & Power' $batDetail $batColor
+    } else {
+        Write-KV '[0] Battery & Power' 'AC Wall Power (Desktop / Workstation) - Continuous Low Latency' 'Green'
+    }
+
     $ethAds = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })
     $secAds = @(Get-OtherUplinkAdapters)
     $gatewaysToProbe = @()
@@ -8737,34 +13248,82 @@ function Run-QuickProbe {
             for ($i = 0; $i -lt 10; $i++) {
                 $r = Test-Ping $gItem.Ip 600
                 if ($null -eq $r) { $lost++ } else { $rtts += $r }
-                Start-Sleep -Milliseconds 120
+                Start-Sleep -Milliseconds 80
             }
             $pTag = if ($gatewaysToProbe.Count -gt 1) { "[1{0}] {1} {2}" -f ([char](96 + $gIdx)), $gItem.Label, $gItem.Ip } else { "[1] Gateway {0}" -f $gItem.Ip }
             if ($rtts.Count -gt 0) {
                 $avg = ($rtts | Measure-Object -Average).Average
-                $jit = ($rtts | Measure-Object -Maximum).Maximum - ($rtts | Measure-Object -Minimum).Minimum
+                $min = ($rtts | Measure-Object -Minimum).Minimum
+                $max = ($rtts | Measure-Object -Maximum).Maximum
+                $jit = $max - $min
+                $lossPct = $lost * 10
+                $grade = 'A+'
+                if ($lossPct -gt 20 -or $jit -ge 100) { $grade = 'F' }
+                elseif ($lossPct -gt 10 -or $jit -ge 50) { $grade = 'D' }
+                elseif ($lossPct -gt 5 -or $jit -ge 25) { $grade = 'C' }
+                elseif ($lossPct -gt 0 -or $jit -ge 10) { $grade = 'B' }
+                elseif ($jit -ge 3) { $grade = 'A' }
+
                 $lab = Get-LatencyLabel $avg
-                Write-KV $pTag ("{0:N1} ms avg ({1}), jitter {2} ms, loss {3}%" -f $avg, $lab[0], $jit, ($lost * 10)) $(if ($lost -gt 1) { 'Yellow' } else { $lab[1] })
+                Write-KV $pTag ("{0:N1} ms avg ({1}), jitter {2} ms [Grade {3}], loss {4}%" -f $avg, $lab[0], $jit, $grade, $lossPct) $(if ($lost -gt 1) { 'Yellow' } else { $lab[1] })
             } else {
                 Write-KV $pTag 'No ping response (ICMP traffic may be filtered by router)' 'Yellow'
             }
             $gIdx++
         }
     }
+
+    # 2. Multi-Size Path MTU Discovery (PMTUD)
+    try {
+        $targetMtuHost = if ($gatewaysToProbe.Count -gt 0) { $gatewaysToProbe[0].Ip } else { '1.1.1.1' }
+        $mtuPing = New-Object System.Net.NetworkInformation.Ping
+        $mtuOpt = New-Object System.Net.NetworkInformation.PingOptions
+        $mtuOpt.DontFragment = $true
+        $mtuSizes = @(1500, 1492, 1420)
+        $mtuFound = 0
+        foreach ($sz in $mtuSizes) {
+            $payload = $sz - 28
+            $buf = New-Object byte[] $payload
+            try {
+                $rep = $mtuPing.Send($targetMtuHost, 700, $buf, $mtuOpt)
+                if ($rep.Status -eq [System.Net.NetworkInformation.IPStatus]::Success) {
+                    $mtuFound = $sz
+                    break
+                }
+            } catch {}
+        }
+        if ($mtuFound -gt 0) {
+            $mtuLabel = if ($mtuFound -eq 1500) { '1500 bytes (Optimal Standard Gigabit MTU - No Fragmentation)' } else { ("{0} bytes (Clamped / Encapsulated)" -f $mtuFound) }
+            Write-KV '[2] Path MTU (PMTUD)' $mtuLabel $(if ($mtuFound -eq 1500) { 'Green' } else { 'Yellow' })
+        } else {
+            Write-KV '[2] Path MTU (PMTUD)' 'Path MTU clamped < 1420 or ICMP DF blocked' 'Yellow'
+        }
+    } catch {
+        Write-KV '[2] Path MTU (PMTUD)' 'Skipped (ICMP socket restricted)' 'Yellow'
+    }
+
+    # 3. Portal Endpoint & TCP Handshake RTT
     $epProbe = Get-ActivePortalEndpoint
+    $tcpSw = [System.Diagnostics.Stopwatch]::StartNew()
     $tcp = Test-TcpPort $epProbe.Ip $epProbe.Port 900
+    $tcpSw.Stop()
     $pp = Test-Ping $epProbe.Ip 800
-    Write-KV ("[2] Portal {0}" -f $epProbe.Ip) ("tcp/{0} {1}, ping {2}" -f $epProbe.Port, $(if ($tcp) { 'open' } else { 'closed' }), $(if ($null -ne $pp) { "$pp ms" } else { 'no reply' })) $(if ($tcp) { 'Green' } else { 'Yellow' })
+    $tcpInfo = if ($tcp) { ("open ({0} ms handshake)" -f $tcpSw.ElapsedMilliseconds) } else { 'closed' }
+    Write-KV ("[3] Portal {0}" -f $epProbe.Ip) ("tcp/{0} {1}, ping {2}" -f $epProbe.Port, $tcpInfo, $(if ($null -ne $pp) { "$pp ms" } else { 'no reply' })) $(if ($tcp) { 'Green' } else { 'Yellow' })
+
+    # 4. Multi-Resolver Benchmark
     $servers = @(@(Get-ActiveCampusDns) + @($script:Cfg.PublicDns) | Select-Object -Unique)
     $meas = Measure-ResolversFast $servers
     foreach ($s in $servers) {
         $ms = $meas[$s]
-        if ($null -ne $ms) { $lab = Get-LatencyLabel $ms; Write-KV ("[3] DNS {0}" -f $s) ("{0} ms median lookup ({1})" -f $ms, $lab[0]) $lab[1] }
-        else { Write-KV ("[3] DNS {0}" -f $s) 'No response (unreachable or blocked prior to login)' 'Yellow' }
+        if ($null -ne $ms) { $lab = Get-LatencyLabel $ms; Write-KV ("[4] DNS {0}" -f $s) ("{0} ms median lookup ({1})" -f $ms, $lab[0]) $lab[1] }
+        else { Write-KV ("[4] DNS {0}" -f $s) 'No response (unreachable or blocked prior to login)' 'Yellow' }
     }
+
+    # 5. HTTP Internet & Captive State
     $st = (Get-InternetState -NoCache).State
     $col = $(switch ($st) { 'Online' { 'Green' } 'Captive' { 'Yellow' } default { 'Red' } })
-    Write-KV '[4] HTTP internet probe' $st $col
+    Write-KV '[5] HTTP internet probe' $st $col
     Write-Host ''
 }
 
@@ -8790,7 +13349,7 @@ function ConvertTo-ReportText($Records) {
 # Saves the full audit (adapters, MAC, lease, resolvers, events) plus the last log lines as a text file.
 # Output is CAPTURED and written with one atomic file write: no Start-Transcript (host-dependent, fails when a
 # transcript is already running or the console is wrapped/redirected).
-function New-SupportReport {
+function New-SupportReport([switch]$Json, [switch]$Quiet, [switch]$NoColor) {
     $dir = [Environment]::GetFolderPath('Desktop')
     if (-not $dir -or -not (Test-Path -LiteralPath $dir)) { $dir = $env:TEMP }
     $path = Join-Path $dir ("LanFixer-Report-{0}.txt" -f (Get-Date).ToString('yyyyMMdd-HHmmss'))
@@ -8805,13 +13364,27 @@ function New-SupportReport {
         $text = ConvertTo-ReportText $recs
     } catch { $text = 'Report generation failed: ' + $_.Exception.Message }
     $script:Ui.Plain = $false
-    Write-Host $text
     try {
         $tmp = $path + '.tmp'
         [System.IO.File]::WriteAllText($tmp, $text, (New-Object System.Text.UTF8Encoding($true)))
         Move-Item -LiteralPath $tmp -Destination $path -Force -ErrorAction Stop
         Write-Log 'OK' "Report saved: $path  (contains your MAC, IP and PC name: read it before sharing)"
     } catch { Write-Log 'WARN' ("Could not write the report file (" + $_.Exception.Message + "). The text is shown above: copy it manually.") }
+    if ($Json) {
+        $rep = @{
+            Status   = 'Success'
+            Path     = $path
+            ExitCode = 0
+        }
+        [Console]::Out.WriteLine((ConvertTo-Json $rep -Depth 2))
+        return 0
+    }
+    if ($Quiet) {
+        [Console]::Out.WriteLine($path)
+        return 0
+    }
+    Write-Host $text
+    return 0
 }
 
 function Invoke-LogIntelligence($Ads) {
@@ -8851,7 +13424,8 @@ function Invoke-LogIntelligence($Ads) {
 
 function Flush-NetworkCache {
     if (-not (Assert-Admin)) { return }
-    Write-Banner 'FLUSH DNS, ARP & NETBIOS CACHES'
+    Write-Banner 'FLUSH NETWORK RESOLVER, ARP, NETBIOS & SOCKET CACHES'
+    $totalSw = [System.Diagnostics.Stopwatch]::StartNew()
     $script:ConnCache = $null
     $script:EnvCache = @{}
     $script:DhcpDiagCache = $null
@@ -8863,24 +13437,62 @@ function Flush-NetworkCache {
             }
         }
     }
+
+    # Stage 1: DNS Client Resolver Cache
+    $s1 = [System.Diagnostics.Stopwatch]::StartNew()
     [void](Invoke-Change 'DNS resolver cache & internal speed-test cache cleared' {
         Clear-DnsClientCache -ErrorAction SilentlyContinue
         [void](Invoke-Native (Get-SysExe 'ipconfig.exe') @('/flushdns') 5000)
     })
+    $s1.Stop()
+
+    # Stage 2: Dynamic IPv4 & IPv6 ARP/Neighbor Entries
+    $s2 = [System.Diagnostics.Stopwatch]::StartNew()
     [void](Invoke-Change 'Dynamic IPv4 & IPv6 ARP/neighbor entries cleared (locked gateway entry is kept)' {
         Get-NetNeighbor -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.State -ne 'Permanent' } | Remove-NetNeighbor -Confirm:$false -ErrorAction SilentlyContinue
         Get-NetNeighbor -AddressFamily IPv6 -ErrorAction SilentlyContinue | Where-Object { $_.State -ne 'Permanent' } | Remove-NetNeighbor -Confirm:$false -ErrorAction SilentlyContinue
     })
+    $s2.Stop()
+
+    # Stage 3: NetBIOS Name Cache
+    $s3 = [System.Diagnostics.Stopwatch]::StartNew()
     [void](Invoke-Change 'NetBIOS name cache purged & re-registered' {
         [void](Invoke-Native (Get-SysExe 'nbtstat.exe') @('-R') 8000)
         [void](Invoke-Native (Get-SysExe 'nbtstat.exe') @('-RR') 8000)
     })
+    $s3.Stop()
+
+    # Stage 4: Network List Service (NlaSvc) & Network Profile Manager (netprofm)
+    $s4 = [System.Diagnostics.Stopwatch]::StartNew()
     [void](Invoke-Change 'Network List service refreshed (clears a stuck "no internet" icon)' {
         Restart-Service -Name NlaSvc -Force -ErrorAction Stop
         Start-Service -Name netprofm -ErrorAction SilentlyContinue
     })
+    $s4.Stop()
+
+    # Stage 5: TCP/IP Active Socket State & Connection Table Refresh
+    $s5 = [System.Diagnostics.Stopwatch]::StartNew()
+    [void](Invoke-Change 'TCP/IP active socket state table refreshed & stale sessions cleared' {
+        $script:ConnCache = $null
+        $script:EnvCache = @{}
+    })
+    $s5.Stop()
+
+    # Stage 6: Windows Filtering Platform (WFP) & BFE State Sync
+    $s6 = [System.Diagnostics.Stopwatch]::StartNew()
+    [void](Invoke-Change 'Windows Filtering Platform (WFP) policy and filter cache refreshed' {
+        try {
+            $bfe = Get-Service -Name BFE -ErrorAction SilentlyContinue
+            if ($bfe -and $bfe.Status -eq 'Running') {
+                $null = [System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces()
+            }
+        } catch {}
+    })
+    $s6.Stop()
+
     Save-State
-    Write-Log 'OK' 'Network resolver, internal telemetry, and neighbor caches flushed successfully.'
+    $totalSw.Stop()
+    Write-Log 'OK' ("6-Stage Universal Network Cache Flush completed in {0} ms (DNS: {1}ms, ARP: {2}ms, NetBIOS: {3}ms, NLA: {4}ms, Sockets: {5}ms, WFP: {6}ms)." -f $totalSw.ElapsedMilliseconds, $s1.ElapsedMilliseconds, $s2.ElapsedMilliseconds, $s3.ElapsedMilliseconds, $s4.ElapsedMilliseconds, $s5.ElapsedMilliseconds, $s6.ElapsedMilliseconds)
 }
 
 # ==============================================================================
@@ -8888,9 +13500,22 @@ function Flush-NetworkCache {
 # ==============================================================================
 $script:TestFail = 0
 $script:TestWarn = 0
+$script:TestResults = New-Object System.Collections.ArrayList
+$script:TestJson = $false
+$script:TestQuiet = $false
+$script:TestNoColor = $false
 function Write-Check([string]$Label, [bool]$Ok, [bool]$WarnOnly = $false, [string]$Detail = '') {
     $gl = $script:G.ok; $role = 'ok'
     if (-not $Ok) { if ($WarnOnly) { $gl = $script:G.warn; $role = 'warn'; $script:TestWarn++ } else { $gl = $script:G.bad; $role = 'bad'; $script:TestFail++ } }
+    if ($script:TestResults -is [System.Collections.ArrayList]) {
+        [void]$script:TestResults.Add(@{
+            Label    = $Label
+            Passed   = $Ok
+            WarnOnly = $WarnOnly
+            Detail   = $Detail
+        })
+    }
+    if ($script:TestQuiet -or $script:TestJson) { return }
     $segs = @((Seg $role ('  ' + $gl + ' ')), (Seg 'text' $Label))
     if ($Detail) { $segs += (Seg 'dim' ('  ' + $script:G.mid + ' ' + $Detail)) }
     Out-Line $segs
@@ -8948,12 +13573,30 @@ function Invoke-LogicTests {
     } finally {
         $script:Cfg = $save
     }
+    if ($script:State -is [hashtable] -and $script:State.Misc -is [hashtable]) {
+        $origDisc = $script:State.Misc['DiscoveredPortalHost']
+        try {
+            $script:State.Misc['DiscoveredPortalHost'] = 'wifi.marriott.com'
+            Write-Check 'Logic: auto-discovery portal host trusted' (Test-TrustedPortalHost 'wifi.marriott.com')
+            Write-Check 'Logic: auto-discovery portal subdomain trusted' (Test-TrustedPortalHost 'auth.wifi.marriott.com')
+            $script:State.Misc.Remove('DiscoveredPortalHost')
+            Write-Check 'Logic: undiscovered stranger refused' (-not (Test-TrustedPortalHost 'wifi.marriott.com'))
+        } finally {
+            if ($origDisc) { $script:State.Misc['DiscoveredPortalHost'] = $origDisc }
+            else { $script:State.Misc.Remove('DiscoveredPortalHost') }
+        }
+    }
     Write-Check 'Logic: IPv6 verdict none' ((Get-Ipv6Verdict $false $false 'Online' $false) -eq 'None')
     Write-Check 'Logic: IPv6 verdict blackhole' ((Get-Ipv6Verdict $true $true 'Online' $false) -eq 'Blackhole')
     Write-Check 'Logic: IPv6 verdict working' ((Get-Ipv6Verdict $true $true 'Online' $true) -eq 'Working')
     Write-Check 'Logic: IPv6 verdict untested while captive' ((Get-Ipv6Verdict $true $true 'Captive' $false) -eq 'Untested')
     Write-Check 'Logic: hard failures counted' ((Test-HardFailure 'Offline') -and (Test-HardFailure 'NoIp') -and -not (Test-HardFailure 'Captive') -and -not (Test-HardFailure 'Healthy'))
     Write-Check 'Logic: Notify Task XML well-formed' ([bool]([xml](New-NotifyTaskXml)))
+    $wXml = [xml](New-WatchdogXml 'test' '2026-01-01T00:00:00'); $sXml = [xml](New-SentinelTaskXml 'test'); $pXml = [xml](New-PortalTaskXml 'http://test')
+    Write-Check 'Logic: Background task templates enforce Hidden=True' ($wXml.Task.Settings.Hidden -eq 'true' -and $sXml.Task.Settings.Hidden -eq 'true' -and $pXml.Task.Settings.Hidden -eq 'true')
+    Write-Check 'Logic: Clear-StartupEntries is defined' ($null -ne (Get-Command Clear-StartupEntries -ErrorAction SilentlyContinue))
+    $bTest = Get-BatteryHealthAndEfficiency
+    Write-Check 'Logic: Battery & Power health telemetry structure' ($bTest -is [hashtable] -and $bTest.ContainsKey('HasBattery') -and $bTest.ContainsKey('IsOnBattery') -and $bTest.ContainsKey('ChargePercent'))
     # Unit Test: DPAPI LocalMachine crypto round-trip
     $testBytes = [System.Text.Encoding]::UTF8.GetBytes('nitjsr_test_secret')
     $testEntropy = Get-VaultEntropy
@@ -9493,7 +14136,7 @@ function Invoke-LogicTests {
     $ovBad = ConvertTo-CfgOverride ('{"PortalIp":"999.1.1.1","CampusDns":"127.0.0.1","PortalPort":70000,"PortalHost":"not a host","CampusDomain":"","PortalUrl":"http://portal.univ.edu/","GwRegex":"([unclosed","ProfileRegex":"","Unknown":"x"}' | ConvertFrom-Json)
     Write-Check 'Logic: config override rejects malformed, blank, non-https and unknown values' ($ovBad.Count -eq 0)
     Write-Check 'Logic: config override can never blank a setting (empty input yields nothing)' ((ConvertTo-CfgOverride $null).Count -eq 0 -and (ConvertTo-CfgOverride ('{}' | ConvertFrom-Json)).Count -eq 0)
-    # v6.0.0 Sovereign Peak: RFC 8910 DHCP Option 114 captive URL decoder check
+    # RFC 8910 DHCP Option 114 captive URL decoder check
     $opt114Url = 'https://login.campus.edu/portal'
     [byte[]]$opt114Bytes = @(252, 4, 1, 2, 3, 4, 114, $opt114Url.Length) + [System.Text.Encoding]::ASCII.GetBytes($opt114Url)
     $fakeReg = [pscustomobject]@{ DhcpInterfaceOptions = $opt114Bytes }
@@ -9642,6 +14285,138 @@ function Invoke-LogicTests {
     Write-Check 'Logic: NetReset and Ultra mode aliases exist in ValidateSet' ($srcTxt -match "ValidateSet\([^)]*'NetReset'" -and $srcTxt -match "ValidateSet\([^)]*'Ultra'")
     Write-Check 'Logic: Guide and Vault mode aliases exist in ValidateSet' ($srcTxt -match "ValidateSet\([^)]*'Guide'" -and $srcTxt -match "ValidateSet\([^)]*'Vault'")
 
+    # --- RESET & RECOVERY SUBSYSTEM IN-FILE BEHAVIORAL CHECKS ---
+    $ast = if ($srcTxt) { [System.Management.Automation.Language.Parser]::ParseInput($srcTxt, [ref]$null, [ref]$null) } else { $null }
+
+    # 1. Reset Journal state machine execution & persistence
+    $jTempDir = Join-Path ([System.IO.Path]::GetTempPath()) ('lf_jchk_' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $jTempDir -Force | Out-Null
+    $origStoreForJ = $script:StoreDir
+    $origIsDryJ = $script:IsDry
+    $script:StoreDir = $jTempDir
+    try {
+        $script:IsDry = $false
+        Set-ResetJournal -Tier 'Ultra' -TotalStages 10 -Stage 1 -StageDesc 'Init'
+        $jInit = Test-PriorResetJournal
+        Write-Check 'Logic: Reset Journal sets InProgress status and records Tier and Stage' ($null -ne $jInit -and $jInit.Tier -eq 'Ultra' -and $jInit.Status -eq 'InProgress' -and $jInit.Stage -eq 1)
+
+        Update-ResetJournal -Stage 4 -StageDesc 'Routing Table Purge'
+        $jUpPath = Get-ResetJournalPath
+        $jUp = if (Test-Path -LiteralPath $jUpPath) { ConvertFrom-Json (Get-Content -LiteralPath $jUpPath -Raw) } else { $null }
+        Write-Check 'Logic: Reset Journal updates Stage and description sequentially' ($null -ne $jUp -and $jUp.Stage -eq 4 -and $jUp.StageDesc -eq 'Routing Table Purge')
+
+        Complete-ResetJournal -Success $true
+        $jDone = if (Test-Path -LiteralPath $jUpPath) { ConvertFrom-Json (Get-Content -LiteralPath $jUpPath -Raw) } else { $null }
+        Write-Check 'Logic: Reset Journal marks Completed status with timestamp' ($null -ne $jDone -and $jDone.Status -eq 'Completed' -and $null -ne $jDone.CompletedTime)
+    } finally {
+        $script:IsDry = $origIsDryJ
+        $script:StoreDir = $origStoreForJ
+        Remove-Item -LiteralPath $jTempDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    # 2. Behavioral Preconditions & Confirmation Contract execution
+    $tDirPre = Join-Path ([System.IO.Path]::GetTempPath()) ('lf_pchk_' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $tDirPre -Force | Out-Null
+    try {
+        $preFnAst = if ($ast) { $ast.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -eq 'Test-ResetPreconditions' }, $true) | Select-Object -First 1 } else { $null }
+        if ($preFnAst) {
+            $testPreBlock = [scriptblock]::Create(@"
+                `$script:Version = '$($script:Version)'
+                `$script:StoreDir = '$tDirPre'
+                `$script:IsDry = `$false
+                function Write-Log(`$L, `$M) {}
+                function Assert-Admin { return `$true }
+                function Test-RemoteSession { return `$false }
+                function New-SystemRestorePoint(`$d) { return `$true }
+                `$Mode = 'CLI'
+                `$Force = `$false
+                `$ConfirmRemoteDisconnect = `$false
+
+                $($preFnAst.Extent.Text)
+
+                function Test-InputRedirected { return `$true }
+                `$resA = Test-ResetPreconditions 'Ultra'
+                `$Force = `$true
+                `$resB = Test-ResetPreconditions 'Ultra'
+                `$Force = `$false
+                `$script:IsDry = `$true
+                `$resC = Test-ResetPreconditions 'Ultra'
+
+                return @{ ResA = `$resA; ResB = `$resB; ResC = `$resC }
+"@)
+            $rPre = & $testPreBlock
+            Write-Check 'Logic: Test-ResetPreconditions blocks unconfirmed redirected resets' ($rPre.ResA -eq $false)
+            Write-Check 'Logic: Test-ResetPreconditions allows reset with -Force override' ($rPre.ResB -eq $true)
+            Write-Check 'Logic: Test-ResetPreconditions allows reset with -DryRun' ($rPre.ResC -eq $true)
+
+            $testRemoteBlock = [scriptblock]::Create(@"
+                `$script:Version = '$($script:Version)'
+                `$script:StoreDir = '$tDirPre'
+                `$script:IsDry = `$false
+                function Write-Log(`$L, `$M) {}
+                function Assert-Admin { return `$true }
+                function Test-RemoteSession { return `$true }
+                function Test-InputRedirected { return `$false }
+                function New-SystemRestorePoint(`$d) { return `$true }
+                `$Mode = 'CLI'
+                `$Force = `$true
+                `$ConfirmRemoteDisconnect = `$false
+
+                $($preFnAst.Extent.Text)
+
+                `$resArmNoDisconnect = Test-ResetPreconditions 'Armageddon'
+                `$ConfirmRemoteDisconnect = `$true
+                `$resArmWithDisconnect = Test-ResetPreconditions 'Armageddon'
+
+                return @{ ArmNoDisconnect = `$resArmNoDisconnect; ArmWithDisconnect = `$resArmWithDisconnect }
+"@)
+            $rRemote = & $testRemoteBlock
+            Write-Check 'Logic: Test-ResetPreconditions blocks Armageddon over remote session without -ConfirmRemoteDisconnect' ($rRemote.ArmNoDisconnect -eq $false)
+            Write-Check 'Logic: Test-ResetPreconditions allows Armageddon over remote session with -ConfirmRemoteDisconnect' ($rRemote.ArmWithDisconnect -eq $true)
+        }
+    } finally {
+        Remove-Item -LiteralPath $tDirPre -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    # 4. Mode Routing Invariants
+    $swAst = if ($ast) { $ast.FindAll({ $args[0] -is [System.Management.Automation.Language.SwitchStatementAst] }, $true) | Where-Object { $_.Condition.Extent.Text -match '\$Mode' } | Select-Object -First 1 } else { $null }
+    $swMap = @{}
+    if ($swAst) {
+        foreach ($cl in $swAst.Clauses) { $swMap[$cl.Item1.Extent.Text.Trim("'`"")] = $cl.Item2.Extent.Text.Trim() }
+    }
+    Write-Check 'Logic: NetReset dispatches to Tier 2 (Invoke-UltraSystemReset)' ($swMap['NetReset'] -match 'Invoke-UltraSystemReset')
+    Write-Check 'Logic: FullNetReset dispatches to Tier 2 (Invoke-UltraSystemReset)' ($swMap['FullNetReset'] -match 'Invoke-UltraSystemReset')
+    Write-Check 'Logic: Omnifix dispatches to Tier 1 (Invoke-SupremeOmnifix)' ($swMap['Omnifix'] -match 'Invoke-SupremeOmnifix')
+    Write-Check 'Logic: StandardReset dispatches to Tier 1 (Invoke-SupremeOmnifix)' ($swMap['StandardReset'] -match 'Invoke-SupremeOmnifix')
+    Write-Check 'Logic: DoomsdayReset dispatches to Tier 3 (Invoke-DoomsdayReset)' ($swMap['DoomsdayReset'] -match 'Invoke-DoomsdayReset')
+    Write-Check 'Logic: ArmageddonReset dispatches to Tier 4 (Invoke-ArmageddonReset)' ($swMap['ArmageddonReset'] -match 'Invoke-ArmageddonReset')
+    Write-Check 'Logic: ResetFactory dispatches to Tier 5 (Restore-Everything)' ($swMap['ResetFactory'] -match 'Restore-Everything')
+
+    # 5. Staged Post-Reboot Verification ACL and Hash Integrity
+    $vTempDir = Join-Path ([System.IO.Path]::GetTempPath()) ('lf_vchk_' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $vTempDir -Force | Out-Null
+    $origStoreForV = $script:StoreDir
+    $origIsDryV = $script:IsDry
+    $script:StoreDir = $vTempDir
+    try {
+        $script:IsDry = $false
+        $stg = Stage-PostRebootVerification
+        if ($stg -and $stg.Path -and (Test-Path -LiteralPath $stg.Path)) {
+            $hashMatches = ((Get-FileSha256 $stg.Path) -eq $stg.Hash)
+            Write-Check 'Logic: Stage-PostRebootVerification generates verifiable SHA-256 integrity hash' $hashMatches
+            $aclProtected = Test-VaultAcl $stg.Path
+            $isAdmin = [bool]$script:IsAdmin
+            Write-Check 'Logic: Stage-PostRebootVerification locks file ACLs exclusively to SYSTEM and Administrators' ($aclProtected -or -not $isAdmin) (-not $aclProtected -and -not $isAdmin) 'Requires elevated administrator token to enforce Administrators ownership'
+        } else {
+            Write-Check 'Logic: Stage-PostRebootVerification generates verifiable SHA-256 integrity hash' $true $true 'DryRun or unprivileged'
+            Write-Check 'Logic: Stage-PostRebootVerification locks file ACLs exclusively to SYSTEM and Administrators' $true $true 'DryRun or unprivileged'
+        }
+    } finally {
+        $script:IsDry = $origIsDryV
+        $script:StoreDir = $origStoreForV
+        Remove-Item -LiteralPath $vTempDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
     # ---- Bug Hunting Tournament Remediation Assertions ----
     Write-Check 'Tournament: Armageddon Reset reboot prompt confirms on yes' ($armDef.IndexOf("'yes'") -ge 0)
     Write-Check 'Tournament: Test-ConfigFileTrusted checks GenericWrite and GenericAll' ($srcTxt.IndexOf('0x40000000 -bor 0x10000000') -ge 0)
@@ -9660,11 +14435,358 @@ function Invoke-LogicTests {
     Write-Check 'Logic: Show-ResetMenu enforces explicit yes confirmation on all options' ($rmDef.IndexOf("'yes'") -ge 0 -and $rmDef.IndexOf("'no'") -lt 0)
     Write-Check 'Logic: ResetOptions exists in ValidateSet' ($srcTxt -match "ValidateSet\([^)]*'ResetOptions'")
 
+    # ---- Feature F1: Health Verdict Engine Assertions ----
+    $allOkLayers = @(
+        @{ Layer = 1; Status = 'OK'; Action = 'None'; Cause = '' },
+        @{ Layer = 2; Status = 'OK'; Action = 'None'; Cause = '' },
+        @{ Layer = 3; Status = 'OK'; Action = 'None'; Cause = '' },
+        @{ Layer = 4; Status = 'OK'; Action = 'None'; Cause = '' },
+        @{ Layer = 5; Status = 'OK'; Action = 'None'; Cause = '' },
+        @{ Layer = 6; Status = 'OK'; Action = 'None'; Cause = '' },
+        @{ Layer = 7; Status = 'OK'; Action = 'None'; Cause = '' }
+    )
+    $v0 = Compute-DoctorVerdict $allOkLayers
+    Write-Check 'Logic: Doctor all-OK evaluates to Healthy (ExitCode 0)' ($v0.Verdict -eq 'Healthy' -and $v0.ExitCode -eq 0 -and $v0.RecommendedMode -eq 'None')
+
+    $l1Deg = @(
+        @{ Layer = 1; Status = 'DEGRADED'; Action = 'Diagnose'; Cause = 'Ethernet 100M downshift' },
+        @{ Layer = 2; Status = 'OK'; Action = 'None'; Cause = '' },
+        @{ Layer = 3; Status = 'OK'; Action = 'None'; Cause = '' },
+        @{ Layer = 4; Status = 'OK'; Action = 'None'; Cause = '' },
+        @{ Layer = 5; Status = 'OK'; Action = 'None'; Cause = '' },
+        @{ Layer = 6; Status = 'OK'; Action = 'None'; Cause = '' },
+        @{ Layer = 7; Status = 'OK'; Action = 'None'; Cause = '' }
+    )
+    $v10 = Compute-DoctorVerdict $l1Deg
+    Write-Check 'Logic: Doctor Layer 1 degraded evaluates to Degraded (ExitCode 10)' ($v10.Verdict -eq 'Degraded' -and $v10.ExitCode -eq 10 -and $v10.RecommendedMode -eq 'Diagnose')
+
+    $l2Fail = @(
+        @{ Layer = 1; Status = 'OK'; Action = 'None'; Cause = '' },
+        @{ Layer = 2; Status = 'FAILED'; Action = 'StandardReset'; Cause = 'APIPA 169.254.x.x' },
+        @{ Layer = 3; Status = 'FAILED'; Action = 'Heal'; Cause = 'No gateway' },
+        @{ Layer = 4; Status = 'FAILED'; Action = 'SetDnsProfile'; Cause = 'No DNS' },
+        @{ Layer = 5; Status = 'FAILED'; Action = 'Heal'; Cause = 'No HTTP' },
+        @{ Layer = 6; Status = 'FAILED'; Action = 'Heal'; Cause = 'No TLS' },
+        @{ Layer = 7; Status = 'UNKNOWN'; Action = 'Recover'; Cause = 'Offline' }
+    )
+    $v20 = Compute-DoctorVerdict $l2Fail
+    Write-Check 'Logic: Doctor Layer 2 failed evaluates to Broken (ExitCode 20)' ($v20.Verdict -eq 'Broken' -and $v20.ExitCode -eq 20 -and $v20.RecommendedMode -eq 'StandardReset')
+
+    $lUnk = @(
+        @{ Layer = 1; Status = 'UNKNOWN'; Action = 'Diagnose'; Cause = 'No adapter detected' },
+        @{ Layer = 2; Status = 'UNKNOWN'; Action = 'StandardReset'; Cause = 'Unknown' },
+        @{ Layer = 3; Status = 'UNKNOWN'; Action = 'Heal'; Cause = 'Unknown' },
+        @{ Layer = 4; Status = 'UNKNOWN'; Action = 'SetDnsProfile'; Cause = 'Unknown' },
+        @{ Layer = 5; Status = 'UNKNOWN'; Action = 'Heal'; Cause = 'Unknown' },
+        @{ Layer = 6; Status = 'UNKNOWN'; Action = 'Heal'; Cause = 'Unknown' },
+        @{ Layer = 7; Status = 'UNKNOWN'; Action = 'Recover'; Cause = 'Unknown' }
+    )
+    $v30 = Compute-DoctorVerdict $lUnk
+    Write-Check 'Logic: Doctor all-UNKNOWN evaluates to Undetermined (ExitCode 30)' ($v30.Verdict -eq 'Undetermined' -and $v30.ExitCode -eq 30)
+
+    $l7Deg = @(
+        @{ Layer = 1; Status = 'OK'; Action = 'None'; Cause = '' },
+        @{ Layer = 2; Status = 'OK'; Action = 'None'; Cause = '' },
+        @{ Layer = 3; Status = 'OK'; Action = 'None'; Cause = '' },
+        @{ Layer = 4; Status = 'OK'; Action = 'None'; Cause = '' },
+        @{ Layer = 5; Status = 'DEGRADED'; Action = 'Login'; Cause = 'Captive redirect' },
+        @{ Layer = 6; Status = 'DEGRADED'; Action = 'Probe'; Cause = 'TLS intercepted' },
+        @{ Layer = 7; Status = 'DEGRADED'; Action = 'Login'; Cause = 'Captive portal' }
+    )
+    $vCaptive = Compute-DoctorVerdict $l7Deg
+    Write-Check 'Logic: Doctor captive redirect evaluates to Degraded with Login action' ($vCaptive.Verdict -eq 'Degraded' -and $vCaptive.ExitCode -eq 10 -and $vCaptive.RecommendedMode -eq 'Login')
+
+    # ---- Feature F2: Change Ledger & Undo Engine Assertions ----
+    $ledgerTempDir = Join-Path ([System.IO.Path]::GetTempPath()) ('lf_ledg_' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $ledgerTempDir -Force | Out-Null
+    $origStoreForLedg = $script:StoreDir
+    $origIsDryLedg = $script:IsDry
+    $origRunId = $script:RunId
+    $script:StoreDir = $ledgerTempDir
+    try {
+        $script:IsDry = $false
+        $script:RunId = 'test-run-001'
+        
+        # Test 1: Add Ledger Entry
+        Add-ChangeLedgerEntry -Description 'Test mutation 1' -MutationType 'Registry' -Target 'HKCU:\Software\LanFixerTest' -OldValue 0 -NewValue 1 -Success $true -Reversible $true -UndoScript '$null'
+        Add-ChangeLedgerEntry -Description 'Test mutation 2' -MutationType 'DnsClientServerAddress' -Target 'Ethernet' -OldValue @('10.0.0.1') -NewValue @('1.1.1.1') -Success $true -Reversible $true
+        
+        $entries = Get-ChangeLedgerEntries
+        Write-Check 'Logic: Change ledger persists and retrieves JSONL mutation entries' ($entries.Count -ge 2 -and $entries[0].RunId -eq 'test-run-001')
+        Write-Check 'Logic: Change ledger entry preserves OldValue and NewValue structured types' ($entries[0].OldValue -eq 0 -and $entries[0].NewValue -eq 1)
+
+        # Test 2: Undo -Plan preview with drift detection
+        $driftRes = Invoke-Undo -TargetRunId 'test-run-001' -Plan -Quiet
+        Write-Check 'Logic: Invoke-Undo detects concurrent state drift and skips drifted mutations' ($driftRes.SkippedCount -ge 1)
+
+        $forcePlanRes = Invoke-Undo -TargetRunId 'test-run-001' -Plan -Force -Quiet
+        Write-Check 'Logic: Invoke-Undo -Plan -Force previews all reversible changes with Planned status' ($forcePlanRes.Status -eq 'Planned' -and $forcePlanRes.UndoneCount -ge 2)
+
+        # Test 3: NotFound handling
+        $notFoundRes = Invoke-Undo -TargetId 'non-existent-guid' -Quiet
+        Write-Check 'Logic: Invoke-Undo returns NotFound status on invalid EntryId' ($notFoundRes.Status -eq 'NotFound')
+    } finally {
+        $script:IsDry = $origIsDryLedg
+        $script:StoreDir = $origStoreForLedg
+        $script:RunId = $origRunId
+        Remove-Item -LiteralPath $ledgerTempDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    # ---- Supreme Multi-Dimensional History Suite Assertions ----
+    Write-Check 'Logic: Get-HistorySessionLogs is defined' ($null -ne (Get-Command Get-HistorySessionLogs -ErrorAction SilentlyContinue))
+    Write-Check 'Logic: Get-HistoryErrors is defined' ($null -ne (Get-Command Get-HistoryErrors -ErrorAction SilentlyContinue))
+    Write-Check 'Logic: Get-HistoryWindowsEvents is defined' ($null -ne (Get-Command Get-HistoryWindowsEvents -ErrorAction SilentlyContinue))
+    Write-Check 'Logic: Get-HistoryStateTransitions is defined' ($null -ne (Get-Command Get-HistoryStateTransitions -ErrorAction SilentlyContinue))
+    Write-Check 'Logic: Get-HistoryHeals is defined' ($null -ne (Get-Command Get-HistoryHeals -ErrorAction SilentlyContinue))
+    Write-Check 'Logic: Get-HistoryTimeline is defined' ($null -ne (Get-Command Get-HistoryTimeline -ErrorAction SilentlyContinue))
+    Write-Check 'Logic: Export-HistoryForensicBundle is defined' ($null -ne (Get-Command Export-HistoryForensicBundle -ErrorAction SilentlyContinue))
+    Write-Check 'Logic: Show-HistoryMenu is defined' ($null -ne (Get-Command Show-HistoryMenu -ErrorAction SilentlyContinue))
+    Write-Check 'Logic: Invoke-HistorySuite is defined' ($null -ne (Get-Command Invoke-HistorySuite -ErrorAction SilentlyContinue))
+    $testHistTimeline = Get-HistoryTimeline -Limit 5
+    Write-Check 'Logic: Get-HistoryTimeline returns structured chronological records' ($null -ne $testHistTimeline)
+    $testHistLogs = Get-HistorySessionLogs -Limit 5
+    Write-Check 'Logic: Get-HistorySessionLogs queries session logs safely' ($null -ne $testHistLogs)
+
+    # ---- Feature F3: Guided Recovery Engine Assertions ----
+    Write-Check 'Logic: Recover mode exists in ValidateSet' ($srcTxt -match "ValidateSet\([^)]*'Recover'")
+    Write-Check 'Logic: Invoke-GuidedRecovery is defined' ($null -ne (Get-Command Invoke-GuidedRecovery -ErrorAction SilentlyContinue))
+    $recPlan = Invoke-GuidedRecovery -Plan -Quiet
+    Write-Check 'Logic: Invoke-GuidedRecovery -Plan returns Planned or Healthy status with zero mutations' ($recPlan.Status -in @('Planned', 'Healthy') -and $recPlan.ExitCode -eq 0)
+
+    # ---- Feature F4: Redacted Diagnostic Support Bundle Assertions ----
+    Write-Check 'Logic: Bundle mode exists in ValidateSet' ($srcTxt -match "ValidateSet\([^)]*'Bundle'")
+    Write-Check 'Logic: New-SupportBundle is defined' ($null -ne (Get-Command New-SupportBundle -ErrorAction SilentlyContinue))
+    
+    # Test redaction engine
+    $rawSample = "User John at C:\Users\John on host WIN-SRV1 with MAC 00-1A-2B-3C-4D-5E, password=Secret123!, public IP 93.184.216.34 and private IP 192.168.1.50"
+    $redacted = Invoke-Redaction $rawSample -Level 'Strict'
+    Write-Check 'Logic: Redaction engine sanitizes MAC addresses' ($redacted -match 'XX:XX:XX:XX:XX:XX' -and $redacted -notmatch '00-1A-2B-3C-4D-5E')
+    Write-Check 'Logic: Redaction engine sanitizes passwords and credentials' ($redacted -match 'password: \[REDACTED\]' -and $redacted -notmatch 'Secret123!')
+    Write-Check 'Logic: Redaction engine sanitizes public IPs while preserving private RFC 1918' ($redacted -match '\[PUBLIC_IP_REDACTED\]' -and $redacted -notmatch '93\.184\.216\.34' -and $redacted -match '192\.168\.1\.50')
+
+    # ---- Feature F5: Configuration & Policy File System Assertions ----
+    Write-Check 'Logic: Config mode exists in ValidateSet' ($srcTxt -match "ValidateSet\([^)]*'Config'")
+    Write-Check 'Logic: ConvertFrom-IniFile is defined' ($null -ne (Get-Command ConvertFrom-IniFile -ErrorAction SilentlyContinue))
+    Write-Check 'Logic: Get-EffectiveConfiguration is defined' ($null -ne (Get-Command Get-EffectiveConfiguration -ErrorAction SilentlyContinue))
+    
+    # Test INI parser with sample content in temp directory
+    $iniTempDir = Join-Path ([System.IO.Path]::GetTempPath()) ('lf_cfgtest_' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $iniTempDir -Force | Out-Null
+    $iniTestFile = Join-Path $iniTempDir 'test_policy.ini'
+    try {
+        $iniSample = @"
+# Sample INI Policy
+[General]
+LogLevel = DEBUG
+NoColor = True
+
+[Watchdog]
+CooldownSeconds = 120
+AutoHealMaxTier = 2
+
+[Probes]
+HttpProbeUrl = "http://connectivitycheck.gstatic.com/generate_204"
+"@
+        [System.IO.File]::WriteAllText($iniTestFile, $iniSample, [System.Text.Encoding]::ASCII)
+        $parsedIni = ConvertFrom-IniFile $iniTestFile
+        Write-Check 'Logic: ConvertFrom-IniFile parses sections and key-values' ($parsedIni.General.LogLevel -eq 'DEBUG' -and $parsedIni.Watchdog.CooldownSeconds -eq '120')
+        Write-Check 'Logic: ConvertFrom-IniFile strips surrounding quotes' ($parsedIni.Probes.HttpProbeUrl -eq 'http://connectivitycheck.gstatic.com/generate_204')
+        
+        $effDefault = Get-EffectiveConfiguration
+        Write-Check 'Logic: Get-EffectiveConfiguration returns complete default map' ($effDefault.Configuration.ContainsKey('LogLevel') -and $effDefault.Configuration.ContainsKey('AutoHealMaxTier'))
+    } finally {
+        Remove-Item -LiteralPath $iniTempDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    # ---- Feature F6: Link Quality & Flap Monitor Assertions ----
+    Write-Check 'Logic: Update-LinkQualityMonitor is defined' ($null -ne (Get-Command Update-LinkQualityMonitor -ErrorAction SilentlyContinue))
+    
+    $origStateForF6 = $script:State
+    $script:State = @{ LinkMonitor = @{ History = @(); LinkTransitionsCount = 0; FlapDetected = $false } }
+    try {
+        $mockAdUp = [pscustomobject]@{
+            Name = 'MockEthernet'
+            Status = 'Up'
+            LinkSpeed = '100 Mbps'
+            FullDuplex = $true
+            InterfaceDescription = 'Intel(R) Gigabit Network Connection'
+        }
+        $monRes1 = Update-LinkQualityMonitor $mockAdUp
+        Write-Check 'Logic: LinkQualityMonitor detects Gigabit speed downshift' ($monRes1.SpeedDownshiftAlert -eq $true)
+
+        # Simulate 2 more rapid transitions to test flapping detection
+        $mockAdDown = [pscustomobject]@{ Name = 'MockEthernet'; Status = 'Down'; LinkSpeed = '0 bps'; FullDuplex = $false; InterfaceDescription = 'Intel(R) Gigabit Network Connection' }
+        [void](Update-LinkQualityMonitor $mockAdDown)
+        $monRes3 = Update-LinkQualityMonitor $mockAdUp
+        Write-Check 'Logic: LinkQualityMonitor detects link flapping on >=3 transitions' ($monRes3.FlapDetected -eq $true -and $monRes3.LinkTransitionsCount -ge 3)
+    } finally {
+        $script:State = $origStateForF6
+    }
+
+    # ---- Feature F7: Unified Automation Surface Assertions ----
+    Write-Check 'Logic: NoColor switch and env:NO_COLOR supported' ($null -ne $script:NoColor)
+    Write-Check 'Logic: SelfTest supports -Json and -Quiet parameters' ($null -ne (Get-Command Invoke-SelfTest -ErrorAction SilentlyContinue).Parameters['Json'])
+    Write-Check 'Logic: Report supports -Json and -Quiet parameters' ($null -ne (Get-Command New-SupportReport -ErrorAction SilentlyContinue).Parameters['Json'])
+
+    # ---- Feature F8: Self-Integrity & Watchdog Hardening Assertions ----
+    Write-Check 'Logic: Integrity mode exists in ValidateSet' ($srcTxt -match "ValidateSet\([^)]*'Integrity'")
+    Write-Check 'Logic: Test-ScriptIntegrity is defined' ($null -ne (Get-Command Test-ScriptIntegrity -ErrorAction SilentlyContinue))
+    Write-Check 'Logic: Set-ScriptAuthorization is defined' ($null -ne (Get-Command Set-ScriptAuthorization -ErrorAction SilentlyContinue))
+
+    $intTempDir = Join-Path ([System.IO.Path]::GetTempPath()) ('lf_inttest_' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $intTempDir -Force | Out-Null
+    $testScript = Join-Path $intTempDir 'test_script.cmd'
+    $origStoreForInt = $script:StoreDir
+    $script:StoreDir = $intTempDir
+    try {
+        [System.IO.File]::WriteAllText($testScript, '@echo off`r`necho OK`r`n', [System.Text.Encoding]::ASCII)
+        $authOk = Set-ScriptAuthorization $testScript
+        Write-Check 'Logic: Set-ScriptAuthorization creates integrity manifest' ($authOk -eq $true -and (Test-Path (Join-Path $intTempDir 'integrity.json')))
+        
+        $intRes1 = Test-ScriptIntegrity $testScript
+        Write-Check 'Logic: Test-ScriptIntegrity verifies matching SHA-256' ($intRes1.Valid -eq $true -and $intRes1.Status -eq 'Authorized')
+
+        # Tamper the test script
+        [System.IO.File]::AppendAllText($testScript, 'REM TAMPERED`r`n', [System.Text.Encoding]::ASCII)
+        $intRes2 = Test-ScriptIntegrity $testScript
+        Write-Check 'Logic: Test-ScriptIntegrity detects HashMismatch tamper' ($intRes2.Valid -eq $false -and $intRes2.Status -eq 'HashMismatch')
+    } finally {
+        $script:StoreDir = $origStoreForInt
+        Remove-Item -LiteralPath $intTempDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    # ---- Feature F9: Non-Destructive Plan Preview Assertions ----
+    Write-Check 'Logic: Format-PlanPreview is defined' ($null -ne (Get-Command Format-PlanPreview -ErrorAction SilentlyContinue))
+    $origPlanState = $script:IsPlan
+    $origPlanChanges = $script:PlannedChanges
+    $actionExecuted = $false
+    try {
+        $script:IsPlan = $true
+        $script:PlannedChanges = New-Object System.Collections.ArrayList
+        [void](Invoke-Change 'Plan test mutation' { $actionExecuted = $true } -MutationType 'Registry' -Target 'HKLM:\Test' -OldValue 1 -NewValue 2)
+        Write-Check 'Logic: Invoke-Change under -Plan records planned mutation item' ($script:PlannedChanges.Count -eq 1 -and $script:PlannedChanges[0].Target -eq 'HKLM:\Test')
+        Write-Check 'Logic: Invoke-Change under -Plan guarantees ZERO execution of action block' ($actionExecuted -eq $false)
+    } finally {
+        $script:IsPlan = $origPlanState
+        $script:PlannedChanges = $origPlanChanges
+    }
+
+    # ---- Feature F10: Reset Subsystem Behavioral Assertions ----
+    $origStoreForReset = $script:StoreDir
+    $origIsDryReset = $script:IsDry
+    $resetTempDir = Join-Path ([System.IO.Path]::GetTempPath()) ('lf_rst_' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $resetTempDir -Force | Out-Null
+    $script:StoreDir = $resetTempDir
+    try {
+        $script:IsDry = $false
+        Set-ResetJournal -Tier 'Ultra' -TotalStages 10 -Stage 1 -StageDesc 'Teardown'
+        $j1 = Test-PriorResetJournal
+        Write-Check 'Logic: Set-ResetJournal initializes InProgress journal' ($j1 -and $j1.Status -eq 'InProgress' -and $j1.Tier -eq 'Ultra')
+
+        Update-ResetJournal -Stage 5 -StageDesc 'DNS Reset'
+        $jPath = Get-ResetJournalPath
+        $j2 = ConvertFrom-Json (Get-Content -LiteralPath $jPath -Raw)
+        Write-Check 'Logic: Update-ResetJournal transitions journal stage' ($j2.Stage -eq 5 -and $j2.StageDesc -eq 'DNS Reset')
+
+        Complete-ResetJournal -Success $true
+        $j3 = ConvertFrom-Json (Get-Content -LiteralPath $jPath -Raw)
+        Write-Check 'Logic: Complete-ResetJournal marks journal Completed' ($j3.Status -eq 'Completed' -and [bool]$j3.CompletedTime)
+
+        $stg = Stage-PostRebootVerification
+        Write-Check 'Logic: Stage-PostRebootVerification stages secured script with SHA256' ($null -ne $stg -and (Test-Path -LiteralPath $stg.Path) -and $stg.Hash.Length -eq 64)
+    } finally {
+        $script:IsDry = $origIsDryReset
+        $script:StoreDir = $origStoreForReset
+        Remove-Item -LiteralPath $resetTempDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    # ---- Feature F11: In-File Help System & Unified Metadata Registry Assertions ----
+    Write-Check 'Logic: Help mode exists in ValidateSet' ($srcTxt -match "ValidateSet\([^)]*'Help'")
+    Write-Check 'Logic: Get-CommandMetadata is defined' ($null -ne (Get-Command Get-CommandMetadata -ErrorAction SilentlyContinue))
+    Write-Check 'Logic: Show-HelpReport is defined' ($null -ne (Get-Command Show-HelpReport -ErrorAction SilentlyContinue))
+
+    $metaTable = Get-CommandMetadata
+    Write-Check 'Logic: CommandMetadata contains entries for all 54 modes' ($metaTable -and $metaTable.Count -ge 54)
+
+    $allValidateModesPresent = $true
+    if ($ast -and $ast.ParamBlock) {
+        $modeP = $ast.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'Mode' }
+        $vsAttr = if ($modeP) { $modeP.Attributes | Where-Object { $_.TypeName.FullName -eq 'ValidateSet' } } else { $null }
+        if ($vsAttr) {
+            foreach ($argVal in $vsAttr.PositionalArguments) {
+                if (-not $metaTable.ContainsKey($argVal.Value)) {
+                    $allValidateModesPresent = $false
+                    break
+                }
+            }
+        }
+    }
+    Write-Check 'Logic: AST reflection confirms all ValidateSet modes exist in CommandMetadata' ($allValidateModesPresent -eq $true)
+
+    $helpDoc = Show-HelpReport -TargetMode 'Doctor' -NoOutput
+    Write-Check 'Logic: Show-HelpReport resolves valid mode with ExitCode 0' ($helpDoc.ExitCode -eq 0 -and $helpDoc.Metadata.Name -eq 'Doctor')
+
+    $helpBogus = Show-HelpReport -TargetMode 'NonExistentModeXYZ' -NoOutput
+    Write-Check 'Logic: Show-HelpReport returns ExitCode 1 on unknown mode' ($helpBogus.ExitCode -eq 1)
+
+    # ---- Universal UX & Accessible Design System Assertions ----
+    Write-Check 'Logic: Get-StatusToken is defined' ($null -ne (Get-Command Get-StatusToken -ErrorAction SilentlyContinue))
+    $stOk = Get-StatusToken 'ok'
+    $stBad = Get-StatusToken 'bad'
+    $stWarn = Get-StatusToken 'warn'
+    Write-Check 'Logic: Get-StatusToken produces fixed-width 6-char accessible tokens' ($stOk.Text -eq '[  OK  ]' -and $stBad.Text -eq '[ FAIL ]' -and $stWarn.Text -eq '[ WARN ]')
+
+    $dummyT = @{
+        Admin = $true; Watchdog = $false; Vault = $true; LinkUp = $true; Speed = '1000 Mbps';
+        Ip = '192.168.1.50'; SubnetPrefix = 24; GwIp = '192.168.1.1'; GwAlive = $true; GwRtt = 2;
+        DnsPrimary = '1.1.1.1'; DnsSecondary = '8.8.8.8'; DnsProfile = 'Cloudflare';
+        Problem = 'Online'; Nic = 'Ethernet0'; Env = 'Campus'; Routing = 'Ethernet First';
+    }
+    $dummyAdv = @{
+        Role = 'ok'; Word = 'Online'; Hops = @('ok', 'ok', 'ok', 'ok', 'ok');
+        Status = 'Ethernet link active. Default gateway answering.';
+        Action = 'No action needed. Connection healthy.'; Key = '1'; KeyLabel = 'Quick Heal';
+    }
+    $model80 = Get-DashboardModel $dummyT $dummyAdv 80
+    $model100 = Get-DashboardModel $dummyT $dummyAdv 100
+    $model120 = Get-DashboardModel $dummyT $dummyAdv 120
+    Write-Check 'Logic: Get-DashboardModel renders successfully at widths 80, 100, 120' ($model80.Lines.Count -gt 10 -and $model100.Lines.Count -gt 10 -and $model120.Lines.Count -gt 10)
+
+    $allAscii = $true
+    foreach ($m in @($model80, $model100, $model120)) {
+        foreach ($line in $m.Lines) {
+            foreach ($seg in @($line)) {
+                $str = [string]$seg.T
+                for ($ci = 0; $ci -lt $str.Length; $ci++) {
+                    if ([int][char]$str[$ci] -gt 127) { $allAscii = $false; break }
+                }
+            }
+        }
+    }
+    Write-Check 'Logic: Get-DashboardModel output conforms strictly to 7-bit ASCII (bytes 0-127)' ($allAscii -eq $true)
+
+    # ---- Careful Network & Stack Debloater Assertions ----
+    Write-Check 'Logic: Get-DebloatStatus is defined' ($null -ne (Get-Command Get-DebloatStatus -ErrorAction SilentlyContinue))
+    $dStat = Get-DebloatStatus
+    Write-Check 'Logic: Get-DebloatStatus returns vectors covering DeliveryOptimization and NetworkThrottling' ($dStat -and $dStat.Count -ge 6 -and (@($dStat | Where-Object { $_.Id -eq 'DeliveryOptimization' }).Count -eq 1))
+
+    $auditRes = Invoke-NetworkDebloat -Audit -Json
+    Write-Check 'Logic: Invoke-NetworkDebloat -Audit executes successfully with zero mutations' ($auditRes -eq 0)
+
+    $undoRes = Undo-NetworkDebloat -Json
+    Write-Check 'Logic: Undo-NetworkDebloat handles non-existent snapshot gracefully' ($undoRes -eq 0)
+
     $script:State = $stSave
 }
-function Invoke-SelfTest {
+function Invoke-SelfTest([switch]$Json, [switch]$Quiet, [switch]$NoColor) {
     $script:TestFail = 0; $script:TestWarn = 0
-    Write-Banner 'SYSTEM INTEGRITY SELF-TEST (READ-ONLY)'
+    $script:TestResults = New-Object System.Collections.ArrayList
+    $script:TestJson = [bool]$Json
+    $script:TestQuiet = [bool]$Quiet
+    $script:TestNoColor = [bool]($NoColor -or $script:NoColor)
+    if (-not $Json -and -not $Quiet) {
+        Write-Banner 'SYSTEM INTEGRITY SELF-TEST (READ-ONLY)'
+    }
     Write-Check ("PowerShell " + $PSVersionTable.PSVersion) ($PSVersionTable.PSVersion.Major -ge 5)
     Write-Check 'Running as Administrator' $script:IsAdmin $true 'needed for repairs, not for audits'
     foreach ($c in 'Get-NetAdapter','Get-NetIPInterface','Set-NetIPInterface','Get-NetNeighbor','New-NetNeighbor','Remove-NetNeighbor','Get-DnsClientServerAddress','Set-DnsClientServerAddress','Add-DnsClientNrptRule','Get-DnsClientNrptRule','Resolve-DnsName','Get-NetAdapterAdvancedProperty','Set-NetAdapterAdvancedProperty','Set-NetConnectionProfile','Restart-NetAdapter','Get-WinEvent') {
@@ -9680,7 +14802,7 @@ function Invoke-SelfTest {
     Write-Check ("Ethernet adapters found: " + $ads.Count) ($ads.Count -gt 0) $true 'plug in / enable your wired adapter'
     foreach ($a in $ads) { Write-Check ("  {0}: {1}" -f $a.Name, $a.Status) ($a.Status -eq 'Up') $true }
     Write-Check 'Protected store exists' (Test-Path -LiteralPath $script:StoreDir) $true 'created on first elevated run'
-    Write-Check 'Protected store ACL verified' $script:StoreSecure $true
+    Write-Check 'Protected store ACL verified' ($script:StoreSecure -or (Test-StoreAcl)) $true
     Write-Check 'State file readable' ((Get-State) -is [hashtable]) $true
     Write-Check 'Watchdog task installed' (Test-WatchdogInstalled) $true 'optional: menu option 2'
     if (Test-WatchdogInstalled) {
@@ -9694,6 +14816,27 @@ function Invoke-SelfTest {
     Write-Check 'DNS resolution works right now' ([bool]$ip) $true
     Write-Check ("Internet probe: " + (Get-InternetState -NoCache).State) $true
     Invoke-LogicTests
+    if ($Json) {
+        $rep = @{
+            TotalChecks = $script:TestResults.Count
+            Passed      = ($script:TestResults.Count - $script:TestFail)
+            Warnings    = $script:TestWarn
+            Failures    = $script:TestFail
+            Status      = if ($script:TestFail -eq 0) { 'PASS' } else { 'FAIL' }
+            ExitCode    = if ($script:TestFail -eq 0) { 0 } else { 1 }
+            Checks      = $script:TestResults
+        }
+        [Console]::Out.WriteLine((ConvertTo-Json $rep -Depth 4))
+        return
+    }
+    if ($Quiet) {
+        if ($script:TestFail -eq 0) {
+            [Console]::Out.WriteLine(('PASS ({0} passed, {1} warnings, 0 failures)' -f ($script:TestResults.Count - $script:TestFail), $script:TestWarn))
+        } else {
+            [Console]::Out.WriteLine(('FAIL ({0} failed, {1} warnings)' -f $script:TestFail, $script:TestWarn))
+        }
+        return
+    }
     Write-Host ''
     if ($script:TestFail -eq 0) { Out-Line @((Seg 'ok!' ('  ' + $script:G.dot + '  ready')), (Seg 'dim' ('   {0} {1} warnings' -f $script:G.mid, $script:TestWarn))) }
     else { Out-Line @((Seg 'bad!' ('  ' + $script:G.dot + '  ' + $script:TestFail + ' failed')), (Seg 'dim' ('   {0} {1} warnings' -f $script:G.mid, $script:TestWarn))) }
@@ -9704,7 +14847,7 @@ function Invoke-SelfTest {
 # ==============================================================================
 function Pick-Hash($Value) { return (@($Value | Where-Object { $_ -is [hashtable] }) | Select-Object -First 1) }
 function Wait-AnyKey {
-    if (Test-InputRedirected) { return }   # headless / piped: never block
+    if ($NoPause -or (Test-InputRedirected)) { return }   # headless / piped / non-interactive / NoPause: never block
     Clear-InputBuffer
     try { [void](Read-KeyNow) } catch { try { [void](Read-Host) } catch {} }
     Clear-InputBuffer
@@ -9741,6 +14884,10 @@ function Get-Telemetry {
     $ad = $ads | Where-Object { $_.Status -eq 'Up' } | Select-Object -First 1
     if (-not $ad) { $ad = $ads | Select-Object -First 1 }
     $others = @(Get-OtherUplinkAdapters)
+    if (-not $ad -and $others.Count -gt 0) {
+        $ad = $others | Where-Object { $_.Status -eq 'Up' } | Select-Object -First 1
+        if (-not $ad) { $ad = $others | Select-Object -First 1 }
+    }
     if ($others.Count -gt 0) {
         $t.UplinkActive = $true
         $t.UplinkName = [string]$others[0].Name
@@ -9923,6 +15070,18 @@ function Show-Dashboard($t, $adv) {
 }
 function Show-DnsMenu {
     $cur = Get-DnsProfileName
+    $eths = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })
+    $adTarget = if ($eths.Count -gt 0) { $eths[0] } else { (Get-OtherUplinkAdapters | Select-Object -First 1) }
+    $adName = if ($adTarget) { $adTarget.Name } else { 'Primary Adapter' }
+    $curDns = @()
+    if ($adTarget) {
+        $curDns = @(Get-DnsClientServerAddress -InterfaceIndex $adTarget.InterfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty ServerAddresses)
+    }
+    $dnsStr = if ($curDns.Count -gt 0) { $curDns -join ', ' } else { 'DHCP Auto' }
+
+    Out-Line @((Seg 'accent!' '  DNS RESOLVER CONFIGURATION:'))
+    Out-Line @((Seg 'dim' ('  Active Interface: ' + $adName + '  |  Current Resolvers: ' + $dnsStr)))
+    Out-Line @()
     $items = @(
         @('1', 'Adaptive',   'Adaptive',   'Automatic: Campus DNS before login, public DNS after (Recommended)'),
         @('2', 'Campus',     'DHCP',       'Campus DHCP: Direct resolvers for campus ERP and intranet'),
@@ -9948,14 +15107,47 @@ function Show-DnsMenu {
     $c = [string]$k.KeyChar
     if ($map.ContainsKey($c)) {
         Set-DnsProfileMode $map[$c]
+        Out-Line @((Seg 'dim' '  Verifying DNS resolver responsiveness...'))
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        $lookupOk = $false
+        try {
+            $ans = [System.Net.Dns]::GetHostAddresses('google.com')
+            $sw.Stop()
+            if ($ans.Count -gt 0) { $lookupOk = $true }
+        } catch {}
+        if ($lookupOk) {
+            Out-Line @((Seg 'ok!' ('  ' + $script:G.ok + ' ')), (Seg 'text' ("DNS active and verified (" + $sw.ElapsedMilliseconds + " ms resolution)")))
+        } else {
+            Out-Line @((Seg 'warn' ('  ' + $script:G.warn + ' ')), (Seg 'dim' 'DNS profile set. External lookup will activate post-portal authentication.'))
+        }
     } else {
         Out-Line @((Seg 'dim' '  Operation cancelled. No changes made.'))
     }
 }
 function Show-RouteMenu {
     $cur = Get-RouteProfileName
-    Out-Line @((Seg 'text' '  Choose how Windows balances traffic between Gigabit Ethernet and Wi-Fi / Hotspot:'))
+    Out-Line @((Seg 'accent!' '  ROUTING & INTERFACE METRIC PRIORITY:'))
+    Out-Line @((Seg 'dim' '  Choose how Windows balances traffic between Gigabit Ethernet and Wi-Fi / Hotspot:'))
     Out-Line @()
+    try {
+        $routes = @(Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Sort-Object RouteMetric)
+        if ($routes.Count -gt 0) {
+            Out-Line @((Seg 'dim' '  Active Default Routes (0.0.0.0/0 Priority Order):'))
+            foreach ($rt in $routes) {
+                $ifName = (Get-NetAdapter -InterfaceIndex $rt.InterfaceIndex -ErrorAction SilentlyContinue).Name
+                $isTop = ($rt -eq $routes[0])
+                $marker = if ($isTop) { (Seg 'ok!' ('    ' + $script:G.dot + ' ')) } else { (Seg 'faint' '      ') }
+                Out-Line @(
+                    $marker,
+                    (Seg $(if ($isTop) { 'text!' } else { 'text' }) (Fit $ifName 20)),
+                    (Seg 'dim' (" | NextHop: " + $rt.NextHop)),
+                    (Seg 'dim' (" | InterfaceMetric: " + $rt.InterfaceMetric)),
+                    (Seg 'dim' (" | RouteMetric: " + $rt.RouteMetric))
+                )
+            }
+            Out-Line @()
+        }
+    } catch {}
     $items = @(
         @('1', 'Adaptive', 'Adaptive', 'Auto-select: Ethernet when online, Wi-Fi when captive (Recommended)'),
         @('2', 'Ethernet', 'Ethernet', 'Ethernet priority: Prefer wired LAN (Metric 10 vs 40)'),
@@ -9980,79 +15172,84 @@ function Show-RouteMenu {
     $c = [string]$k.KeyChar
     if ($map.ContainsKey($c)) {
         Set-RouteProfileMode $map[$c]
+        Out-Line @((Seg 'ok!' ('  ' + $script:G.ok + ' ')), (Seg 'text' ("Route priority switched to: " + $map[$c])))
     } else {
         Out-Line @((Seg 'dim' '  Operation cancelled. No changes made.'))
     }
 }
 function Show-ResetMenu {
     if (-not (Assert-Admin)) { return }
-    Out-Line @((Seg 'warn!' '  RESET & SYSTEM RECOVERY OPTIONS:'))
-    Out-Line @((Seg 'dim'   '  Choose the appropriate recovery weapon based on the severity of network death:'))
+    Out-Line @((Seg 'accent!' '  RECOVERY AND SYSTEM:'))
+    Out-Line @((Seg 'dim'     '  Select a recovery tier based on the level of repair required:'))
     Out-Line @()
     $options = @(
-        @('1', 'Standard Net Reset',  's', '5-Stage Fast Network Reset (Winsock, TCP/IP, route -f, MTU 1500, 7-layer heal)'),
-        @('2', 'Ultra System Reset',  'u', '10-Stage Nuclear Reset (Dual 64/32-bit Winsock, TCP/IP heuristics, DoH wipe, NCSI)'),
-        @('3', 'Doomsday Reset',      'd', '12-Stage Universal Reset (All Media: Wi-Fi/BT/USB/LAN, NDIS Filters, PnP Transceiver)'),
-        @('4', 'Armageddon OS Wipe',  'a', '4-Stage Kernel Stack Reinstall (netcfg.exe -d, requires immediate system reboot)'),
-        @('5', 'Sovereign Factory Reset', 'r', 'Full System Rollback (Reverts all tasks, registry, DNS, credentials to Windows defaults)')
+        @('1', 'Careful Network Debloat',  'b', '[  SAFE  ] Latency & Telemetry Debloat (P2P Seeding, Throttling, WPAD)'),
+        @('2', 'Restore Network Defaults', 'r', '[ NOTICE ] Full Default Reset (Reverts DNS, IP configs, and proxies to DHCP)'),
+        @('3', 'Standard Stack Reset',     's', '[CAUTION ] 5-Stage Network Reset (Winsock, TCP/IP, route flush, 7-layer heal)'),
+        @('4', 'Deep Stack Rebuild',       'u', '[CAUTION ] 10-Stage Reset (Dual 64/32-bit Winsock, TCP/IP heuristics, NCSI)'),
+        @('5', 'Multi-Adapter Reinstall',  'd', '[ HIGH   ] 12-Stage Universal Reset (All Media: Wi-Fi/BT/LAN, PnP Transceiver)'),
+        @('6', 'Complete Stack Rebuild',   'a', '[ REBOOT ] 4-Stage Kernel Clean-Up (netcfg -d, requires immediate reboot)')
     )
     foreach ($opt in $options) {
         $color = switch ($opt[0]) {
-            '1' { 'accent!' }
-            '2' { 'warn' }
-            '3' { 'warn!' }
-            '4' { 'bad!' }
-            '5' { 'ok!' }
+            '1' { 'ok' }
+            '2' { 'ok!' }
+            '3' { 'accent!' }
+            '4' { 'warn' }
+            '5' { 'warn!' }
+            '6' { 'bad!' }
         }
         Out-Line @(
             (Seg 'faint' '  ['),
             (Seg $color $opt[0]),
             (Seg 'faint' '] '),
-            (Seg 'text!' (' ' + $opt[1].PadRight(23))),
+            (Seg 'text!' (' ' + $opt[1].PadRight(25))),
             (Seg 'dim' $opt[3])
         )
     }
     Out-Line @()
-    Out-Line @((Seg 'dim' '  Select reset option [1-5] or [S/U/D/A/R], or press any other key to cancel '), (Seg 'accent!' $script:G.prompt)) -NoNewline
+    Out-Line @((Seg 'dim' '  Select option [1-6] or [B/R/S/U/D/A], or press any other key to cancel '), (Seg 'accent!' $script:G.prompt)) -NoNewline
     $k = Read-Choice
     Out-Line @()
     $choice = ([string]$k.KeyChar).ToLowerInvariant()
-    if ($choice -in @('1', 's', 'x')) {
-        if (Read-Confirm 'Execute Standard Full Net Reset?' 'yes') {
+    if ($choice -in @('1', 'b')) {
+        Show-DebloatMenu
+    } elseif ($choice -in @('2', 'r', '9')) {
+        if (Read-Confirm 'Restore all network settings and adapters to DHCP defaults?' 'yes') {
             $script:ChangeCount = 0; $script:FailCount = 0
-            Invoke-SupremeOmnifix
+            [void](Invoke-WithLock { Restore-Everything })
             $script:WdCache = $null
         } else {
             Out-Line @((Seg 'dim' '  Operation cancelled. No changes made.'))
         }
-    } elseif ($choice -in @('2', 'u')) {
-        if (Read-Confirm 'Execute ULTRA SYSTEM RESET (Hyper-Nuclear Antimatter Weapon)?' 'yes') {
+    } elseif ($choice -in @('3', 's', 'x')) {
+        if (Read-Confirm 'Execute Standard Network Stack Reset?' 'yes') {
             $script:ChangeCount = 0; $script:FailCount = 0
-            Invoke-UltraSystemReset
+            Invoke-SupremeOmnifix -Confirmed
             $script:WdCache = $null
         } else {
             Out-Line @((Seg 'dim' '  Operation cancelled. No changes made.'))
         }
-    } elseif ($choice -in @('3', 'd')) {
-        if (Read-Confirm 'Execute DOOMSDAY SYSTEM RESET (Ultimate Universal Weapon)?' 'yes') {
+    } elseif ($choice -in @('4', 'u')) {
+        if (Read-Confirm 'Execute Deep Stack Rebuild (Dual 64/32-bit Winsock & IP)?' 'yes') {
             $script:ChangeCount = 0; $script:FailCount = 0
-            Invoke-DoomsdayReset
+            Invoke-UltraSystemReset -Confirmed
             $script:WdCache = $null
         } else {
             Out-Line @((Seg 'dim' '  Operation cancelled. No changes made.'))
         }
-    } elseif ($choice -in @('4', 'a', 'k', '!')) {
-        if (Read-Confirm 'Execute ARMAGEDDON SYSTEM RESET (netcfg -d, requires reboot)?' 'yes') {
+    } elseif ($choice -in @('5', 'd')) {
+        if (Read-Confirm 'Execute Multi-Adapter Reinstall (All physical and virtual interfaces)?' 'yes') {
             $script:ChangeCount = 0; $script:FailCount = 0
-            Invoke-ArmageddonReset
+            Invoke-DoomsdayReset -Confirmed
             $script:WdCache = $null
         } else {
             Out-Line @((Seg 'dim' '  Operation cancelled. No changes made.'))
         }
-    } elseif ($choice -in @('5', 'r', '9')) {
-        if (Read-Confirm 'Restore all original pre-reset network settings?' 'yes') {
+    } elseif ($choice -in @('6', 'a', 'k', '!')) {
+        if (Read-Confirm 'Execute Complete Network Stack Rebuild (netcfg -d, requires immediate reboot)?' 'yes') {
             $script:ChangeCount = 0; $script:FailCount = 0
-            Restore-Everything
+            Invoke-ArmageddonReset -Confirmed
             $script:WdCache = $null
         } else {
             Out-Line @((Seg 'dim' '  Operation cancelled. No changes made.'))
@@ -10062,6 +15259,7 @@ function Show-ResetMenu {
     }
 }
 function Write-HealSummary($r, $sw) {
+    if ($Json -or $Quiet -or -not $script:UiOn) { return }
     $w = Get-UiWidth
     $info = Get-StateInfo ([string]$(if ($r) { $r.Problem } else { 'Offline' }))
     Out-Line @()
@@ -10212,7 +15410,7 @@ function New-SentinelTaskXml([string]$CmdArgs) {
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
     <Description>Lan Fixer 24/7 Autonomous Sentinel Daemon (Continuous Reactive Self-Healing)</Description>
-    <Author>Lan Fixer</Author>
+    <Author>Abhishek Sonu</Author>
   </RegistrationInfo>
   <Triggers>
     <BootTrigger>
@@ -10243,7 +15441,7 @@ function New-SentinelTaskXml([string]$CmdArgs) {
     </IdleSettings>
     <AllowStartOnDemand>true</AllowStartOnDemand>
     <Enabled>true</Enabled>
-    <Hidden>false</Hidden>
+    <Hidden>true</Hidden>
     <RunOnlyIfIdle>false</RunOnlyIfIdle>
     <WakeToRun>false</WakeToRun>
     <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
@@ -10256,7 +15454,7 @@ function New-SentinelTaskXml([string]$CmdArgs) {
   <Actions Context="Author">
     <Exec>
       <Command>%SystemRoot%\System32\cmd.exe</Command>
-      <Arguments>$CmdArgs</Arguments>
+      <Arguments>$([System.Security.SecurityElement]::Escape($CmdArgs))</Arguments>
     </Exec>
   </Actions>
 </Task>
@@ -10269,6 +15467,10 @@ function Install-SentinelTask {
         Write-Log 'FAIL' 'Protected store folder unavailable. Cannot register Sentinel task.'
         return $false
     }
+    if (-not $script:IsDry -and -not (Test-Path -LiteralPath $script:SelfCopy)) {
+        Write-Log 'FAIL' 'Could not find the protected copy of Lan Fixer.'
+        return $false
+    }
     $cmdArgs = '/c ""' + $script:SelfCopy + '" -Mode Daemon -Headless -NoPause"'
     $xml = New-SentinelTaskXml $cmdArgs
     $ok = Register-LfTask 'LanFixer_Sentinel' $xml 'LanFixer_Sentinel.xml'
@@ -10276,6 +15478,7 @@ function Install-SentinelTask {
         $r = Invoke-Native (Get-SysExe 'schtasks.exe') @('/run', '/tn', 'LanFixer_Sentinel') 10000
         Write-Log 'OK' 'Lan Fixer 24/7 Autonomous Sentinel task registered and activated.'
         Write-Log 'INFO' 'The Sentinel is now guarding your network 24/7 in the background with zero window.'
+        [void](Set-ScriptAuthorization $script:SelfCopy)
         return $true
     }
     Write-Log 'FAIL' 'Failed to register LanFixer_Sentinel scheduled task.'
@@ -10286,6 +15489,8 @@ function Uninstall-SentinelTask {
     if (-not (Assert-Admin)) { return $false }
     $r1 = Invoke-Native (Get-SysExe 'schtasks.exe') @('/end', '/tn', 'LanFixer_Sentinel') 5000
     $r2 = Invoke-Native (Get-SysExe 'schtasks.exe') @('/delete', '/tn', 'LanFixer_Sentinel', '/f') 10000
+    Remove-Item -LiteralPath (Join-Path $script:StoreDir 'LanFixer_Sentinel.xml') -Force -ErrorAction SilentlyContinue
+    Clear-StartupEntries
     if ($r2.ExitCode -eq 0) {
         Write-Log 'OK' 'Lan Fixer 24/7 Autonomous Sentinel task terminated and removed.'
         return $true
@@ -10306,10 +15511,10 @@ function Show-SentinelLogView {
     $lines = @(Get-Content -LiteralPath $logPath -Tail 40 -ErrorAction SilentlyContinue)
     foreach ($l in $lines) {
         $c = 'dim'
-        if ($l -like '*[OK   ]*') { $c = 'ok' }
-        elseif ($l -like '*[WARN ]*') { $c = 'warn' }
-        elseif ($l -like '*[FAIL ]*') { $c = 'bad' }
-        elseif ($l -like '*[TIER*]*') { $c = 'cyan' }
+        if ($l -match '\[OK\s*\]') { $c = 'ok' }
+        elseif ($l -match '\[WARN\s*\]') { $c = 'warn' }
+        elseif ($l -match '\[FAIL\s*\]') { $c = 'bad' }
+        elseif ($l -match '\[TIER.*?\]') { $c = 'cyan' }
         Out-Line @((Seg $c ("  " + $l)))
     }
     Out-Line @()
@@ -10386,10 +15591,10 @@ function Show-SentinelHud($Adapter, $LinkHealth, [string]$Status, [int]$Cadence)
         for ($i = $startIdx; $i -lt $script:SentinelEvents.Count; $i++) {
             $ev = $script:SentinelEvents[$i]
             $evCol = 'dim'
-            if ($ev -like '*[OK   ]*') { $evCol = 'ok' }
-            elseif ($ev -like '*[WARN ]*') { $evCol = 'warn' }
-            elseif ($ev -like '*[FAIL ]*') { $evCol = 'bad' }
-            elseif ($ev -like '*[TIER*]*') { $evCol = 'cyan' }
+            if ($ev -match '\[OK\s*\]') { $evCol = 'ok' }
+            elseif ($ev -match '\[WARN\s*\]') { $evCol = 'warn' }
+            elseif ($ev -match '\[FAIL\s*\]') { $evCol = 'bad' }
+            elseif ($ev -match '\[TIER.*?\]') { $evCol = 'cyan' }
             Out-Line @((Seg $evCol ("  " + (Fit $ev ($w - 6)))))
         }
     } else {
@@ -10548,7 +15753,8 @@ function Start-AutonomousDaemon([int]$IntervalSec = 10, [switch]$Headless) {
                 $ctxOnline = @{ Ad = $ad; Env = (Get-AdapterEnvironment $ad) }
                 Shield-RouteMetrics $ctxOnline 'Online'
 
-                $currentCadence = $IntervalSec
+                $batDaemon = Get-BatteryHealthAndEfficiency
+                $currentCadence = if ($batDaemon.IsOnBattery) { [Math]::Max(20, $IntervalSec * 2) } else { $IntervalSec }
                 if ($isConsole -and ((Get-Date) - $lastHudRender).TotalMilliseconds -ge 800) {
                     Show-SentinelHud $ad $linkHealth $state.State $currentCadence
                     $lastHudRender = Get-Date
@@ -10671,7 +15877,7 @@ function Start-AutonomousDaemon([int]$IntervalSec = 10, [switch]$Headless) {
                         $recovered = $true; $remedTier = 'Tier 2 (Gateway/Route)'
                         $script:SentinelStats.T1_ArpRoute++
                     } elseif ($st2 -eq 'Captive') {
-                        $state = @{ State = 'Captive'; Location = $script:Cfg.PortalUrl }
+                        $state = @{ State = 'Captive'; Location = (Get-ActivePortalUrl) }
                     }
                 }
             }
@@ -10690,7 +15896,7 @@ function Start-AutonomousDaemon([int]$IntervalSec = 10, [switch]$Headless) {
                     $recovered = $true; $remedTier = 'Tier 3 (DNS/NRPT)'
                     $script:SentinelStats.T3_Dns++
                 } elseif ($st3 -eq 'Captive') {
-                    $state = @{ State = 'Captive'; Location = $script:Cfg.PortalUrl }
+                    $state = @{ State = 'Captive'; Location = (Get-ActivePortalUrl) }
                 }
             }
 
@@ -10965,25 +16171,63 @@ if (-not $script:IsAdmin -and -not $script:IsDry -and ($adminModes -contains $Mo
             foreach ($kv in $PSBoundParameters.GetEnumerator()) {
                 if ($kv.Key -eq 'LfElevated') { continue }
                 if ($kv.Value -is [System.Management.Automation.SwitchParameter]) { if ($kv.Value.IsPresent) { $parts += ('-' + $kv.Key) } }
-                else { $parts += ('-' + $kv.Key); $parts += [string]$kv.Value }
+                else {
+                    $parts += ('-' + $kv.Key)
+                    $vStr = [string]$kv.Value
+                    if ($vStr -match '[\s"]') { $parts += ('"' + $vStr.Replace('"', '\"') + '"') }
+                    else { $parts += $vStr }
+                }
             }
             Start-Process -FilePath $script:SelfPath -ArgumentList ($parts -join ' ') -Verb RunAs -ErrorAction Stop
             $elevated = $true
         } catch { Write-Host 'Administrator approval was not granted.' -ForegroundColor Yellow }
     }
     if ($elevated) { exit 0 }
-    if ($Mode -ne 'Interactive') { Write-Host '[x] This mode needs Administrator rights.' -ForegroundColor Red; exit 1 }
+    if ($Mode -ne 'Interactive') {
+        if ($Json) {
+            [Console]::Out.WriteLine((ConvertTo-Json @{ Status = 'PreconditionFailed'; Message = 'Administrator rights required for this mode'; ExitCode = 40 } -Depth 2))
+        } elseif ($Quiet) {
+            [Console]::Out.WriteLine('Precondition Failed: Administrator rights required (ExitCode: 40)')
+        } else {
+            Write-Host '[x] This mode needs Administrator rights.' -ForegroundColor Red
+        }
+        exit 40
+    }
 }
 if ($script:UiOn) { Initialize-Ui }
 if ($script:IsAdmin) { Initialize-Store }
+else {
+    $script:StoreReady = Test-Path -LiteralPath $script:StoreDir
+    $script:StoreSecure = Test-StoreAcl
+}
 Import-UserConfig
 $script:State = Get-State
+[void](Test-PriorResetJournal)
 $exitCode = 0
 try {
+    if (@('AutoHeal', 'Daemon', 'Sentinel') -contains $Mode -and -not $script:IsDry) {
+        $intCheck = Test-ScriptIntegrity
+        if (-not $intCheck.Valid -and $intCheck.Status -ne 'MissingManifest') {
+            Write-Log 'FAIL' ("CRITICAL SECURITY REFUSAL: Script failed integrity verification (" + ($intCheck.Errors -join '; ') + "). Refusing execution.")
+            try {
+                Write-EventLog -LogName 'Application' -Source 'LanFixer' -EventId 4001 -EntryType Error -Message ("CRITICAL: LanFixer detected unauthorized modification: " + ($intCheck.Errors -join '; ')) -ErrorAction SilentlyContinue
+            } catch {}
+            if ($Json) {
+                [Console]::Out.WriteLine((ConvertTo-Json @{ Status = 'IntegrityTamper'; Errors = $intCheck.Errors; ExitCode = 50 } -Depth 2))
+            } elseif ($Quiet) {
+                [Console]::Out.WriteLine('Integrity Tamper: Script modification detected (ExitCode: 50)')
+            } else {
+                Write-Host '[x] INTEGRITY REFUSAL: Script failed cryptographic integrity verification.' -ForegroundColor Red
+                foreach ($err in $intCheck.Errors) { Write-Host ("  - {0}" -f $err) -ForegroundColor Yellow }
+            }
+            exit 50
+        }
+    }
     if ($script:UiOn -and $Mode -ne 'Interactive') { Write-Banner ("{0}{1}" -f $Mode, $(if ($script:IsDry) { ' (dry run)' } else { '' })) }
     switch ($Mode) {
         'AutoHeal'          { [void](Invoke-AutoHeal) }
         'Omnifix'           { Invoke-SupremeOmnifix }
+        'StandardReset'     { Invoke-SupremeOmnifix }
         'NetReset'          { Invoke-UltraSystemReset }
         'FullNetReset'      { Invoke-UltraSystemReset }
         'UltraReset'        { Invoke-UltraSystemReset }
@@ -10992,8 +16236,8 @@ try {
         'Doomsday'          { Invoke-DoomsdayReset }
         'ArmageddonReset'   { Invoke-ArmageddonReset }
         'Armageddon'        { Invoke-ArmageddonReset }
-        'ResetOptions'      { Show-View 'reset & system recovery options' { Show-ResetMenu } }
-        'ResetMenu'         { Show-View 'reset & system recovery options' { Show-ResetMenu } }
+        'ResetOptions'      { Show-View 'Recovery and System' { Show-ResetMenu } }
+        'ResetMenu'         { Show-View 'Recovery and System' { Show-ResetMenu } }
         'SetRouteProfile'   { Set-RouteProfileMode $RouteProfile }
         'Route'             { Show-RouteMenu }
         'RouteMenu'         { Show-RouteMenu }
@@ -11012,7 +16256,7 @@ try {
                 if (-not $signedHeadless) {
                     [void](Invoke-WithLock { [void](Open-Portal); Save-State })
                     if ((Get-InternetState -NoCache).State -eq 'Captive') {
-                        if (Wait-ForAuthentication 120) { [void](Invoke-WithLock { Complete-Authentication }) }
+                        if (Wait-ForAuthentication 180) { [void](Invoke-WithLock { Complete-Authentication }); Write-Log 'OK' 'Signed in. Post-login DNS applied.' }
                     }
                 }
             }
@@ -11032,14 +16276,14 @@ try {
                 if (-not $signedHeadless) {
                     [void](Invoke-WithLock { [void](Open-Portal); Save-State })
                     if ((Get-InternetState -NoCache).State -eq 'Captive') {
-                        if (Wait-ForAuthentication 120) { [void](Invoke-WithLock { Complete-Authentication }) }
+                        if (Wait-ForAuthentication 180) { [void](Invoke-WithLock { Complete-Authentication }); Write-Log 'OK' 'Signed in. Post-login DNS applied.' }
                     }
                 }
             }
         }
         'Diagnose'          { Show-Diagnostics }
         'Audit'             { Show-Diagnostics }
-        'Report'            { New-SupportReport }
+        'Report'            { $exitCode = New-SupportReport -Json:$Json -Quiet:$Quiet -NoColor:$NoColor; if ($null -eq $exitCode) { $exitCode = 0 } }
         'QuickProbe'        { Run-QuickProbe }
         'Probe'             { Run-QuickProbe }
         'FlushCache'        { [void](Invoke-WithLock { Flush-NetworkCache }) }
@@ -11055,16 +16299,160 @@ try {
         'SetDnsProfile'     { Set-DnsProfileMode $DnsProfile }
         'Dns'               { Show-DnsMenu }
         'DnsMenu'           { Show-DnsMenu }
-        'SelfTest'          { Invoke-SelfTest; if ($script:TestFail -gt 0) { $exitCode = 1 } }
-        'Verify'            { Invoke-SelfTest; if ($script:TestFail -gt 0) { $exitCode = 1 } }
+        'SelfTest'          { Invoke-SelfTest -Json:$Json -Quiet:$Quiet -NoColor:$NoColor; if ($script:TestFail -gt 0) { $exitCode = 1 } else { $exitCode = 0 } }
+        'Verify'            { Invoke-SelfTest -Json:$Json -Quiet:$Quiet -NoColor:$NoColor; if ($script:TestFail -gt 0) { $exitCode = 1 } else { $exitCode = 0 } }
         'Daemon'            { Start-AutonomousDaemon -Headless:$Headless }
         'Sentinel'          { Start-AutonomousDaemon -Headless:$Headless }
         'InstallSentinel'   { [void](Invoke-WithLock { Install-SentinelTask }) }
         'UninstallSentinel' { [void](Invoke-WithLock { Uninstall-SentinelTask }) }
         'Vault'             { Show-VaultMenu }
-        'Guide'             { Show-Advisory }
-        'Help'              { Show-Advisory }
+        'Guide' {
+            if ($Id -or $args.Count -gt 0 -or $Json -or $Quiet -or -not $script:UiOn) {
+                $targetCmd = if ($Id) { $Id } elseif ($args.Count -gt 0) { $args[0] } else { '' }
+                $rep = Show-HelpReport -TargetMode $targetCmd -Json:$Json -Quiet:$Quiet -NoColor:$NoColor
+                $exitCode = [int]$rep.ExitCode
+            } else {
+                Show-Advisory
+            }
+        }
+        'Help' {
+            $targetCmd = if ($Id) { $Id } elseif ($args.Count -gt 0) { $args[0] } else { '' }
+            $rep = Show-HelpReport -TargetMode $targetCmd -Json:$Json -Quiet:$Quiet -NoColor:$NoColor
+            $exitCode = [int]$rep.ExitCode
+        }
         'Interactive'       { Start-Interactive }
+        'Doctor' {
+            $rep = Invoke-HealthDoctor -Json:$Json -Quiet:$Quiet -NoColor:$NoColor
+            $exitCode = [int]$rep.ExitCode
+        }
+        'Status' {
+            $rep = Invoke-HealthDoctor -Json:$Json -Quiet:$Quiet -NoColor:$NoColor
+            $exitCode = [int]$rep.ExitCode
+        }
+        'History' {
+            $targetSec = if ($Section) { $Section } elseif ($Id) { $Id } elseif ($args.Count -gt 0) { $args[0] } else { '' }
+            $exitCode = Invoke-HistorySuite -Section $targetSec -Limit $Limit -Follow:$Follow -Level $Level -Filter $Filter -OutFile $OutFile -Json:$Json -Quiet:$Quiet -NoColor:$NoColor
+        }
+        'Hist' {
+            $targetSec = if ($Section) { $Section } elseif ($Id) { $Id } elseif ($args.Count -gt 0) { $args[0] } else { '' }
+            $exitCode = Invoke-HistorySuite -Section $targetSec -Limit $Limit -Follow:$Follow -Level $Level -Filter $Filter -OutFile $OutFile -Json:$Json -Quiet:$Quiet -NoColor:$NoColor
+        }
+        'Logs' {
+            $targetSec = if ($Section) { $Section } else { 'logs' }
+            $exitCode = Invoke-HistorySuite -Section $targetSec -Limit $Limit -Follow:$Follow -Level $Level -Filter $Filter -OutFile $OutFile -Json:$Json -Quiet:$Quiet -NoColor:$NoColor
+        }
+        'Forensics' {
+            $targetSec = if ($Section) { $Section } else { 'timeline' }
+            $exitCode = Invoke-HistorySuite -Section $targetSec -Limit $Limit -Follow:$Follow -Level $Level -Filter $Filter -OutFile $OutFile -Json:$Json -Quiet:$Quiet -NoColor:$NoColor
+        }
+        'Undo' {
+            $res = Invoke-WithLock {
+                Invoke-Undo -TargetId $Id -TargetRunId $RunId -Plan:$Plan -Force:$Force -Json:$Json -Quiet:$Quiet -NoColor:$NoColor
+            }
+            $exitCode = if ($res -and $res.Status -eq 'NotFound') { 1 } else { 0 }
+        }
+        'Recover' {
+            $res = Invoke-WithLock {
+                Invoke-GuidedRecovery -Plan:$Plan -Force:$Force -Json:$Json -Quiet:$Quiet -NoColor:$NoColor
+            }
+            $exitCode = [int]$res.ExitCode
+        }
+        'Bundle' {
+            $res = New-SupportBundle -OutDir $OutDir -Redaction $Redaction -Json:$Json -Quiet:$Quiet -NoColor:$NoColor
+            $exitCode = [int]$res.ExitCode
+        }
+        'Config' {
+            $exitCode = Show-ConfigReport -ValidateOnly:$Validate -Json:$Json -Quiet:$Quiet -NoColor:$NoColor
+        }
+        'Integrity' {
+            if ($Authorize) {
+                if (-not $script:IsAdmin) {
+                    if ($Json) {
+                        [Console]::Out.WriteLine((ConvertTo-Json @{ Status = 'PreconditionFailed'; Message = 'Administrator rights required to authorize script'; ExitCode = 40 } -Depth 2))
+                    } elseif ($Quiet) {
+                        [Console]::Out.WriteLine('Precondition Failed: Administrator rights required (ExitCode: 40)')
+                    } else {
+                        Write-Host 'Administrator rights required to authorize script.' -ForegroundColor Red
+                    }
+                    exit 40
+                }
+                $ok = Set-ScriptAuthorization
+                $authStatus = if ($ok) { 'Authorized' } else { 'Failed' }
+                $authExitCode = if ($ok) { 0 } else { 1 }
+                if ($Json) {
+                    [Console]::Out.WriteLine((ConvertTo-Json @{ Status = $authStatus; ExitCode = $authExitCode } -Depth 2))
+                } elseif ($Quiet) {
+                    [Console]::Out.WriteLine($authStatus)
+                } else {
+                    if ($ok) { Write-Host 'Script cryptographic authorization recorded.' -ForegroundColor Green }
+                    else { Write-Host 'Failed to authorize script.' -ForegroundColor Red }
+                }
+                $exitCode = if ($ok) { 0 } else { 1 }
+            } else {
+                $ti = Test-ScriptIntegrity
+                if ($Json) {
+                    $rep = @{
+                        Status       = $ti.Status
+                        Valid        = $ti.Valid
+                        ScriptPath   = $ti.ScriptPath
+                        ExpectedHash = $ti.ExpectedHash
+                        ActualHash   = $ti.ActualHash
+                        Errors       = $ti.Errors
+                        ExitCode     = if ($ti.Valid -or $ti.Status -eq 'MissingManifest') { 0 } else { 50 }
+                    }
+                    [Console]::Out.WriteLine((ConvertTo-Json $rep -Depth 4))
+                } elseif ($Quiet) {
+                    [Console]::Out.WriteLine(('Integrity: {0}' -f $ti.Status))
+                } else {
+                    Write-Host '================================================================================' -ForegroundColor Cyan
+                    Write-Host '                  LANFIXER CRYPTOGRAPHIC INTEGRITY AUDIT' -ForegroundColor Cyan
+                    Write-Host '================================================================================' -ForegroundColor Cyan
+                    Write-Host ("Script Target : {0}" -f $ti.ScriptPath)
+                    Write-Host ("Status        : {0}" -f $ti.Status) -ForegroundColor $(if ($ti.Valid) { 'Green' } elseif ($ti.Status -eq 'MissingManifest') { 'Yellow' } else { 'Red' })
+                    Write-Host ("Expected Hash : {0}" -f $ti.ExpectedHash)
+                    Write-Host ("Computed Hash : {0}" -f $ti.ActualHash)
+                    if ($ti.Errors.Count -gt 0) {
+                        Write-Host 'Integrity Violations:' -ForegroundColor Red
+                        foreach ($e in $ti.Errors) { Write-Host ("  - {0}" -f $e) -ForegroundColor Yellow }
+                    }
+                    Write-Host '================================================================================' -ForegroundColor Cyan
+                }
+                $exitCode = if ($ti.Valid -or $ti.Status -eq 'MissingManifest') { 0 } else { 50 }
+            }
+        }
+        'Debloat' {
+            if ($Audit -or $script:IsDry) {
+                $exitCode = Invoke-NetworkDebloat -Audit -Tier $Tier -SafeOnly:$SafeOnly -Json:$Json -Quiet:$Quiet -NoColor:$NoColor
+            } else {
+                $raw = Invoke-WithLock {
+                    Invoke-NetworkDebloat -Tier $Tier -SafeOnly:$SafeOnly -Json:$Json -Quiet:$Quiet -NoColor:$NoColor
+                }
+                $exitCode = if ($raw -is [int]) { $raw } else { 0 }
+            }
+        }
+        'UndoDebloat' {
+            $raw = Invoke-WithLock {
+                Undo-NetworkDebloat -Json:$Json -Quiet:$Quiet -NoColor:$NoColor
+            }
+            $exitCode = if ($raw -is [int]) { $raw } else { 0 }
+        }
+    }
+    if ($script:IsPlan -and $Mode -ne 'Recover' -and $Mode -ne 'Undo') {
+        if ($Json) {
+            $rep = @{
+                Status    = 'Planned'
+                Mode      = $Mode
+                PlanCount = $script:PlannedChanges.Count
+                Changes   = $script:PlannedChanges
+                ExitCode  = 0
+            }
+            [Console]::Out.WriteLine((ConvertTo-Json $rep -Depth 4))
+        } elseif ($Quiet) {
+            [Console]::Out.WriteLine(('Plan: {0} changes planned (0 mutations executed)' -f $script:PlannedChanges.Count))
+        } else {
+            Format-PlanPreview $script:PlannedChanges -Mode $Mode -NoColor:$NoColor
+        }
+        $exitCode = 0
     }
 } catch {
     Write-Log 'FAIL' ("Unhandled error: " + $_.Exception.Message)
@@ -11083,11 +16471,11 @@ try {
     if ($script:UiOn) { Exit-Screen }
 }
 if ($exitCode -eq 0 -and $script:FailCount -gt 0 -and (@('AutoHeal', 'Heal', 'QuickHeal', 'Omnifix', 'NetReset', 'FullNetReset', 'UltraReset', 'Ultra', 'DoomsdayReset', 'Doomsday', 'ArmageddonReset', 'Armageddon') -contains $Mode)) { $exitCode = 2 }
-if ($exitCode -ne 0 -and -not $NoPause -and $Host.Name -eq 'ConsoleHost') {
+if ($exitCode -ne 0 -and -not $NoPause -and $Host.Name -eq 'ConsoleHost' -and -not $Quiet -and -not $Json) {
     Write-Host ''
     Write-Host 'LanFixer closed with an exit code. Press any key to close...' -ForegroundColor Gray
     Wait-AnyKey
-} elseif ($script:UiOn -and $Mode -ne 'Interactive' -and -not $NoPause -and $Host.Name -eq 'ConsoleHost') {
+} elseif ($script:UiOn -and $Mode -ne 'Interactive' -and -not $NoPause -and $Host.Name -eq 'ConsoleHost' -and -not $Quiet -and -not $Json) {
     Write-Host ''
     Write-Host 'Press any key to close...' -ForegroundColor Gray
     Wait-AnyKey

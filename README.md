@@ -1,134 +1,58 @@
 # LanFixer
 
-<div align="center">
-
-**Autonomous Single-File Network Stabilization & Captive Portal Engine for Windows**
+A lightweight, single-file Windows network repair utility and captive portal automation tool.
 
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-0078D6?style=flat-square&logo=windows)](https://github.com/abhiisonu/LanFixer)
-[![Version](https://img.shields.io/badge/Release-v6.4.2-blue?style=flat-square)](https://github.com/abhiisonu/LanFixer/releases/tag/v6.4.2)
-[![Architecture](https://img.shields.io/badge/Arch-x64%20%7C%20ARM64%20%7C%20x86-0A84FF?style=flat-square)](https://github.com/abhiisonu/LanFixer)
-[![Runtime](https://img.shields.io/badge/Engine-PowerShell%205.1%2B%20%7C%20Batch%20Polyglot-172B4D?style=flat-square)](https://github.com/abhiisonu/LanFixer)
-[![Dependencies](https://img.shields.io/badge/Dependencies-0%20External%20Binaries-2ea44f?style=flat-square)](https://github.com/abhiisonu/LanFixer)
-[![Encoding](https://img.shields.io/badge/Encoding-100%25%20Pure%20ASCII-586069?style=flat-square)](https://github.com/abhiisonu/LanFixer)
-[![Security](https://img.shields.io/badge/Vault-Windows%20DPAPI%20Encrypted-critical?style=flat-square&logo=shield)](https://github.com/abhiisonu/LanFixer)
-[![Self-Test](https://img.shields.io/badge/Test%20Suite-207%2B%20Assertions%20Passing-brightgreen?style=flat-square)](https://github.com/abhiisonu/LanFixer)
-[![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square)](LICENSE)
-
-[Quickstart](#quickstart) &bull;
-[The Problem](#the-problem-what-breaks-on-windows) &bull;
-[Deep Architecture](#architecture-the-7-layer-stabilization-pipeline) &bull;
-[TUI Showcase](#live-console-control-center) &bull;
-[CLI Reference](#command-line--headless-automation) &bull;
-[Forensic Verification](#forensic-verification--self-test-suite)
-
-</div>
+[![Release](https://img.shields.io/badge/Release-v7.0.0-blue?style=flat-square)](https://github.com/abhiisonu/LanFixer/releases/latest)
+[![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
+[![PowerShell](https://img.shields.io/badge/PowerShell-5.1%2B-5391FE?style=flat-square&logo=powershell)](https://github.com/abhiisonu/LanFixer)
 
 ---
 
-## Overview
+LanFixer solves common Windows network connectivity issues on campus, office, and home Ethernet connections. It automates captive portal login, resolves dual-homed route conflicts (where Ethernet blocks working Wi-Fi), fixes APIPA (`169.254.x.x`) DHCP deadlocks, prevents USB NIC power-flapping, and clears stale proxy configurations--all without third-party runtimes or external dependencies.
 
-**LanFixer** is a single-file, zero-dependency network repair and resilience utility built exclusively for Windows 10 and 11. Designed as a **deep module**, it exposes a lean, ergonomic interface while encapsulating an industrial-grade, 7-layer network recovery engine behind standard Windows Command Prompt and PowerShell 5.1.
+```text
+  LAN FIXER  v7.0.0                                [Admin] [Guard] [Vault]
+  ------------------------------------------------------------------------
+  Ethernet   1 Gbps (Primary) - 10.1.12.226         Online
+  Gateway    10.1.12.1 (1 ms)     Loss: 0%          Jitter: 1 ms
+  Uplink     Wi-Fi (Standby) - Campus-Secure
 
-It permanently resolves captive portal lockouts, dual-homed metric collisions (Ethernet killing Wi-Fi), APIPA (`169.254.x.x`) deadlocks, driver power-state flapping on USB adapters, and orphaned proxy anchors without installing third-party runtimes, drivers, or binaries.
+  REPAIR & REMEDIATION                    DIAGNOSTICS & AUDIT
+  [1] Quick Heal (Recommended)            [3] DNS Configuration
+  [2] Install Watchdog Service            [M] Routing & Metric Priority
+  [A] Portal Credentials Vault            [4] Network Quality & MTU Probe
+  [7] Captive Portal Check                [5] Flush Network Caches
+  [G] Auto-Login to Portal                [6] System Diagnostics Audit
 
-```
-                           +------------------------+
-                           |     LanFixer.cmd       |
-                           | (Dual-Polyglot Script) |
-                           +-----------+------------+
-                                       |
-              +------------------------+------------------------+
-              |                                                 |
-     [Interactive Mode]                                 [Headless Engine]
- 79-Col ANSI/ASCII Live TUI                     CLI Automation (-Mode Heal, etc.)
-  + Real-Time Latency Sparklines                 + Task Scheduler Watchdog Daemon
-  + Interactive DPAPI Vault                      + Non-Destructive State Snapshots
-  + 18 One-Touch Operation Keys                  + 207+ In-Memory Verification Tests
+  PREVIEW & LOGS                          RECOVERY & SYSTEM
+  [T] Dry Run (Preview Only)              [8] Remove Watchdog Service
+  [R] Export Diagnostic Report            [B] Sentinel Live Monitor
+  [H] History & Change Ledger             [X] Recovery & Reset Tiers
+  [0] User Guide                          [Q] Exit
 ```
 
 ---
 
-## The Problem: What Breaks on Windows?
+## The Problems It Solves
 
-Windows networking handles standard home routers well, but degrades under enterprise, university, hostel, and multi-adapter environments:
-
-1. **The Dual-Homed Campus Trap**: When you plug in an Ethernet cable at a university or corporate office, Windows assigns the wired adapter a lower route metric (`10` or `25`) than your working Wi-Fi (`35` or `50`). If that Ethernet link requires captive portal authentication, all internet traffic immediately diverts to the dead wired connection. Your Wi-Fi internet drops instantly, and the captive portal cannot even be resolved.
-2. **The APIPA Deadlock (`169.254.x.x`)**: If a DHCP server responds slowly during link negotiation or laptop wake from sleep, Windows assigns an Automatic Private IP Address. Once trapped in APIPA, Windows often stops requesting DHCP leases until manually power-cycled.
-3. **Hardware Link Flapping**: Modern laptop NICs and USB-C Ethernet dongles aggressively enable Energy Efficient Ethernet (EEE), Green Ethernet, and USB Selective Suspend. Under load or switch negotiation, the link repeatedly flaps down and up every few seconds.
-4. **Orphaned Localhost Proxies**: Crashed VPN clients, debugging tools (Fiddler, Charles), or enterprise proxies frequently leave stale proxy entries pointing to dead addresses (`127.0.0.1:8888`) inside WinINet and user environment variables, silently breaking all HTTP/HTTPS traffic.
-5. **Rogue DHCP DNS Hijacks**: Public or hostile networks can supply malicious or dead DNS servers via DHCP option 6, causing silent packet blackholing or DNS spoofing.
-
----
-
-## Architecture: The 7-Layer Stabilization Pipeline
-
-LanFixer executes a deterministic, non-destructive repair pipeline across 7 distinct network layers:
-
-```
-+-------------------------------------------------------------------------------+
-|                        7-LAYER STABILIZATION PIPELINE                         |
-+---+----------------------------+----------------------------------------------+
-| 1 | Physical & Link Layer      | NDIS power cycling, disable EEE & Green      |
-|   |                            | Ethernet, reset USB selective suspend.       |
-+---+----------------------------+----------------------------------------------+
-| 2 | DHCP & Lease Recovery      | Clear APIPA deadlocks, release stale leases, |
-|   |                            | bounded 45s IEEE 802.1D STP convergence sync.|
-+---+----------------------------+----------------------------------------------+
-| 3 | Proxy & Stack Liquidation  | Purge orphaned 127.0.0.1 WinINet proxies,    |
-|   |                            | flush NetBIOS, ARP cache, and DNS cache.     |
-+---+----------------------------+----------------------------------------------+
-| 4 | Dual-Homed Metric Shield   | Isolate captive Ethernet (Metric 50) while   |
-|   |                            | keeping Wi-Fi primary (Metric 15) until auth.|
-+---+----------------------------+----------------------------------------------+
-| 5 | Adaptive DNS Profile       | Campus DHCP DNS during login; auto-switches  |
-|   |                            | to validated DNS (Cloudflare/Quad9) online.  |
-+---+----------------------------+----------------------------------------------+
-| 6 | Headless DPAPI Vault       | Probe HTTP 204/302 redirects; auto-post      |
-|   |                            | credentials encrypted via Windows DPAPI.     |
-+---+----------------------------+----------------------------------------------+
-| 7 | Autonomous Watchdog Guard  | Background SYSTEM scheduled task triggered   |
-|   |                            | on NDIS connect, wake from sleep, or outage. |
-+---+----------------------------+----------------------------------------------+
-```
-
----
-
-## Live Console Control Center
-
-LanFixer features a clean, high-density 79-column TUI console dashboard designed around Hallmark terminal aesthetics. It renders live gateway latency sparklines, real-time packet loss, jitter telemetry, and a one-touch command grid:
-
-```
-Link            Address         Gateway         DNS             Internet
-1 Gbps          10.1.12.226     10.1.12.1 1ms   9.9.9.9         Reachable
-
-Gateway 10.1.12.1 (1 ms)        _.-~-.__.-~-    1 ms   Loss 0%   Jitter 1 ms
-                                                Routing: Ethernet First
-
-REPAIR & CONNECTIVITY                   DIAGNOSTICS & TOOLS
-[1] Quick Heal                          [3] DNS Profile Engine
-[2] Arm Watchdog Guard                  [M] Routing Priority Engine
-[A] Portal Login Vault                  [4] Live Latency Probe
-[7] Open Portal Page                    [5] Flush DNS & ARP Caches
-[G] Headless Auto-Login                 [6] System Diagnostics Audit
-
-PREVIEW & REPORTS                       SYSTEM & RECOVERY
-[T] Dry-Run Simulation                  [8] Disarm Watchdog
-[R] Export Support Report               [9] Factory Reset
-[S] Run Self-Test Suite                 [0] Guide
-[X] Full Net Reset                      [Q] Quit
-```
+* **Ethernet Priority Hijacking on Captive Portals**: When plugging into a campus or enterprise LAN that requires web authentication, Windows immediately assigns the wired adapter a lower route metric (`10`) than your working Wi-Fi (`35`). All internet traffic diverts to the unauthenticated Ethernet connection, immediately breaking your internet. LanFixer dynamically isolates unauthenticated Ethernet (metric `50`) until web login succeeds, keeping Wi-Fi active as the primary uplink.
+* **APIPA (`169.254.x.x`) DHCP Deadlocks**: When DHCP servers respond slowly or after waking a laptop from sleep, Windows frequently assigns an Automatic Private IP Address and stops requesting DHCP leases. LanFixer frees the APIPA deadlock, cycles the interface safely, and forces clean DHCP negotiation without requiring a reboot.
+* **USB-C & Laptop NIC Link Flapping**: Modern laptop adapters and USB Ethernet dongles aggressively enable Energy Efficient Ethernet (EEE) and USB Selective Suspend. Under sustained traffic or switch renegotiation, the link repeatedly flaps up and down. LanFixer tunes adapter power parameters to stabilize link state while respecting battery operation.
+* **Stale Localhost Proxies**: Crashed VPN clients, debugging proxies (Fiddler, Charles), or enterprise software frequently leave dead proxy entries (`127.0.0.1:8888`) stuck in WinINet or system environment variables, breaking all web traffic. LanFixer detects and purges orphaned localhost proxies.
+* **Captive Portal Auto-Login**: Securely stores campus or hotel credentials using the Windows Data Protection API (DPAPI). When an HTTP 204 or 302 captive redirect is detected, LanFixer automatically authenticates in the background.
 
 ---
 
 ## Quickstart
 
-### Option A: Interactive Control Center (Recommended)
+### Method 1: Download & Run (Recommended)
 
 1. Download [`LanFixer.cmd`](https://github.com/abhiisonu/LanFixer/releases/latest/download/LanFixer.cmd).
-2. Right-click `LanFixer.cmd` and select **Run as administrator** *(if opened normally, it will prompt for elevation automatically)*.
+2. Right-click `LanFixer.cmd` and select **Run as administrator** *(if launched normally, it prompts for elevation automatically)*.
 3. Press **`1`** for **Quick Heal** to run the complete diagnostic and repair sequence.
 
-### Option B: Silent 1-Liner PowerShell Launch
+### Method 2: One-Liner (PowerShell)
 
 ```powershell
 irm https://raw.githubusercontent.com/abhiisonu/LanFixer/main/LanFixer.cmd -OutFile LanFixer.cmd; Start-Process LanFixer.cmd -Verb RunAs
@@ -136,152 +60,103 @@ irm https://raw.githubusercontent.com/abhiisonu/LanFixer/main/LanFixer.cmd -OutF
 
 ---
 
-## Interactive Controls (Menu Cheat Sheet)
+## Key Features
 
-| Key | Operation | Action & Technical Description |
+* **Zero Dependencies**: Pure batch polyglot embedding Windows PowerShell 5.1. Zero external binaries, Python, or Node.js required. Runs out-of-the-box on clean Windows 10 and 11 installations.
+* **DPAPI Credential Encryption**: Captive portal logins are encrypted at rest using the Windows Data Protection API (`System.Security.Cryptography.ProtectedData`) with machine-specific entropy. Plaintext credentials never touch disk.
+* **Non-Destructive & Reversible**: Every system configuration change (DNS, metrics, adapter power settings) is snapshotted before modification. Any change can be inspected via the Change Ledger (`-Mode History`) or reversed (`-Mode Undo`).
+* **Silent Background Watchdog**: Optionally installs as a lightweight Windows Scheduled Task running under `SYSTEM` with window popups suppressed (`Hidden=True`). Automatically heals connection drops and sleep-resume events.
+* **Battery-Conscious Telemetry**: Queries hardware battery state via WMI. Avoids disabling power-saving USB states on DC power and adapts watchdog polling intervals to preserve laptop battery life.
+* **Diagnostic & Quality Tooling**: Built-in multi-size Path MTU discovery (1500/1492/1420), RFC bufferbloat grading (A+ to F), TCP handshake latency testing, and a 6-stage network cache flush (DNS, ARP, NetBIOS, NLA, sockets).
+
+---
+
+## Interactive Shortcuts
+
+| Key | Action | Description |
 | :---: | :--- | :--- |
-| **`1`** | **Quick Heal** | Executes the full 7-layer repair sequence: frees APIPA, fixes metrics, flushes caches, and signs into captive portal if credentials exist in the vault. |
-| **`2`** | **Arm Watchdog** | Installs a lightweight scheduled task running under `NT AUTHORITY\SYSTEM` to heal network drops and wake events autonomously. |
-| **`3`** | **DNS Profile** | Switches DNS engines: `Adaptive` (Campus before auth, Public after), `DHCP Default`, `Hybrid`, `Cloudflare (1.1.1.1)`, or `Quad9`. |
-| **`4`** | **Latency Probe** | Runs real-time ICMP ping, jitter analysis, and packet loss metrics across all active network gateways. |
-| **`5`** | **Flush Caches** | Flushes DNS resolver cache, NetBIOS names, ARP tables, and triggers NLA (Network Location Awareness) discovery. |
-| **`6`** | **System Audit** | Audits adapter hardware, link speed/duplex, NDIS power management, DHCP lease expiration, IPv6 state, and event logs. |
-| **`7`** | **Open Portal** | Pins temporary captive routes, bounds DNS to local gateway, and opens the discovered captive portal endpoint in your default browser. |
-| **`A`** | **Portal Vault** | Secure interactive CLI manager to store, update, test, or delete captive portal credentials encrypted with DPAPI. |
-| **`G`** | **Auto-Login** | Silent headless captive portal login using hardware-encrypted vault credentials via native .NET WebClient. |
-| **`M`** | **Routing Engine** | Toggles multi-adapter priority: `Adaptive` (Smart Metric), `Ethernet First`, `Wi-Fi First`, or `Windows Default`. |
-| **`T`** | **Dry-Run Mode** | Simulates all repair stages and logs predicted system mutations without writing changes to the system. |
-| **`R`** | **Export Report** | Generates a full markdown diagnostic audit report saved directly to your Desktop. |
-| **`S`** | **Self-Test** | Runs the built-in 197-assertion test engine verifying cmdlets, kernel drivers, quoting, and crypto logic. |
-| **`X`** | **Full Net Reset** | Deep recovery: re-registers TCP/IP stack, resets Winsock catalog, clears WFP firewall filters, and restarts NDIS adapters. |
-| **`8`** | **Disarm Watchdog**| Cleanly unregisters and deletes the background watchdog scheduled task. |
-| **`9`** | **Factory Reset** | Reverts all network adapters, metric rules, power policies, and DNS configurations back to original hardware defaults. |
-| **`0`** | **Advisory Guide** | Displays interactive symptom-to-solution matrix and troubleshooting guide. |
-| **`Q`** | **Quit** | Exits the control center cleanly. |
+| **`1`** | **Quick Heal** | Executes the full repair pipeline: clears APIPA, fixes route metrics, flushes caches, and signs into the captive portal if credentials exist. |
+| **`2`** | **Install Watchdog** | Registers a silent background scheduled task to automatically heal network drops and wake-from-sleep events. |
+| **`3`** | **DNS Configuration** | Switches DNS resolvers with live latency benchmarks (`Campus DHCP`, `Cloudflare 1.1.1.1`, `Quad9`, `Google`, or `Reset to DHCP`). |
+| **`4`** | **Quality & MTU Probe** | Tests Path MTU, bufferbloat grading, TCP handshake latency, and hardware battery health telemetry. |
+| **`5`** | **Flush Caches** | 6-stage flush: DNS client cache, ARP neighbors, NetBIOS name cache, NLA service, socket tables, and WFP filter state. |
+| **`6`** | **System Audit** | Audits adapter hardware, link speed/duplex, NDIS power management, DHCP lease duration, and IPv6 state. |
+| **`7`** | **Captive Portal Check** | Detects HTTP 204/302 captive redirects and opens the discovered login page in your default browser. |
+| **`A`** | **Portal Vault** | Secure interactive manager to store, update, test, or delete encrypted captive portal credentials. |
+| **`G`** | **Auto-Login** | Headless captive portal login using hardware-encrypted vault credentials. |
+| **`M`** | **Routing & Metrics** | Inspects live default routes (`0.0.0.0/0`) and configures adapter metric priority (`Ethernet Priority`, `Wi-Fi Priority`, or `Adaptive`). |
+| **`T`** | **Dry Run** | Simulates all repair stages and logs predicted mutations without changing system state. |
+| **`R`** | **Export Report** | Generates a structured Markdown diagnostic audit report saved directly to your Desktop. |
+| **`H`** | **History & Forensics** | Inspects the persistent change ledger and provides reverse-chronological undo for prior actions. |
+| **`B`** | **Sentinel Monitor** | Continuous real-time monitor with live latency sparklines and battery-adaptive polling cadence. |
+| **`X`** | **Recovery & System** | Risk-stratified network reset tiers from non-destructive debloat to complete stack rebuild (`netcfg -d`). |
+| **`8`** | **Remove Watchdog** | Unregisters and removes the background watchdog scheduled task and cleans startup hooks. |
+| **`0`** | **User Guide** | Displays symptom-to-solution matrix and operational guide. |
+| **`Q`** | **Exit** | Exits the utility cleanly. |
 
 ---
 
-## Command-Line & Headless Automation
+## Headless CLI Automation
 
-LanFixer supports non-interactive execution for system administration, CI/CD runners, Task Scheduler, and enterprise deployment tools (Intune, SCCM, PDQ):
+LanFixer supports non-interactive execution for system administrators, scripts, and deployment tools (Intune, SCCM, Task Scheduler):
 
 ```cmd
-:: 1. Run standard repair and exit immediately
-LanFixer.cmd -Mode Heal
+:: Run comprehensive 7-layer health check
+LanFixer.cmd -Mode Doctor
+LanFixer.cmd -Mode Doctor -Json
 
-:: 2. Preview planned mutations without modifying system state
-LanFixer.cmd -Mode Heal -DryRun
+:: Execute automated repair silently
+LanFixer.cmd -Mode QuickHeal
 
-:: 3. Execute deep kernel and stack reset
-LanFixer.cmd -Mode FullNetReset
+:: Preview planned changes without applying them
+LanFixer.cmd -Mode QuickHeal -DryRun
 
-:: 4. Run real-time gateway latency and jitter probe
-LanFixer.cmd -Mode QuickProbe
+:: Inspect persistent change history and undo actions
+LanFixer.cmd -Mode History -Limit 20
+LanFixer.cmd -Mode Undo -Id <ChangeId>
 
-:: 5. Flush DNS, ARP, and NetBIOS caches
-LanFixer.cmd -Mode FlushCache
+:: Export redacted diagnostic support bundle (ZIP)
+LanFixer.cmd -Mode Bundle -OutDir C:\Logs -Redaction Strict
 
-:: 6. Switch DNS profile to Cloudflare DNS
-LanFixer.cmd -Mode SetDnsProfile -DnsProfile Cloudflare
-
-:: 7. Install autonomous background watchdog service
-LanFixer.cmd -Mode InstallWatchdog
-
-:: 8. Run offline self-test suite (returns exit code 0 on pass, 1 on fail)
-LanFixer.cmd -Mode SelfTest -NoPause
-
-:: 9. Export comprehensive diagnostic report
-LanFixer.cmd -Mode Report -NoPause
-
-:: 10. Revert all settings to clean factory defaults
-LanFixer.cmd -Mode ResetFactory
+:: Command help and metadata reference
+LanFixer.cmd -Mode Help
+LanFixer.cmd -Mode Help -Id Doctor
 ```
 
-### CLI Exit Codes
+### Exit Codes
 
-| Exit Code | Meaning |
+| Code | Meaning |
 | :---: | :--- |
-| `0` | Success: The operation completed without errors, or all 207+ verification tests passed. |
-| `1` | Error: A verification assertion failed, an unhandled exception occurred, or an elevated mode was executed without administrative rights. |
+| `0` | Success: Operation completed without errors, or system is healthy. |
+| `1` | Error: General operation failure or unhandled exception. |
+| `10` | Degraded: Network connection is partially degraded (e.g. high packet loss or DNS latency). |
+| `20` | Broken: Network connection is offline or link is down. |
+| `40` | Elevation Required: Administrative privileges are needed for this operation. |
 
 ---
 
-## Security & Reliability Engineering
+## Technical Architecture
 
-Built according to strict systems programming guidelines:
+LanFixer is built as a self-contained polyglot script:
 
-* **Zero External Binaries**: 100% native Windows script utilizing batch polyglot encapsulation with Windows PowerShell 5.1. Zero dependencies on Python, Node.js, Curl, or third-party EXEs.
-* **DPAPI Machine Cryptography**: Portal credentials in the vault are encrypted on disk via Windows Data Protection API (`System.Security.Cryptography.ProtectedData::Protect`) with `DataProtectionScope.LocalMachine` and hardware-derived machine entropy (`Get-VaultEntropy`). Keys are non-exportable and readable exclusively by `SYSTEM` and elevated Administrators.
-* **Strict ACL Enforcement**: The persistent storage directory (`%ProgramData%\LanFixer`) and vault file (`vault.bin`) are locked with inheritance disabled via `icacls.exe` and granted access exclusively to `SYSTEM` and `Administrators`.
-* **Anti-Rogue DHCP Domain Validation**: Credentials stored for a campus portal are strictly pinned to configured target domains or hashes; credentials are never transmitted to unauthorized captive endpoints.
-* **Global Mutex Concurrency Guard**: Inter-process synchronization is enforced using a named global Win32 mutex (`Global\LanFixer_Lock`). Mutex DACL is locked to `LocalSystem` and `BuiltinAdministrators`.
-* **100% Pure 7-Bit ASCII**: The script contains zero UTF-8 multibyte characters. It will never break, mangle, or crash on non-English Windows editions (CJK, Cyrillic, Turkish, Latin-1 codepages).
-* **Non-Destructive Snapshots**: Before modifying adapter metrics, DNS profiles, or power settings, original configurations are snapshotted to `%ProgramData%\LanFixer\state.clixml` with automatic `.bak` backup transactions. `Factory Reset` (`9`) guarantees instant restoration.
+1. **Batch Bootloader**: The first 8 lines are interpreted by `cmd.exe`. They configure the process environment, locate the script path (`LANFIXER_SELF`), and pass control directly to Windows PowerShell 5.1 with `-ExecutionPolicy Bypass`.
+2. **Execution Engine**: The remainder of the file is parsed directly by PowerShell's AST parser as a script block. It interacts with Windows networking exclusively through native CIM/WMI classes (`MSFT_NetAdapter`, `MSFT_NetIPAddress`, `Win32_NetworkAdapterConfiguration`), native cmdlets (`NetTCPIP`, `DnsClient`), and Win32 APIs via compiled C# type definitions.
+3. **Atomic State & Snapshots**: Operational state and pre-mutation baselines are persisted in `%ProgramData%\LanFixer\state.clixml` using atomic write patterns (`.tmp` write, deserialization test, atomic rename) with automatic `.bak` recovery.
+4. **Zero-Popup Task Architecture**: Background Watchdog and Sentinel tasks are registered with `<Hidden>true</Hidden>` and `<Priority>7</Priority>` via `schtasks.exe`, preventing console window flashes during user logon or network reconnection.
 
 ---
 
-## Forensic Verification & Self-Test Suite
+## System Requirements
 
-LanFixer includes a built-in diagnostic and logic test harness that can be run on any system without applying changes:
-
-```cmd
-LanFixer.cmd -Mode SelfTest -NoPause
-```
-
-### Test Coverage Breakdown (207+ Total Assertions)
-
-```
-[+] Runtime & Privilege (11 Checks):
-    - PowerShell 5.1+ runtime detection
-    - Win32 elevation & token privileges
-    - Core NetAdapter, NetTCPIP, and DnsClient cmdlets
-    - Core system tools (schtasks.exe, icacls.exe, ipconfig.exe, arp.exe, pnputil.exe, dism.exe)
-    - Kernel drivers existence (tcpip.sys, ndis.sys, afd.sys)
-    - Protected store ACL permissions and XML schema conformance
-
-[+] Pure Logic Invariants (175+ Assertions):
-    - Win32 CLI argument quoting & escaping rules (trailing backslashes, embedded quotes, spaces)
-    - HTTP captive redirect and status parsing (200, 204, 302, 503, chunked transfer-encoding)
-    - Dual-homed metric assignment rules (15 vs 50, gateway reachability)
-    - Source-bound gateway liveness probing (zero multi-uplink Wi-Fi leakage)
-    - RFC 4861 fe80:: link-local IPv6 gateway route preservation
-    - Windows 11 native DoH template UDP fallback enforcement (AllowFallbackToUdp = $true)
-    - Dynamic topology-aware /32 route calculations (0.0.0.0 on-link vs gateway off-link)
-    - Dormant USB PnP transceiver revival & fail-safe NDIS driver cycling
-    - Stale PID reuse start-time detection & named mutex DACL security
-    - DPAPI LocalMachine encryption and decryption round-trip
-    - Gateway ARP neighbor stability (24-hour verification window)
-    - Bounded DNS queries (2500ms timeout clamp)
-    - Watchdog task XML schema generation and trigger rules (Event 10000/10001)
-
-[+] UI & Terminal Layout (16 Assertions):
-    - ANSI/ASCII 60, 76, and 100 column terminal boundary constraints
-    - Word-wrapping algorithms without word slicing
-    - Monospace pulse sparkline formatting
-
-[+] Dry-Run Non-Destructive Integrity (5 Checks):
-    - Simulates all mutation stages with 0 state changes
-```
+* **Operating System**: Windows 10 (version 1809 or higher) or Windows 11
+* **Architecture**: x64, ARM64, or x86
+* **Runtime**: Windows PowerShell 5.1 (installed by default on all modern Windows versions)
+* **Privileges**: Administrator rights (required for modifying network adapter properties, routing tables, and scheduled tasks)
 
 ---
 
-## Universal Portability Matrix
+## Author & License
 
-LanFixer is engineered to work universally across all Windows environments without device-specific dependencies:
+Engineered and maintained by **[Abhishek Sonu](https://github.com/abhiisonu)**.
 
-| Category | Supported Configurations |
-| :--- | :--- |
-| **Operating Systems** | Windows 11 (24H2, 23H2, 22H2, 21H2), Windows 10 (22H2, 21H2, Enterprise LTSC), Windows Server (2022, 2019, 2016) |
-| **Hardware Platforms** | Intel Core / Xeon, AMD Ryzen / EPYC, Qualcomm Snapdragon (Windows on ARM64) |
-| **OEM Implementations** | Lenovo (ThinkPad / Legion), Dell (XPS / Latitude), HP (EliteBook / Omen), ASUS (ROG / ZenBook), Framework, Microsoft Surface |
-| **Network Controllers** | Realtek (RTL8111, RTL8125 2.5GbE, RTL8153 USB), Intel (I219-V, I225-V, I226-V, Wi-Fi 6E AX210/AX211, Wi-Fi 7 BE200), Marvell AQC107, ASIX AX88179 |
-| **Docking Stations** | Thunderbolt 3/4 Docks, USB-C Multiport Adapters, USB-A 3.0 to RJ45 dongles |
-
----
-
-## License & Credits
-
-Distributed under the **MIT License**. See [LICENSE](LICENSE) for details.
-
-Engineered and maintained with mathematical rigor by **[Abhishek Sonu](https://github.com/abhiisonu)**.
-Contributions, bug reports, and pull requests are welcome on [GitHub](https://github.com/abhiisonu/LanFixer).
+Released under the [MIT License](LICENSE).
