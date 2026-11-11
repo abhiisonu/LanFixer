@@ -1897,7 +1897,7 @@ function Invoke-NetworkAutoDiscovery {
 
         # 3. Discover Active Captive Portal Services on Gateway (dedicated portal ports on non-NITJSR networks)
         if ($primaryGw -and (-not $script:State.Misc['DiscoveredPortalUrl']) -and -not $script:IsDry -and (-not (Test-IsNitjsrNetwork))) {
-            $gwPorts = @(8003, 8888, 8443, 8080)
+            $gwPorts = @(8888, 8003, 8443, 8080)
             foreach ($p in $gwPorts) {
                 if (Test-TcpPort $primaryGw $p 250) {
                     $script:State.Misc['DiscoveredPortalPort'] = $p
@@ -1949,7 +1949,7 @@ function Get-ActivePortalUrl {
     }
     return [string]$script:Cfg.PortalUrl
 }
-function Find-ActivePortalPort([string]$HostOrIp, [int]$DefaultPort = 8003) {
+function Find-ActivePortalPort([string]$HostOrIp, [int]$DefaultPort = 8888) {
     if (-not $HostOrIp) { return $DefaultPort }
     if ($script:State.Misc -and $script:State.Misc['DiscoveredPortalPort']) {
         $savedPort = [int]$script:State.Misc['DiscoveredPortalPort']
@@ -1966,7 +1966,7 @@ function Find-ActivePortalPort([string]$HostOrIp, [int]$DefaultPort = 8003) {
     }
     return $DefaultPort
 }
-function Test-PortalOnlineSmart([string]$HostOrIp, [int]$ConfiguredPort = 8003) {
+function Test-PortalOnlineSmart([string]$HostOrIp, [int]$ConfiguredPort = 8888) {
     $candidatePorts = @([int]$ConfiguredPort, 8003, 8888, 8443, 8080, 443, 80) | Select-Object -Unique
     foreach ($p in $candidatePorts) {
         if (Test-TcpPort $HostOrIp $p 350) { return $true }
@@ -5953,7 +5953,7 @@ function Test-GatewayAlive($Ad, [string]$Gw) {
         $homeAd = $true
         try { $eh = Get-AdapterEnvironment $Ad -UseCache; if ($null -ne $eh.Home) { $homeAd = [bool]$eh.Home } } catch {}
         $gwSrc = [string](Get-ValidIPv4 $Ad)
-        if ((Test-TcpPort $Gw 80 400 $gwSrc) -or (Test-TcpPort $Gw 443 400 $gwSrc) -or (Test-TcpPort $Gw 53 400 $gwSrc) -or (Test-TcpPort $Gw 8003 400 $gwSrc)) {
+        if ((Test-TcpPort $Gw 80 400 $gwSrc) -or (Test-TcpPort $Gw 443 400 $gwSrc) -or (Test-TcpPort $Gw 53 400 $gwSrc) -or (Test-TcpPort $Gw 8888 400 $gwSrc) -or (Test-TcpPort $Gw 8003 400 $gwSrc)) {
             return @{ Alive = $true; Rtt = $null; Via = 'arp' }
         }
         $dynamicGwPorts = @()
@@ -5974,7 +5974,7 @@ function Test-GatewayAlive($Ad, [string]$Gw) {
         return @{ Alive = $false; Rtt = $null; Via = '' }
     }
     $gwSrc = [string](Get-ValidIPv4 $Ad)
-    $dynamicGwPorts2 = @(80, 443, 53, 8003)
+    $dynamicGwPorts2 = @(8888, 80, 443, 53, 8003)
     if ($script:State.Misc -and $script:State.Misc['DiscoveredPortalPort']) {
         $dp2 = [int]$script:State.Misc['DiscoveredPortalPort']
         if ($dp2 -gt 0 -and $dynamicGwPorts2 -notcontains $dp2) { $dynamicGwPorts2 += $dp2 }
