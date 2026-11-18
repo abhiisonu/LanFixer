@@ -4,7 +4,9 @@
 *.clixml
 .system_generated/
 scratch/
- 
 Archive/
 *updated.cmd
-*.py
+bin/
+obj/
+App/bin/
+App/obj/

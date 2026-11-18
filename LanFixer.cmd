@@ -9,243 +9,11 @@ exit /b %errorlevel%
 
 <#
 .SYNOPSIS
-    LanFixer 7.0.0 - Network diagnostic, stabilization, and captive portal automation utility for Windows.
+    LanFixer 7.0.2 - Network diagnostic, stabilization, and captive portal automation utility for Windows.
     Author: Abhishek Sonu (https://github.com/abhiisonu)
 .DESCRIPTION
-    Single file, ASCII only. Run it normally for the control center, or use -Mode:
-      Interactive | Heal | AutoHeal | Diagnose | QuickProbe | FlushCache | InstallWatchdog |
-      UninstallWatchdog | ResetFactory | LaunchPortal | SetDnsProfile | SelfTest | Report
-    Add -DryRun to see exactly what would change without changing anything.
-    Every change is snapshotted first, so ResetFactory restores YOUR original values.
-.NOTES
-    7.0.0 (Production Release & Architecture Modernization):
-      - Battery & Power Efficiency Engine: Deep WMI hardware battery telemetry (charge %, wear %, health %, cycle count); preserves DC USB selective suspend to prevent battery drain; adaptive background Sentinel polling cadence (20s+) when healthy on battery.
-      - Zero-Popup Scheduled Task Architecture: Configured Hidden=True across all Task Scheduler XML definitions (Watchdog, Sentinel, Portal); added automated startup shortcut and Run registry key purging on uninstall and factory reset.
-      - Risk-Ordered Recovery Hierarchy: Standardized recovery tiers in ascending risk order from Level 1 [SAFE] Careful Network Debloat to Level 6 [REBOOT] Complete Stack Rebuild.
-      - Elevated Diagnostics & Controls: Multi-Size Path MTU Discovery (1500/1492/1420), RFC Bufferbloat Letter Grading (Grade A+ to F), TCP handshake latency, live 0.0.0.0/0 route priority table, and 6-stage universal network cache flush with millisecond timings.
-      - Universal Network Auto-Discovery: Seamless dynamic campus gateway discovery across 10.x, 172.16-31.x, 192.168.x, 100.64-127.x subnets with intelligent Wi-Fi uplink fallback.
-    6.7.0 (Enterprise Resiliency, Deep Diagnostics & Safe Recovery Engine):
-      - Feature F6 (Link Quality & Flap Monitor): Added state-persisted ring buffer ($State.LinkMonitor) tracking NDIS link transitions, flap detection (>=3 drops in 10m), gigabit speed downshift alerts, and CRC packet error thresholds.
-      - Feature F5 (Configuration & Policy File System): Added pure INI policy engine ($StoreDir\lanfixer.ini) with tamper-resistant ACL auditing, strict key whitelisting, and effective origin reporting (-Mode Config [-Validate] [-Json]).
-      - Feature F4 (Redacted Diagnostic Support Bundle): Added zero-dependency ZIP archive generator (-Mode Bundle [-OutDir] [-Redaction Strict|Standard]) with multi-pass PII and secret redaction (MAC, public IP, username, hostname, credentials) and forensic metadata manifest.
-      - Feature F3 (Guided Recovery Escalation Ladder): Added closed-loop intelligent recovery engine (-Mode Recover [-Plan]) with layered remediation, automatic re-verification, safe Tier 2 cap, and correlated undo commands.
-      - Feature F2 (Change Ledger & Reversible Undo): Added persistent append-only change ledger ($StoreDir\change_ledger.jsonl) with size capping, run correlation, and drift-protected reverse-chronological undo (-Mode History, -Mode Undo [-Id <id>] [-RunId <runid>] [-Plan]).
-      - Feature F1 (Health Verdict Engine): Added 7-layer OSI forensic diagnostic pipeline (-Mode Doctor, alias Status) with discrete exit code contracts (0=Healthy, 10=Degraded, 20=Broken, 30=Undetermined) and automation modifiers (-Json, -Quiet, -NoColor).
-    6.6.0 (Production Hardening & Forensic Verification Release):
-      - Cold Start Monotonic Adapter Cache: Implemented 2.5s high-resolution stopwatch cache in Get-EthernetAdapters, cutting redundant CIM/WMI enumeration and startup latency.
-      - Locale Invariance: Sanitized powercfg index parsing across English, German, French, and Russian outputs; generalized WinHTTP loopback proxy detection to match universal IP/port patterns.
-      - Scheduled Task Security & Hygiene: Hardened New-SentinelTaskXml against XML argument injection via SecurityElement escaping; added scrub of temporary task XMLs on uninstall.
-      - Destructive Mode Safeguards: Added Test-RemoteSession guard to UltraSystemReset, DoomsdayReset, and ArmageddonReset to prevent remote RDP/SSH operator lockout; blocked invocation by automated background modes (AutoHeal/Daemon/Sentinel).
-      - Pending Reboot Tracking: Recorded PendingReboot state and reboot timestamp upon ArmageddonReset; enforced AutoHeal debounce pause until machine restart completes.
-      - Universal Upfront Parameter Guards: Hardened 19 core networking functions against null or malformed $Ad adapter objects to guarantee zero unhandled runtime exceptions.
-      - Store ACL Non-Admin Verification: Added non-destructive Test-StoreAcl inspection enabling unprivileged SelfTest and audit modes to verify store security without elevation.
-      - Batch Header Exit Normalization: Updated batch launcher to trap PowerShell parameter validation failures via ($?) and bubble exit code 1.
-    6.5.4 (Exhaustive 10-Lens Full Forensic Audit & Behavioral Hardening):
-      - PSModulePath Isolation: Sanitized $env:PSModulePath under Windows PowerShell 5.1 to prevent format/type collisions from PowerShell 7 modules.
-      - Dynamic Discovery Purge: Fixed state leak in Invoke-RoamingCleanup, Invoke-SupremeOmnifix, Invoke-UltraSystemReset, and Invoke-DoomsdayReset by purging DiscoveredPortalPort and DiscoveryTime.
-      - Enter-Lock PID Reuse Defense: Added StartTime timestamping to lock.json and validated lock-holder process identity (powershell|pwsh|cmd|LanFixer) and process start time.
-      - DNS Wire Parser Hardening: Added QDCOUNT limits (<=32) and packet boundary checks on question/answer label lengths and compression pointers in Get-DnsAAnswers.
-      - Redirect Sanitization & ReDoS Protection: Added regex match timeouts, trailing quote/semicolon trimming, and URI scheme validation to Get-RedirectFromBody.
-      - Credential Vault Security: Enforced Administrators ownership (*S-1-5-32-544) in Protect-VaultFile and validated owner SID in Test-VaultAcl.
-      - Dynamic Portal Endpoint Sync: Synchronized Host with DiscoveredPortalIp in Get-ActivePortalEndpoint when discovered on local network.
-      - Stale Route Pruning Mutation Safety: Wrapped stale host route removal in Invoke-Change and updated in-memory tracking list in Shield-GatewayArp.
-      - Config Portal Security: Enforced strict HTTPS validation on PortalUrl in ConvertTo-CfgOverride to prevent cleartext credential transmission.
-      - Behavioral SelfTest Suite: Replaced shallow source-code IndexOf string assertions with live functional execution tests.
-    6.5.3 (Definitive 360-Degree 8-Pillars Forensic Audit & Production Shipment):
-      - State & Mutex Concurrency: Verified process identity in Enter-Lock to eradicate PID recycling deadlocks; preserved DiscoveredPortalPort in-memory across disk state reloads.
-      - L1/L2 Hardware Power Catalog Expansion: Added EnergyEfficientEthernet, AutoDisableGigabit, SavePowerNowLinkDown, and ModernStandbyWoL to disable silent battery drops.
-      - L3 Host Route Lifecycle Reconciliation: Pruned stale off-subnet /32 gateway host routes when default gateway changes across VLANs.
-      - L4 Scoped DNS Wire Parser Compliance: Enhanced Get-DnsAAnswers with dynamic QDCOUNT loop skipping to strictly adhere to RFC 1035 multi-question packet specifications.
-      - L5-L7 Captive Engine Hardening: Added HTML attribute order independence to meta-refresh tags and added window.location.assign redirection handling.
-    6.5.2 (Exhaustive Forensic Audit Resolutions & Hardware/Stack Reliability Hardening):
-      - NDIS Link Speed Cast: Replaced fragile [int64]$Ad.LinkSpeed string conversion with UInt64 TransmitLinkSpeed and robust regex evaluation, preventing duplex flap crash.
-      - Roaming Debounce State: Stamped LinkDownSince in $script:State.Misc to unfreeze AutoHeal from perpetual 45s debounce trap; cleared both Misc and Times on recovery.
-      - Smart DNS Management Guard: Added management flag check to Restore-SmartDnsIfManaged to avoid spurious registry writes.
-      - PnP Hardware Restart Quoting: Removed manual outer quotes on PnPDeviceID in Invoke-Native pnputil call to prevent double-escaping failure.
-      - DHCP DNS Management Inversion: Set Managed=false on Set-AdapterDnsAutomatic to prevent erroneous re-management after DHCP reset.
-      - Off-Subnet Gateway Route Tracking: Added Add-TrackedHostRoute and metric 5 alignment to off-subnet gateway injection for clean roaming teardown.
-      - Path MTU Target Fallbacks: Enriched Get-PathMtuForAdapter with gateway and DHCP DNS probe targets for firewalled intranets.
-      - Sockets DAD Binding Fallback: Added unbound socket fallback to Test-TcpPort on tentative local IP addresses.
-      - HttpWebRequest Stream Disposal: Guaranteed $resp.Close() in Get-InternetState system fallback via try/finally.
-    6.5.1 (Definitive Forensic Audit Resolutions & Omni-Adaptive Dynamic Stack Hardening):
-      - Subnet Calculus: Pre-assigned $ipBytes before prefix validation; converted WildcardMask from scalar byte to 4-octet dotted quad.
-      - State Persistence: Repointed Shield-Profile to Snapshot table; stamped DiscoveryTime on Other cleanup and purged missing keys on sync.
-      - Socket & Route Safety: Validated IPv4 in Get-DhcpDnsServers to prevent UdpClient address family mismatches while retaining IPv6 support.
-      - TLS Decision Priority: Validated CA certificates prior to pin check in New-CertCallback to prevent rejection of updated certificates.
-      - Institutional Overrides: Enforced Import-UserConfig on Initialize-Store completion.
-      - Dynamic Portals: Replaced hardcoded portal endpoints in [G] dashboard handler and Invoke-HeadlessPortalLogin with Get-ActivePortalEndpoint.
-      - Reset MTU Scavenging: Purged all wildcard MtuCandidate* keys during resets.
-    6.5.0 (Omniscient Layer 1-7 Healer, Doomsday Multi-Medium & Armageddon Deep OS Reset):
-      - Invoke-ArmageddonReset: 4-stage Microsoft Windows native kernel network stack wipe and reinstallation engine (netcfg.exe -d). Uninstalls all adapters, clears virtual switches/filters, wipes TCP/IP registry stack, and triggers clean PnP driver reinstallation upon reboot.
-      - Invoke-DoomsdayReset: 12-stage universal doomsday network stack annihilation engine with 5 Deep Forensic Antidotes for total connectivity death across ALL media (Wi-Fi, Bluetooth, USB Tethering, Ethernet, Cellular).
-      - Rogue NDIS 6 Filter Driver Deactivation: automatically deactivates 3rd-party NDIS lightweight filter drivers (Npcap, VirtualBox, VPN, Antivirus packet drop traps) on physical adapters while preserving native Microsoft protocols.
-      - PnP Silicon Hardware Bus Restart: executes pnputil.exe /restart-device on physical PCI/USB device instances to wake transceivers from Modern Standby D3cold / PCIe ASPM hardware lockups without rebooting.
-      - RadioManagement / Airplane Mode Deadlock Eradication: sets SystemRadioState to 0 in registry and cycles RmSvc to unlock trapped hardware radios.
-      - Ghost Adapter Registry Scrub & Outbound Firewall Guarantee: scrubs orphaned GUIDs under Tcpip\Parameters\Interfaces and enforces netsh advfirewall blockinbound,allowoutbound.
-      - Universal Manual Static IP & Route Purge: strips conflicting manual static IPs and default routes across all physical adapters, enforcing pure DHCP Discover.
-      - Dual-Architecture Winsock LSP & NSP Annihilation: wipes 64-bit System32 and 32-bit SysWOW64 Winsock catalogs (netsh winsock reset catalog & reset), zeroes AutodialFlags.
-      - Dual-Stack TCP/IP & Heuristics Normalization: netsh int ip/ipv6 reset, netsh int tcp reset, autotuninglevel=normal, RSS/RSC enabled, ECN/timestamps disabled, initialrto=3000.
-      - Transition Tunnel Disablement: disables Teredo, ISATAP, and 6to4 transition tunnels to eliminate campus IPv6 routing sinkholes.
-      - Routing, Destination Cache, PortProxy & Bridge Purge: route -f (clears gateways), deletes destinationcache, netsh interface portproxy/httpstunnel reset, destroys rogue bridges via netsh bridge.
-      - Encrypted DNS (DoH/DoT/DDR) Global & Per-Interface Factory Wipe: netsh dnsclient delete global all & delete interface all.
-      - Firewall, WPAD Autoproxy & BITS Transfer Purge: netsh advfirewall reset & on, netsh winhttp reset proxy/autoproxy/tracing, flushes HTTP log buffer, cancels zombie BITS jobs.
-      - NCSI Calibration, Kerberos Purge & SMB Session Sweep: calibrates ActiveWebProbe/ActiveDnsProbe, klist purge, net use * /delete /y, purges unmanaged NLM signatures.
-      - Cache & NetBIOS Eviction: netsh interface ip delete arpcache, netsh int ip/ipv6 delete neighbors, arp -d *, nbtstat -R & -RR, Clear-DnsClientCache, ipconfig /flushdns.
-      - Hardware Transceiver Cycle & Driver Power Lock: pnputil /restart-device, re-binds ms_tcpip/ms_tcpip6/ms_rspndr/ms_lltdio/ms_pacer, defeats PHY EEE/green power & selective suspend.
-      - DHCP Broadcast Flag Enforcement & Registry Zeroing: enforces DhcpConnForceBroadcastFlag=1 (RFC 2131), zeroes cached DhcpIPAddress/DhcpServer keys to force pure Discover.
-      - Topological 13-Service Stack Resuscitation: cleanly halts 13 dependent services before reset and restarts them in strict topological order (BFE -> mpssvc -> CryptSvc -> RmSvc -> WlanSvc -> dot3svc -> bthserv -> WwanSvc -> Dhcp -> Dnscache -> iphlpsvc -> NlaSvc -> netprofm -> BITS).
-      - 802.1X Wired AutoConfig Reconnection: issues netsh lan reconnect across wired LAN interfaces.
-      - Full DHCP Stack Cycle & Dynamic DNS: ipconfig /release & /renew (IPv4/IPv6), ipconfig /registerdns, and 802.1D Spanning Tree Protocol (STP) convergence loop.
-      - Interactive TUI & CLI Integration: Key [D] for Doomsday, Key [U] for Ultra, 4-tier selector on [X], -Mode ArmageddonReset / DoomsdayReset / UltraReset / FullNetReset CLI dispatch.
-    6.4.2 (PnP Optimization & Mutex Starvation Protection):
-      - PnP Rescan Rate-Limit & Narrowing: Rescue-DormantEthernetPnp stamps limiter before query, checks only present faulted physical wired NICs, and ignores disabled/ghost devices.
-      - Interactive Session Timestamp Validation: Start-Interactive writes process StartTime in round-trippable ISO-8601 UTC format, eliminating false-positive session purges.
-      - Undoable IPv6 Neutralization & Restoration: Shield-DnsIntegrity snapshots DnsStatic/Ipv6Rd; Restore-Ipv6IfNeutralized restores ms_tcpip6 and router discovery upon leaving campus or factory reset.
-      - Dry-Run Enforcement in Get-GatewayMacs: Wrapped Remove-NetNeighbor in dry-run guard to prevent neighbor eviction during read-only audits.
-      - Accurate Metric Drift Detection: Get-RoutingLabel reads actual adapter metric to enable drift remediation in Start-Interactive.
-      - Neutralized Interceptor State Persistence: Preserves StartType, DelayedAutostart, and WasRunning for third-party services; added $skipKill gate in Shield-SystemStack.
-      - Prompt Mutex Starvation Protection: Extracted interactive confirmation prompts outside of Invoke-WithLock so operator pauses never block the background watchdog.
-      - Source-Bound Gateway Liveness Probes: Cleaned unbound proxy checks in Test-GatewayAlive; bound TCP probes to adapter IPv4.
-      - Per-Adapter Path-MTU Candidates: Keyed MtuCandidate by interface GUID; enforced Test-RouteViaAdapter unconditionally.
-      - NlaNudge Sleep Optimization: Gated 5s sleep in Shield-Services behind Test-Elapsed 900s limiter.
-      - TCP Auto-Tuning Snapshotting: Shield-TcpAutoTuning snapshots original auto-tuning level before restoration.
-    6.4.1 (Supreme Omni-Hardening & Static Lint Resolution):
-      - Static IP Auto-Rollback: Shield-DataLink restores snapshotted static IPv4 if DHCP renewal ladder fails.
-      - Inverted DHCP Stack Unfreeze: Inverted Step 3 in Repair-Dhcp (Stop -> Zero Registry -> Start) to prevent cached lease rewrites.
-      - Roaming Cleanup Flap Grace Period: 45s debounce in Invoke-RoamingCleanup avoids full teardown during momentary cable wiggles.
-      - Measured Per-Adapter Complete-Authentication: Evaluates genuine Internet state per adapter rather than assuming 'Online'.
-      - Source-Bound Stage 5 Omnifix: Bound public verification probes to primary Ethernet IP, eliminating Wi-Fi hotspot false-positives.
-      - Secondary-Uplink DNS Scoping: Preserves legitimate DHCP-supplied campus DNS on campus Wi-Fi while purging stuck static entries.
-      - Inverted Stale Portal Condition Fix: Corrected line 3285 to unconditionally purge discovered portal state on non-campus networks.
-      - HTML5 Form Parser Expansion: Added input number, checked checkboxes, and select dropdown extraction in ConvertFrom-LoginForm.
-      - Vault Re-Save Protection: Implemented transaction guard ($moved) in Save-PortalCredentials to protect existing vault secrets.
-      - Read-Only Telemetry Contract: Purged unsynchronized metric writes from Get-Telemetry to prevent multi-threaded race conditions.
-      - Wi-Fi Enablement Dry-Run Guard: Wrapped Enable-NetAdapter in Invoke-Change and dry-run check in Set-RouteProfileMode.
-      - Lazy Uplink Evaluation: Deferred Test-OtherUplinkActive in Get-InternetState, eliminating 75% of route table sweep overhead.
-    6.4.0 (Alpha-to-Omega Network Resilience Engine):
-      - Dormant USB PnP Transceiver Revival: Rescue-DormantEthernetPnp detects non-present/sleep-crashed USB NICs and
-        resynchronizes the PnP bus via pnputil /scan-devices, guaranteeing zero-reboot waking on all USB controllers.
-      - RFC 4861 Link-Local IPv6 Gateway Preservation: Corrected IPv6 route evaluation in Get-AdapterDnsVerdict to recognize
-        standard fe80:: next hops, preserving legitimate dual-stack connectivity while neutralizing true rogue sinkholes.
-      - Windows 11 Native DoH UDP Fallback: Shield-DohFallback enforces AllowFallbackToUdp = $true across DoH templates,
-        preventing catastrophic port 443 stall timeouts when behind unauthenticated captive portal firewalls.
-      - AST Syntactic Bug Elimination: Wrapped Test-MetricsManaged command evaluation on line 3753 to fix operator-as-parameter
-        token binding, restoring proper routing profile restoration logic.
-      - Source-Bound Gateway Liveness: Test-GatewayAlive probes only the gateway IP and verifies on-link ARP MACs, eliminating
-        multi-uplink cross-talk where active Wi-Fi falsely reported a disconnected or dead Ethernet gateway as alive.
-      - Watchdog Dashboard Coexistence & Stale PID Purge: Test-InteractiveSessionActive validates process StartTime to prevent
-        stale recycled PIDs from silencing the watchdog, and allows AutoHeal when the Global mutex is idle.
-      - Fail-Safe NDIS Driver Cycling: Guaranteed finally retry loop with kernel PnP fallback in Reset-PhysicalAdapterHardware
-        ensures a network adapter is never left in a disabled state.
-      - Device Parameters Snapshotting & Dry-Run Safety: Wrapped all 7 USB transceiver power parameters in Save-Original,
-        Invoke-Change, and Restore-Everything handlers.
-      - Topology-Aware /32 Captive Pathing: Test-SameSubnetIPv4 calculates on-link vs off-link captive targets, routing
-        on-link targets via 0.0.0.0 (direct ARP) and off-link targets via the physical gateway at metric 5.
-      - Clean Roaming & Reset Hygiene: Invoke-RoamingCleanup purges discovered portal state upon leaving campus, and full
-        resets unconditionally evict stale Permanent ARP locks across network switches.
-    6.3.0 (Zero-Reboot Situational Auto-Adaptation Engine):
-      - Situational DNS Engine: Shield-Dns resolves failures across Online, NoDns, and Offline states via parallel
-        53/UDP latency probes, automatically placing measured working public resolvers at the head of the adapter list.
-      - NRPT Split-Horizon Rule Injection: Dynamically maps the campus/organization domain to campus resolvers so
-        internal portals, ERPs, and intranet services continue working alongside high-speed public internet.
-      - Dynamic Captive Host Routing: Ensure-CampusPortalPath resolves portal redirect hostnames on the wire and
-        creates /32 host routes pinned to the active gateway, preventing secondary uplinks from hijacking portal auth.
-      - Zero-Reboot Hardware Cycling: Combines pnputil /restart-device with NDIS stack cycling and DHCP Client service
-        unfreezing, eliminating the need to restart the PC to resolve hung transceivers or frozen sockets.
-      - Multi-Vendor NIC Power Hardening: Suppresses selective suspend and Energy Efficient Ethernet (EEE) across
-        Realtek, ASIX, and Intel GbE controllers, and disables USB selective suspend globally across AC and DC power plans.
-      - DHCP Stale Cache Flush: Step 3 of Repair-Dhcp purges stale DhcpIPAddress and DhcpDefaultGateway registry values
-        before renewing, preventing 30-second APIPA 169.254.x.x deadlocks on foreign networks.
-    5.2.0 (verified-defect release; every item below was reproduced in the 5.0.0 source before it was changed):
-      SECURITY
-      - The saved portal password could be sent to any HTTPS host under the DNS suffix that the CURRENT network's DHCP
-        handed out (Misc.DiscoveredDomain was trusted like the configured campus). Credential-bearing steps now use
-        Test-CredentialPortalHost / Get-CredentialPortalUrl: only the configured PortalHost / PortalIp / CampusDomain
-        (or an IP literal, which still needs a Windows-valid or pinned certificate). Browser navigation keeps the
-        broader trust because nothing secret is sent. Another institution opts in explicitly through config.json.
-      CORRECTNESS
-      - Test-GatewayAlive deleted a neighbour (ARP) entry during -DryRun.
-      - Save-State now proves the new temp file parses before it replaces state, and never copies a damaged live file
-        over a good .bak.
-      - Non-campus DNS rescue no longer flaps (Get-OtherDnsAction): a rescue stays until the DHCP resolvers answer.
-      - Watchdog self-heal also covers a task DISABLED in Task Scheduler.
-      - Dashboard autopilot: one automatic vault sign-in attempt when the dashboard opens on an already captive link.
-      - Remove-CampusHostRoutes now also removes the /32 routes Ensure-CampusPortalPath adds for other addresses
-        (discovered portal, redirect target, the adapter's DHCP resolvers).
-      - Invoke-TlsHttp resolved the portal host name without the Ethernet source address (SMHNR could answer from Wi-Fi).
-      - Captive portals that answer 200 with a <meta refresh> or a JavaScript redirect now yield a Location; the probe
-        reads enough of the body to see it.
-      - gzip/deflate bodies are decoded (bounded to 1 MB: a decompression bomb returns the raw bytes).
-      - Path-MTU probes are skipped when they would leave through another uplink (the result would describe the wrong
-        link and could clamp the Ethernet MTU).
-      - -Mode SelfTest now exits 1 when an assertion fails (it always exited 0 before).
-      UNIVERSALITY
-      - Environment detection records Home (does this lease look like the configured campus). The built-in NITJSR portal
-        IP / resolver / domain are used as fallbacks only on that campus (NRPT, /32 routes, resolver candidates,
-        portal check, gateway-liveness proxy). Other networks get discovered values only.
-      - Optional <store>\config.json (admin/SYSTEM-owned, not writable by others) sets PortalHost, PortalIp, PortalPort,
-        PortalUrl, CampusDns, CampusDomain, GwRegex, ProfileRegex; every value is validated and nothing can be blanked.
-    4.6.0 (Comprehensive edge-case hardening, non-destructive static IP fallback, WFP precision, LF chunking):
-      - CNAME wire parser: Get-DnsAAnswers correctly handles hybrid label+pointer compression (RFC 1035 Section 4.1.4).
-      - Split-Words: deterministically slices unbreakable tokens > Width to guarantee zero console frame overflow.
-      - HTTP engine: ConvertFrom-ChunkedBytes supports LF-only (\n) framing; ConvertFrom-LoginForm adds HTML5 formless input fallback.
-      - Concurrency: Invoke-SupremeOmnifix releases Global\LanFixer_Lock before the 180s human captive portal wait.
-      - Security: Initialize-Store AST-validates $SelfPath before mirroring to protected %ProgramData%\LanFixer\LanFixer_Core.cmd.
-      - State persistence: Enter-Lock merges in-memory LearnedDhcp and Env tables across state reloads.
-      - Non-destructive static IP: Shield-DataLink snapshots static IPv4 configurations before DHCP switchover, and Restore-Everything restores them.
-      - Disarming hygiene: Uninstall-Watchdog removes campus host routes, restores metrics, interceptors, and managed adapter DNS.
-      - Precision WFP remediation: Shield-SystemStack tests Google Auth resolution before declaring DNS broken and spares user VPNs.
-      - SelfTest suite: expanded to 156 assertions verifying all parser, wrapping, chunking, and logic invariants.
-    4.5.6 (TUI responsiveness audit + a much wider self test; no behaviour change in the UI itself):
-      - Verified end to end in the source: an unmapped key (arrows, Tab, Backspace, stray letters) returns
-        $false from Invoke-DashboardKey, and the main loop only clears the screen and re-probes when it returns
-        $true - so no screen wipe and no synchronous network probe on a stray keypress. [Q] Quit is its own dim
-        segment, and Get-Sig already tracked all 15 dynamic telemetry fields.
-      - Self test grew to 149 assertions: the transient dashboard layouts (pending MAC, Limited Mode, Wi-Fi
-        Protected) are now width-checked at 60/76/100 columns in BOTH glyph modes, the [K] offer is proven present
-        at every supported width, unmapped keys are proven unhandled, and Dry-Run is proven inert three ways:
-        the action never executes, no log line is written, and the state file is never rewritten.
-      - Those Dry-Run probes satisfy every other guard (store ready, mutex held, elevated) and are pointed at
-        throwaway files, so they fail if the IsDry guard alone regresses - confirmed by mutation testing.
-    4.5.5 (state-file transactions, routing telemetry, one-key elevation; no UI changes):
-      - [7] Open Portal Page and [2] Arm Watchdog now persist their state INSIDE the same Global\LanFixer_Lock block
-        that made the changes. Previously a failed browser launch returned from the lock with the metric/DNS edits
-        still only in memory, and the next SYSTEM watchdog pass overwrote them from its own copy.
-      - Complete-Authentication and every state write in Invoke-HeadlessPortalLogin now take the lock themselves
-        (reentrant, so nested calls simply nest). This matters because Save-State is a deliberate no-op without the
-        mutex: an unlocked caller used to lose its write silently.
-      - The dashboard no longer claims "Ethernet First" while the campus link is demoted: the routing label is decided
-        by Get-RoutingLabel from the REAL Ethernet metric (<=15 Ethernet First, >=45 Wi-Fi Protected).
-      - [E] one-key elevation was already wired (Get-Advice -> [E], ENTER in Limited Mode) and is now covered by the
-        self test, which checks the exact status/action strings the dashboard promises.
-    4.5.4 (portal vault, headless login and [K] approval workflow; no UI changes):
-      - The gateway-MAC review is now advertised on the compact dashboard legend too, not only in the full dock, and
-        only while a candidate is really waiting (the [K] advice itself was already raised for every link state).
-      - [K] refuses to approve a MAC that stopped being the pending one while the confirmation prompt was open: the
-        candidate is re-read inside the lock, so a second change cannot be silently locked in.
-      - Headless login can no longer retry a rejected certificate for ever: re-pinning the SAME fingerprint that was
-        just rejected stops immediately, and a portal that keeps rotating certificates is abandoned after 3 attempts.
-    4.5.3 (Layer 0 + DNS state-machine hardening, no UI changes):
-      - Every DNS write in Shield-SystemStack (loopback bypass AND the Wi-Fi / USB-tethering / Bluetooth-PAN ladder)
-        now snapshots the adapter's ORIGINAL resolver string first and marks the adapter managed, so no secondary
-        uplink can keep a substituted resolver after Lan Fixer is done with it.
-      - New Restore-ManagedAdapterDns sweep: leaving campus (Invoke-RoamingCleanup) and the factory reset
-        (Restore-Everything) both restore the user's exact pre-Lan Fixer DNS on every adapter this tool touched,
-        including ones whose snapshot predates the fix.
-      - [3] -> [5] Reset DHCP is now final: it clears DNS management, restores the Adaptive profile, removes the
-        campus NRPT rules whether or not a cable is plugged in, and leaves no managed flag behind for a later
-        roaming cleanup to resurrect. A legacy stored 'ResetDHCP' profile reads back as Adaptive.
-      - Manual [1] Heal while unplugged already runs Invoke-RoamingCleanup BEFORE Shield-SystemStack, matching the
-        AutoHeal safety order; this is now asserted by the self test instead of being an incidental ordering.
-    4.5.2 (routing/probing hardening, no UI changes):
-      - Routing metrics now run through ONE pure planner with three strict, mutually exclusive branches, so a
-        NON-campus wired network is never demoted to metric 50 and never receives the NITJSR /32 host routes
-        (4.5.1 demoted it and injected campus routes onto home/office routers whenever Wi-Fi was also up).
-      - Ensure-CampusPortalPath takes the live redirect URI, reconciles a host route whose next hop went stale
-        (VRRP/HSRP failover) and is applied by the metric engine, the vault actions and the portal client alike.
-      - Resolve-HostBounded is source-scoped: while a second uplink is up, only the Ethernet adapter's OWN
-        resolvers may answer, so a dead campus resolver is reported as NoDns instead of being masked by Wi-Fi.
-      - Resolver measurement falls back to an unbound socket when the source address is still tentative (DAD).
+    Single-file ASCII polyglot. Run normally for interactive dashboard or pass -Mode.
+    All mutations are snapshotted first (First-Write-Wins) and recorded in change_ledger.jsonl.
 #>
 
 [CmdletBinding()]
@@ -298,7 +66,7 @@ if ($PSVersionTable.PSEdition -ne 'Core') {
 # ==============================================================================
 # CONFIG (edit here, nowhere else)
 # ==============================================================================
-$script:Version = '7.0.0'
+$script:Version = '7.0.2'
 $script:RunId   = [guid]::NewGuid().ToString()
 $script:Sys32   = Join-Path $env:SystemRoot 'System32'
 $script:SelfPath = if ($env:LANFIXER_SELF -and (Test-Path -LiteralPath $env:LANFIXER_SELF)) { $env:LANFIXER_SELF } elseif ($PSCommandPath -and (Test-Path -LiteralPath $PSCommandPath)) { $PSCommandPath } elseif ($MyInvocation.MyCommand.Path -and (Test-Path -LiteralPath $MyInvocation.MyCommand.Path)) { $MyInvocation.MyCommand.Path } elseif ($PSScriptRoot -and (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'LanFixer.cmd'))) { (Join-Path $PSScriptRoot 'LanFixer.cmd') } else { (Join-Path (Get-Location).Path 'LanFixer.cmd') }
@@ -455,8 +223,7 @@ function Add-ChangeLedgerEntry {
             Reversible     = $Reversible
             UndoScript     = [string]$UndoScript
         }
-        $jsonLine = (ConvertTo-Json $entry -Compress) -replace '[
-]+', ''
+        $jsonLine = (ConvertTo-Json $entry -Compress) -replace '[\r\n]+', ''
         [System.IO.File]::AppendAllText($ledgerFile, $jsonLine + "`r`n", [System.Text.Encoding]::ASCII)
     } catch {}
 }
@@ -1036,18 +803,19 @@ function Show-HistoryWindowsEvents([int]$Limit = 50, [switch]$NoColor) {
 function Get-HistoryStateTransitions([int]$Limit = 30) {
     $trans = New-Object System.Collections.ArrayList
     $lm = $script:State.LinkMonitor
-    if ($lm -is [System.Collections.IEnumerable]) {
-        foreach ($item in $lm) {
-            if ($item) {
-                [void]$trans.Add(@{
-                    Timestamp = [string]$item.Timestamp
-                    Type      = 'LinkTransition'
-                    Adapter   = [string]$item.Adapter
-                    Status    = [string]$item.Status
-                    Speed     = [string]$item.Speed
-                    Details   = ("Link transition on {0}: Status={1} Speed={2}" -f $item.Adapter, $item.Status, $item.Speed)
-                })
-            }
+    $histItems = if ($lm -is [hashtable] -and $lm.ContainsKey('History')) { @($lm.History) } else { @() }
+    foreach ($item in $histItems) {
+        if ($item) {
+            $tsVal = if ($item.Time) { [string]$item.Time } else { [string]$item.Timestamp }
+            $adVal = if ($item.Adapter) { [string]$item.Adapter } else { 'PrimaryAdapter' }
+            [void]$trans.Add(@{
+                Timestamp = $tsVal
+                Type      = 'LinkTransition'
+                Adapter   = $adVal
+                Status    = [string]$item.Status
+                Speed     = [string]$item.Speed
+                Details   = ("Link transition on {0}: Status={1} Speed={2}" -f $adVal, $item.Status, $item.Speed)
+            })
         }
     }
     $np = Get-HistoryWindowsEvents -Limit $Limit
@@ -1921,27 +1689,29 @@ function Invoke-NetworkAutoDiscovery {
             if ($primaryGw) { $candIps += $primaryGw }
             if ($script:Cfg.PortalIp -and $candIps -notcontains [string]$script:Cfg.PortalIp) { $candIps += [string]$script:Cfg.PortalIp }
 
-            # 3a. Intercept HTTP 301/302/307 Redirect on Port 80 (Gateway & Portal Target)
+            # 3a. Intercept HTTP 301/302/307 Redirect on Port 80 (ignoring same-host HTTP->HTTPS router admin upgrades)
             foreach ($cIp in $candIps) {
                 if (-not $script:State.Misc['DiscoveredPortalUrl']) {
                     $probeRes = Invoke-HttpProbe $cIp '/' 1200 '' 80
                     if ($probeRes.Location -and $probeRes.Location -match '^https?://') {
-                        $script:State.Misc['DiscoveredPortalUrl'] = [string]$probeRes.Location
                         try {
                             $pUri = [uri]$probeRes.Location
-                            $script:State.Misc['DiscoveredPortalHost'] = ([string]$pUri.Host).ToLowerInvariant()
-                            if ($pUri.Port -gt 0) { $script:State.Misc['DiscoveredPortalPort'] = [int]$pUri.Port }
-                            $script:State.Misc['DiscoveredPortalIp'] = $cIp
-                            Write-Log 'OK' ("Dynamically autodiscovered captive portal via HTTP redirect: {0}" -f $probeRes.Location)
+                            if ($pUri.Host -and $pUri.Host -ne $cIp) {
+                                $script:State.Misc['DiscoveredPortalUrl'] = [string]$probeRes.Location
+                                $script:State.Misc['DiscoveredPortalHost'] = ([string]$pUri.Host).ToLowerInvariant()
+                                if ($pUri.Port -gt 0) { $script:State.Misc['DiscoveredPortalPort'] = [int]$pUri.Port }
+                                $script:State.Misc['DiscoveredPortalIp'] = $cIp
+                                Write-Log 'OK' ("Dynamically autodiscovered captive portal via HTTP redirect: {0}" -f $probeRes.Location)
+                                break
+                            }
                         } catch {}
-                        break
                     }
                 }
             }
 
-            # 3b. Autonomous Multi-Port Matrix Probing (8888, 8003, 8090, 8443, 8080, 443, 80)
+            # 3b. Autonomous Multi-Port Matrix Probing (dedicated captive portal ports only)
             if (-not $script:State.Misc['DiscoveredPortalUrl']) {
-                $gwPorts = @(8888, 8003, 8090, 8443, 8080, 443, 80)
+                $gwPorts = @(8888, 8003, 8090, 8443, 8080)
                 foreach ($cIp in $candIps) {
                     foreach ($p in $gwPorts) {
                         if (Test-TcpPort $cIp $p 250) {
@@ -5784,7 +5554,6 @@ function Get-PowerSettingIndex([string]$Scheme, [string]$Mode) {
     return (ConvertFrom-PowerIndexText ([string]$r.Output) $Mode)
 }
 
-
 function Get-BatteryHealthAndEfficiency {
     $res = @{
         HasBattery         = $false
@@ -5904,100 +5673,109 @@ function Get-PrimarySourceIp {
     return ''
 }
 # State: Online | Captive | NoDns | Offline  (+ Location of a captive redirect, when there is one)
-function Test-IsPortalDemandingAuth([string]$PortalUrl = '') {
+function Test-IsPortalDemandingAuth([string]$PortalUrl = '', [string]$SourceIp = '') {
     if (-not $PortalUrl) { return $false }
     $u = $null
     try { $u = [uri]$PortalUrl } catch { return $false }
-    $sock = $null; $ssl = $null
+    if (-not $u.IsAbsoluteUri -or -not $u.Host) { return $false }
+    $targetIp = ''
+    $tmpIp = $null
+    if ([System.Net.IPAddress]::TryParse($u.Host, [ref]$tmpIp)) { $targetIp = $u.Host }
+    else { $targetIp = Resolve-HostBounded $u.Host 1000 $SourceIp }
+    if (-not $targetIp) { return $false }
+    $port = if ($u.Port -gt 0) { [int]$u.Port } elseif ($u.Scheme -eq 'https') { 443 } else { 80 }
+    $sock = $null; $ssl = $null; $iar = $null
     try {
         $sock = New-Object System.Net.Sockets.Socket([System.Net.Sockets.AddressFamily]::InterNetwork, [System.Net.Sockets.SocketType]::Stream, [System.Net.Sockets.ProtocolType]::Tcp)
-        $iar = $sock.BeginConnect([System.Net.IPAddress]::Parse($u.Host), [int]$u.Port, $null, $null)
-        if (-not $iar.AsyncWaitHandle.WaitOne(1200, $false)) { return $false }
+        if ($SourceIp) {
+            try { $sock.Bind((New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Parse($SourceIp), 0))) } catch {}
+        }
+        $iar = $sock.BeginConnect([System.Net.IPAddress]::Parse($targetIp), $port, $null, $null)
+        if (-not $iar.AsyncWaitHandle.WaitOne(700, $false)) { return $false }
         $sock.EndConnect($iar)
         $ns = New-Object System.Net.Sockets.NetworkStream($sock, $false)
-        $ns.ReadTimeout = 1500; $ns.WriteTimeout = 1500
+        $ns.ReadTimeout = 1000; $ns.WriteTimeout = 1000
         $stream = $ns
         if ($u.Scheme -eq 'https') {
             $cb = { param($s, $c, $ch, $e) return $true }
             $ssl = New-Object System.Net.Security.SslStream($ns, $false, $cb)
-            $ssl.AuthenticateAsClient($u.Host)
+            $protocols = [System.Security.Authentication.SslProtocols]::Tls12
+            try { $protocols = [System.Security.Authentication.SslProtocols]'Tls12, Tls13' } catch {}
+            $ssl.AuthenticateAsClient($u.Host, $null, $protocols, $false)
             $stream = $ssl
         }
         $req = "GET $($u.PathAndQuery) HTTP/1.0`r`nHost: $($u.Host)`r`nConnection: close`r`n`r`n"
         $hb = [System.Text.Encoding]::ASCII.GetBytes($req)
         $stream.Write($hb, 0, $hb.Length)
         $stream.Flush()
-        $sr = New-Object System.IO.StreamReader($stream)
-        $html = $sr.ReadToEnd()
-        if ($html -match 'type=["'']password["'']' -or $html -match 'name=["'']auth_pass["'']' -or $html -match 'name=["'']password["'']' -or $html -match 'action=.*portal') {
-            return $true
+        $buf = New-Object byte[] 16384
+        $tot = 0
+        while ($tot -lt $buf.Length) {
+            $n = 0
+            try { $n = $stream.Read($buf, $tot, ($buf.Length - $tot)) } catch { break }
+            if ($n -le 0) { break }
+            $tot += $n
+        }
+        if ($tot -gt 0) {
+            $html = [System.Text.Encoding]::UTF8.GetString($buf, 0, $tot)
+            if ($html -match 'type=["'']password["'']' -or $html -match 'name=["'']auth_pass["'']' -or $html -match 'name=["'']password["'']' -or $html -match 'action=.*portal') {
+                return $true
+            }
         }
     } catch {
         return $false
     } finally {
-        if ($ssl) { try { $ssl.Close() } catch {} }
-        if ($sock) { try { $sock.Close() } catch {} }
+        if ($iar -and $iar.AsyncWaitHandle) { try { $iar.AsyncWaitHandle.Close() } catch {} }
+        if ($ssl) { try { $ssl.Dispose() } catch {} }
+        if ($sock) { try { $sock.Close(); $sock.Dispose() } catch {} }
     }
     return $false
 }
-function Test-HttpsWanProbe([string]$SourceIp = '', [int]$TimeoutMs = 2000) {
+function Test-HttpsWanProbe([string]$SourceIp = '', [int]$TimeoutMs = 1800) {
     $res = @{ Ok = $false; IsCaptive = $false; Error = ''; CertSubject = '' }
+    foreach ($wanIp in @('1.1.1.1', '9.9.9.9')) {
+        $sock = $null; $ssl = $null; $iar = $null
+        try {
+            $sock = New-Object System.Net.Sockets.Socket([System.Net.Sockets.AddressFamily]::InterNetwork, [System.Net.Sockets.SocketType]::Stream, [System.Net.Sockets.ProtocolType]::Tcp)
+            if ($SourceIp) {
+                try { $sock.Bind((New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Parse($SourceIp), 0))) } catch { $res.Error = 'BindFailure'; return $res }
+            }
+            $iar = $sock.BeginConnect([System.Net.IPAddress]::Parse($wanIp), 443, $null, $null)
+            if (-not $iar.AsyncWaitHandle.WaitOne($TimeoutMs, $false)) { $res.Error = 'Timeout'; continue }
+            $sock.EndConnect($iar)
+            $ns = New-Object System.Net.Sockets.NetworkStream($sock, $false)
+            $ns.ReadTimeout = $TimeoutMs; $ns.WriteTimeout = $TimeoutMs
+            $cap = @{ Errors = ''; Subject = '' }
+            $cb = {
+                param($sender, $cert, $chain, $errs)
+                $cap.Errors = [string]$errs
+                if ($cert) { $cap.Subject = [string]$cert.Subject }
+                return ([string]$errs -eq 'None')
+            }.GetNewClosure()
+            $ssl = New-Object System.Net.Security.SslStream($ns, $false, ([System.Net.Security.RemoteCertificateValidationCallback]$cb))
+            $protocols = [System.Security.Authentication.SslProtocols]::Tls12
+            try { $protocols = [System.Security.Authentication.SslProtocols]'Tls12, Tls13' } catch {}
+            $ssl.AuthenticateAsClient($wanIp, $null, $protocols, $false)
+            $res.Ok = $true
+            $res.Error = ''
+            return $res
+        } catch {
+            $res.Error = $_.Exception.Message
+            if ($cap -and $cap.Errors -and $cap.Errors -ne 'None') {
+                $res.IsCaptive = $true
+                $res.CertSubject = [string]$cap.Subject
+                return $res
+            }
+        } finally {
+            if ($iar -and $iar.AsyncWaitHandle) { try { $iar.AsyncWaitHandle.Close() } catch {} }
+            if ($ssl) { try { $ssl.Dispose() } catch {} }
+            if ($sock) { try { $sock.Close(); $sock.Dispose() } catch {} }
+        }
+    }
     $actUrl = Get-ActivePortalUrl
-    if ($actUrl -and (Test-IsPortalDemandingAuth $actUrl)) {
+    if ($actUrl -and (Test-IsPortalDemandingAuth $actUrl $SourceIp)) {
         $res.IsCaptive = $true
         $res.Error = 'PortalDemandsAuth'
-        return $res
-    }
-    $req = $null; $resp = $null
-    try {
-        $req = [System.Net.HttpWebRequest]::Create('https://1.1.1.1/cdn-cgi/trace')
-        $req.Timeout = $TimeoutMs
-        $req.ReadWriteTimeout = $TimeoutMs
-        $req.AllowAutoRedirect = $false
-        $req.Proxy = $null
-        $req.UserAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) LanFixer-Probe'
-        $req.ServerCertificateValidationCallback = {
-            param($sender, $cert, $chain, $sslErrors)
-            if ($cert) { $script:LastProbeCertSubject = [string]$cert.Subject }
-            return ($sslErrors -eq [System.Net.Security.SslPolicyErrors]::None)
-        }
-        if ($SourceIp) {
-            $ipObj = $null
-            if ([System.Net.IPAddress]::TryParse($SourceIp, [ref]$ipObj)) {
-                $req.ServicePoint.BindIPEndPointDelegate = {
-                    param($servicePoint, $remoteEndPoint)
-                    return New-Object System.Net.IPEndPoint($ipObj, 0)
-                }
-            }
-        }
-        $resp = $req.GetResponse() -as [System.Net.HttpWebResponse]
-        if ($resp -and [int]$resp.StatusCode -eq 200) {
-            $res.Ok = $true
-        } else {
-            $res.IsCaptive = $true
-            $res.Error = "Http_$([int]$resp.StatusCode)"
-        }
-    } catch [System.Net.WebException] {
-        $wex = $_.Exception
-        $res.Error = $wex.Message
-        if ($wex.Status -eq [System.Net.WebExceptionStatus]::TrustFailure) {
-            $res.IsCaptive = $true
-            $res.CertSubject = [string]$script:LastProbeCertSubject
-        } elseif ($wex.Response) {
-            $wResp = $wex.Response -as [System.Net.HttpWebResponse]
-            if ($wResp) {
-                $c = [int]$wResp.StatusCode
-                if (($c -ge 300 -and $c -le 399) -or $c -eq 401 -or $c -eq 407 -or $c -eq 511) {
-                    $res.IsCaptive = $true
-                }
-            }
-        } elseif ($wex.Status -eq [System.Net.WebExceptionStatus]::Timeout -or $wex.Status -eq [System.Net.WebExceptionStatus]::ConnectFailure) {
-            $res.IsCaptive = $true
-        }
-    } catch {
-        $res.Error = $_.Exception.Message
-    } finally {
-        if ($resp) { try { $resp.Close() } catch {} }
     }
     return $res
 }
@@ -10935,10 +10713,6 @@ function Test-TrustedPortalHost([string]$HostName) {
             }
         } catch {}
     }
-    if ($h -match '^[A-Za-z0-9.-]+$' -and -not $script:IsDry) {
-        $res = Resolve-HostBounded $h 1000
-        if ($res -and (Test-AllowedPortalIp $res)) { return $true }
-    }
     return $false
 }
 # Returns the redirect URL only if it is an absolute http(s) URL on a campus-controlled host (no user-info tricks).
@@ -12462,9 +12236,9 @@ function Update-LinkQualityMonitor($Ad) {
         $st = Get-NetAdapterStatistics -Name $Ad.Name -ErrorAction SilentlyContinue
         if ($st) {
             $mon.Statistics = @{
-                InDiscards  = [int64]$st.ReceivedPacketDiscards
+                InDiscards  = [int64]$st.ReceivedDiscardedPackets
                 InErrors    = [int64]$st.ReceivedPacketErrors
-                OutDiscards = [int64]$st.OutboundPacketDiscards
+                OutDiscards = [int64]$st.OutboundDiscardedPackets
                 OutErrors   = [int64]$st.OutboundPacketErrors
             }
         }
@@ -15345,7 +15119,6 @@ function Get-Advice($t) {
 }
 function Get-Sig($t) { return ('{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}|{8}|{9}|{10}|{11}|{12}|{13}|{14}|{15}' -f $t.Problem, $t.Ip, $t.Conn, $t.Speed, $t.Watchdog, $t.DnsPrimary, $t.Admin, $t.Vault, $t.Paused, $t.Routing, $t.GwIp, $t.Env, $t.DnsProfile, $t.GwAlive, $t.ArpPending, $t.RouteProfile) }
 
-
 $script:Frame = $null
 function Show-Dashboard($t, $adv) {
     $m = Get-DashboardModel $t $adv
@@ -16055,7 +15828,7 @@ function Start-AutonomousDaemon([int]$IntervalSec = 10, [switch]$Headless) {
             # Captive State Handling: Captive is normal on campus, NOT a failure!
             if ($ethIp -and $state.State -eq 'Captive') {
                 $cCtx = @{ Ad = $ad; Env = (Get-AdapterEnvironment $ad) }
-                Ensure-CampusPortalPath $ad
+                Ensure-CampusPortalPath
                 Shield-RouteMetrics $cCtx 'Captive'
                 Shield-Dns $cCtx 'Captive'
 
@@ -16132,7 +15905,7 @@ function Start-AutonomousDaemon([int]$IntervalSec = 10, [switch]$Headless) {
                     
                     # Immediately enforce routing and DNS for the newly acquired IP!
                     $ctxT1 = @{ Ad = $ad; Env = (Get-AdapterEnvironment $ad) }
-                    Ensure-CampusPortalPath $ad
+                    Ensure-CampusPortalPath
                     Shield-RouteMetrics $ctxT1 $state.State
                     Shield-Dns $ctxT1 $state.State
                     Save-State
@@ -16158,7 +15931,7 @@ function Start-AutonomousDaemon([int]$IntervalSec = 10, [switch]$Headless) {
                     [void](Invoke-WithLock -WaitMs 5000 {
                         if ($script:Cfg.ArpLock -and $gw) { Shield-GatewayArp $ctxT2 $state.State }
                         Shield-RouteMetrics $ctxT2 $state.State
-                        Ensure-CampusPortalPath $ad
+                        Ensure-CampusPortalPath
                         Save-State
                     })
                     $st2 = (Get-InternetState -NoCache -SourceIp $curIp).State
@@ -16214,7 +15987,7 @@ function Start-AutonomousDaemon([int]$IntervalSec = 10, [switch]$Headless) {
                     } else {
                         Write-SentinelLog 'INFO' "No credentials in vault. Ensuring routes and triggering browser to open portal..."
                         [void](Invoke-WithLock -WaitMs 2000 {
-                            Ensure-CampusPortalPath $ad
+                            Ensure-CampusPortalPath
                             Shield-RouteMetrics @{ Ad = $ad; Env = (Get-AdapterEnvironment $ad) } 'Captive'
                             Open-Portal -Force -SourceIp $curIp
                             Set-StateTime 'LastPortal'
