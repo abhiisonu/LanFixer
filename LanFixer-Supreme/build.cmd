@@ -28,6 +28,6 @@ echo.
 echo ============================================================================
 echo   BUILD SUCCEEDED
 echo   Executable : %~dp0dist\LanFixer.exe
-echo   Usage      : dist\LanFixer.exe [dash ^| tray ^| doctor ^| status ^| selftest]
+echo   Usage      : dist\LanFixer.exe [gui ^| dash ^| tray ^| doctor ^| status ^| bench ^| selftest]
 echo ============================================================================
 endlocal

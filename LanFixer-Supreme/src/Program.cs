@@ -6,28 +6,30 @@ namespace LanFixer;
 static class Program
 {
     const string Help = @"LanFixer Supreme v8.5 - Dual-Core Autonomous Network Guardian
-  (no args) / gui    Launch modern industrial-grade Web GUI in browser
-  dash               Launch interactive ANSI console dashboard
-  tray               Pure Win32 zero-resource notification tray icon
-  doctor [--json]    Run 7-layer OSI Health Doctor deep diagnostic report
-  status [--json]    Query connection health & exit with granular status code
-  bench / speed      Multi-target Anycast latency, jitter, and DNS benchmark
-  mtu                Path MTU discovery and bottleneck MTU auto-clamping
-  pnp                Enforce hardware NDIS power-save shield (disable NIC sleep)
-  bundle / report    Generate comprehensive sanitized diagnostic report bundle
-  keepalive          Send session keep-alive refresh ping to prevent portal timeouts
-  repair             Escalating 3-tier repair (Flush -> DNS -> Adapter reset + Route Shield)
-  reset [--yes]      Winsock/IP stack rebuild (System Restore point + netsh backup)
-  rollback           Undo the last network change (with drift protection)
-  restore [--yes]    Revert ALL changed parameters to baseline Windows settings
-  login              Trigger instant captive portal authentication (pfSense port 8888 safe)
-  tune [1|2]         Precision network debloat (Tier 1 safe / Tier 2 advanced; undo with rollback)
-  audit              Read-only display of tuning parameters and current values
+  (no args) / gui / app  Launch native Windows Studio GUI application
+  web                    Serve local HTTP dashboard on port 49888
+  dash                   Launch interactive ANSI console dashboard
+  tray                   Pure Win32 zero-resource notification tray icon
+  doctor [--json]        Run 7-layer OSI Health Doctor deep diagnostic report
+  status [--json]        Query connection health & exit with granular status code
+  bench / speed          Multi-target Anycast latency, jitter, and DNS benchmark
+  mtu                    Path MTU discovery and bottleneck MTU auto-clamping
+  pnp                    Enforce hardware NDIS power-save shield (disable NIC sleep)
+  bundle / report        Generate comprehensive sanitized diagnostic report bundle
+  keepalive              Send session keep-alive refresh ping to prevent portal timeouts
+  repair                 Escalating 3-tier repair (Flush -> DNS -> Adapter reset + Route Shield)
+  reset [--yes]          Winsock/IP stack rebuild (System Restore point + netsh backup)
+  rollback               Undo the last network change (with drift protection)
+  restore [--yes]        Revert ALL changed parameters to baseline Windows settings
+  login                  Trigger instant captive portal authentication (pfSense port 8888 safe)
+  tune [1|2]             Precision network debloat (Tier 1 safe / Tier 2 advanced; undo with rollback)
+  audit                  Read-only display of tuning parameters and current values
   cred [set|show|pin|clear]   Manage DPAPI-encrypted portal credentials
-  install            Install background Windows Service + auto-start tray
+  install                Install background Windows Service + auto-start tray
   uninstall [--keep] [--purge] Remove background service & clean up logs/vault
-  selftest [--logic] Run full test suite (50+ unit tests + live OS stack probes)";
+  selftest [--logic]     Run full test suite (50+ unit tests + live OS stack probes)";
 
+    [STAThread]
     static int Main(string[] a)
     {
         Console.OutputEncoding = Encoding.UTF8;
@@ -36,7 +38,8 @@ static class Program
         {
             switch (c)
             {
-                case "gui" or "web": return Gui_();
+                case "gui" or "app": return NativeApp.Run();
+                case "web": return Gui_();
                 case "service": return Svc.Run();
                 case "tray": return Tray.Run();
                 case "dash": return Dash.Run();

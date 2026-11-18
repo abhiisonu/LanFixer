@@ -1,35 +1,23 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net8.0-windows</TargetFramework>
     <AssemblyName>LanFixer</AssemblyName>
     <RootNamespace>LanFixer</RootNamespace>
     <Version>8.5.0</Version>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <InvariantGlobalization>true</InvariantGlobalization>
+    <UseWindowsForms>true</UseWindowsForms>
     <NoWarn>CA1416;SYSLIB1054;CS8981;NETSDK1179</NoWarn>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-
-    <!-- Source Generated JSON for Native AOT and Trim Safety -->
-    <JsonSerializerIsReflectionEnabledByDefault>false</JsonSerializerIsReflectionEnabledByDefault>
-
-    <!-- Single-File Output Configuration (Offline-first, zero external DLLs) -->
-    <PublishSingleFile>true</PublishSingleFile>
-    <IncludeAllContentForSelfExtract>true</IncludeAllContentForSelfExtract>
-    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
-    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
-    <DebugType>none</DebugType>
-    <DebugSymbols>false</DebugSymbols>
-    <OptimizationPreference>Speed</OptimizationPreference>
-
-    <!-- Native AOT (Enabled optionally when /p:PublishAot=true is passed with C++ linker) -->
-    <PublishAot Condition="'$(PublishAot)' == 'true'">true</PublishAot>
-    <StripSymbols Condition="'$(PublishAot)' == 'true'">true</StripSymbols>
-    <IlcGenerateStackTraceData Condition="'$(PublishAot)' == 'true'">false</IlcGenerateStackTraceData>
   </PropertyGroup>
+
+  <ItemGroup>
+    <Using Include="System.IO" />
+    <Using Include="System.Net.Http" />
+  </ItemGroup>
 
   <ItemGroup>
     <Compile Include="src/**/*.cs" />

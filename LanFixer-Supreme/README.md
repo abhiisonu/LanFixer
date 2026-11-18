@@ -49,12 +49,31 @@ LanFixer-Supreme/
 
 ---
 
-## 3. CLI Command Reference
+## 3. Launching & CLI Command Reference
+
+### Native Desktop Application (Default)
+Double-clicking `LanFixer.exe` or launching from terminal without arguments:
+```powershell
+dist\LanFixer.exe
+# Or explicitly:
+dist\LanFixer.exe gui
+```
+Opens the **LanFixer Supreme Native Studio** — a high-performance Windows desktop application featuring:
+- **DWM Immersive Dark Mode**: Native Win32 window with border styling matching Windows 11 aesthetics.
+- **Living Signal Orb & Spline Waveform**: Real-time GDI+ canvas rendering with sinusoidal jitter motion and cubic spline latency plots.
+- **5 Integrated Studio Modules**: Overview, DNS & Routing, Portal Sign-In (DPAPI Vault + Pass Card), Tune & Recovery (6-tier safety ladder), and Activity Ledger (write-ahead rollback).
+- **7-Layer OSI Health Inspector**: One-click modal diagnosis with physical link, subnet bounds, and egress handshake tests.
+
+---
+
+### Command-Line & Automation Reference
 
 | Command | Description | Elevated? |
 |---|---|:---:|
-| `LanFixer.exe` or `dash` | Interactive live ANSI dashboard with sparkline latency history & hotkeys | No |
+| `LanFixer.exe` or `gui` | Launch native Windows desktop studio application (Liquid Glass Dark Mode) | No |
+| `LanFixer.exe dash` | Interactive live ANSI terminal dashboard with sparklines & keyboard shortcuts | No |
 | `LanFixer.exe tray` | Launch pure Win32 system tray notification icon | No |
+| `LanFixer.exe web [--port 49888]` | Launch optional headless web dashboard on local port | No |
 | `LanFixer.exe doctor [--json]` | Run 7-layer OSI deep health diagnostic report | No |
 | `LanFixer.exe status [--json]` | Query network status (0=Online, 10=Captive/NoDns, 20=Offline, 30=NoLink) | No |
 | `LanFixer.exe bench` or `speed` | Multi-target Anycast latency, jitter, loss & UDP DNS benchmark | No |
