@@ -4,13 +4,15 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
 using System.Net;
+using System.Net.Http;
 using System.Net.NetworkInformation;
 using System.Net.Security;
 using System.Net.Sockets;
-using System.Runtime.InteropServices;
 using System.Security.AccessControl;
+using System.Security.Authentication;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Security.Principal;
@@ -25,7 +27,7 @@ using Microsoft.Win32;
 
 namespace LanFixer;
 
-#region Configuration & Models
+#region Configuration & Data Contracts
 
 public sealed record AppConfig(
     string StoreDir,
@@ -42,13 +44,35 @@ public sealed record AppConfig(
     public string LedgerFile => Path.Combine(StoreDir, "change_ledger.jsonl");
     public string VaultFile => Path.Combine(StoreDir, "vault.bin");
     public string LogFile => Path.Combine(StoreDir, "LanFixer.log");
+    public string ResetJournalFile => Path.Combine(StoreDir, "reset_journal.json");
 }
 
 public enum NetVerdict { Healthy = 0, Degraded = 10, Broken = 20, Undetermined = 30 }
 public enum ConnState { Online, Captive, NoDns, Offline, NoIp, NoLink }
 
+public sealed record SubnetInfo(
+    string IpAddress,
+    int PrefixLength,
+    string SubnetMask,
+    string WildcardMask,
+    string NetworkAddress,
+    string BroadcastAddress,
+    string MinHost,
+    string MaxHost,
+    long TotalHosts);
+
 public sealed record LayerResult(int Layer, string Name, string Status, string Evidence, string Action);
-public sealed record DoctorReport(string PrimaryAdapter, NetVerdict Verdict, int ExitCode, string RootCause, long DurationMs, List<LayerResult> Layers);
+public sealed record DoctorReport(
+    string PrimaryAdapter,
+    string IpAddress,
+    string Gateway,
+    string Environment,
+    int PathMtu,
+    NetVerdict Verdict,
+    int ExitCode,
+    string RootCause,
+    long DurationMs,
+    List<LayerResult> Layers);
 
 public sealed record LedgerEntry(
     string EntryId,
@@ -65,37 +89,95 @@ public sealed record LedgerEntry(
 
 public sealed class PersistentState
 {
+    public string Version { get; set; } = "7.0.2";
     public string DnsProfile { get; set; } = "Adaptive";
     public string RouteProfile { get; set; } = "Adaptive";
     public string? PortalPin { get; set; }
     public string? DiscoveredPortalUrl { get; set; }
     public string? DiscoveredPortalIp { get; set; }
     public int DiscoveredPortalPort { get; set; }
+    public string? DiscoveredDomain { get; set; }
     public bool PortalLoginSuspended { get; set; }
     public int PortalFails { get; set; }
+    public bool PendingReboot { get; set; }
+    public string? PendingRebootTime { get; set; }
     public Dictionary<string, string> Snapshots { get; set; } = new();
     public List<string> InjectedHostRoutes { get; set; } = new();
     public Dictionary<string, string> ArpMemory { get; set; } = new();
+    public Dictionary<string, string> ArpCandidates { get; set; } = new();
 }
 
 #endregion
 
-#region Security, Mutex, DPAPI Vault & Rollback Ledger
+#region Cross-Process Global Mutex, Security ACLs, DPAPI Vault & Transactional State
+
+public sealed class GlobalLock : IDisposable
+{
+    private Mutex? _mutex;
+    private readonly bool _acquired;
+
+    public GlobalLock(int timeoutMs = 15000)
+    {
+        if (!SecurityEngine.IsAdmin()) return;
+        try
+        {
+            var mSec = new MutexSecurity();
+            var admSid = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
+            var sysSid = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
+            mSec.AddAccessRule(new MutexAccessRule(admSid, MutexRights.FullControl, AccessControlType.Allow));
+            mSec.AddAccessRule(new MutexAccessRule(sysSid, MutexRights.FullControl, AccessControlType.Allow));
+
+            _mutex = new Mutex(false, @"Global\LanFixer_Lock", out _);
+            _mutex.SetAccessControl(mSec);
+        }
+        catch
+        {
+            try { _mutex = new Mutex(false, @"Local\LanFixer_Lock"); } catch { }
+        }
+
+        if (_mutex == null) return;
+        try { _acquired = _mutex.WaitOne(timeoutMs); }
+        catch (AbandonedMutexException) { _acquired = true; }
+        catch { _acquired = false; }
+    }
+
+    public void Dispose()
+    {
+        if (_acquired && _mutex != null)
+        {
+            try { _mutex.ReleaseMutex(); } catch { }
+        }
+        _mutex?.Dispose();
+    }
+}
 
 public static class SecurityEngine
 {
-    private static readonly string VirtRegex = @"Virtual|Hyper-V|VMware|VirtualBox|\bTAP\b|\bTUN\b|\bWSL\b|Bluetooth|Tailscale|ZeroTier|WireGuard|Wintun|RNDIS|Loopback|Npcap";
+    private static readonly Regex VirtRegex = new(
+        @"Virtual|Hyper-V|VMware|VirtualBox|\bTAP\b|\bTUN\b|\bWSL\b|Bluetooth|Tailscale|ZeroTier|WireGuard|Wintun|RNDIS|Loopback|Npcap|OpenVPN|AnyConnect|Fortinet|PANGP|WARP|Wi-Fi Direct",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     public static bool IsAdmin()
     {
-        using var id = WindowsIdentity.GetCurrent();
-        return new WindowsPrincipal(id).IsInRole(WindowsBuiltInRole.Administrator);
+        try
+        {
+            using var id = WindowsIdentity.GetCurrent();
+            return new WindowsPrincipal(id).IsInRole(WindowsBuiltInRole.Administrator);
+        }
+        catch { return false; }
+    }
+
+    public static bool IsRemoteSession()
+    {
+        var sess = Environment.GetEnvironmentVariable("SESSIONNAME") ?? "";
+        return sess.StartsWith("RDP", StringComparison.OrdinalIgnoreCase) ||
+               sess.StartsWith("ICA", StringComparison.OrdinalIgnoreCase) ||
+               !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("SSH_CONNECTION"));
     }
 
     public static bool IsVirtualOrTunnel(NetworkInterface nic) =>
-        nic.NetworkInterfaceType == NetworkInterfaceType.Loopback ||
-        nic.NetworkInterfaceType == NetworkInterfaceType.Tunnel ||
-        Regex.IsMatch(nic.Description + " " + nic.Name, VirtRegex, RegexOptions.IgnoreCase);
+        nic.NetworkInterfaceType is NetworkInterfaceType.Loopback or NetworkInterfaceType.Tunnel ||
+        VirtRegex.IsMatch(nic.Description + " " + nic.Name);
 
     public static void EnsureSecureStore(AppConfig cfg)
     {
@@ -116,7 +198,7 @@ public static class SecurityEngine
             acl.AddAccessRule(new FileSystemAccessRule(usrSid, FileSystemRights.ReadAndExecute, InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit, PropagationFlags.None, AccessControlType.Allow));
             dirInfo.SetAccessControl(acl);
         }
-        catch { /* Best effort on non-NTFS or restricted tokens */ }
+        catch { }
     }
 
     private static byte[] GetVaultEntropy()
@@ -180,15 +262,19 @@ public static class SecurityEngine
     public static void LockFileToAdminsOnly(string path)
     {
         if (!IsAdmin() || !File.Exists(path)) return;
-        var fi = new FileInfo(path);
-        var acl = fi.GetAccessControl();
-        acl.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
-        var sysSid = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
-        var admSid = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
-        acl.SetOwner(admSid);
-        acl.AddAccessRule(new FileSystemAccessRule(sysSid, FileSystemRights.FullControl, AccessControlType.Allow));
-        acl.AddAccessRule(new FileSystemAccessRule(admSid, FileSystemRights.FullControl, AccessControlType.Allow));
-        fi.SetAccessControl(acl);
+        try
+        {
+            var fi = new FileInfo(path);
+            var acl = fi.GetAccessControl();
+            acl.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+            var sysSid = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
+            var admSid = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
+            acl.SetOwner(admSid);
+            acl.AddAccessRule(new FileSystemAccessRule(sysSid, FileSystemRights.FullControl, AccessControlType.Allow));
+            acl.AddAccessRule(new FileSystemAccessRule(admSid, FileSystemRights.FullControl, AccessControlType.Allow));
+            fi.SetAccessControl(acl);
+        }
+        catch { }
     }
 }
 
@@ -198,7 +284,7 @@ public static class StateStore
 
     public static PersistentState Load(AppConfig cfg)
     {
-        foreach (var path in new[] { cfg.StateFile, cfg.StateFile + ".bak" })
+        foreach (var path in new[] { cfg.StateFile, cfg.StateFile + ".bak", cfg.StateFile + ".tmp" })
         {
             try
             {
@@ -241,6 +327,9 @@ public static class StateStore
         try
         {
             SecurityEngine.EnsureSecureStore(cfg);
+            if (File.Exists(cfg.LedgerFile) && new FileInfo(cfg.LedgerFile).Length > 2_097_152)
+                File.Move(cfg.LedgerFile, cfg.LedgerFile + ".bak", overwrite: true);
+
             var entry = new LedgerEntry(
                 Guid.NewGuid().ToString("N")[..8],
                 RunId,
@@ -253,12 +342,64 @@ public static class StateStore
         catch { }
     }
 
+    public static List<LedgerEntry> GetLedgerEntries(AppConfig cfg, int limit = 30)
+    {
+        var list = new List<LedgerEntry>();
+        if (!File.Exists(cfg.LedgerFile)) return list;
+        try
+        {
+            foreach (var line in File.ReadLines(cfg.LedgerFile).Reverse())
+            {
+                if (string.IsNullOrWhiteSpace(line)) continue;
+                var e = JsonSerializer.Deserialize<LedgerEntry>(line);
+                if (e != null) list.Add(e);
+                if (limit > 0 && list.Count >= limit) break;
+            }
+        }
+        catch { }
+        return list;
+    }
+
+    public static int UndoLastRun(AppConfig cfg)
+    {
+        if (!SecurityEngine.IsAdmin() || !File.Exists(cfg.LedgerFile)) return 0;
+        var entries = GetLedgerEntries(cfg, 100);
+        var lastRunId = entries.FirstOrDefault(e => e.Reversible)?.RunId;
+        if (string.IsNullOrEmpty(lastRunId)) return 0;
+
+        int undone = 0;
+        foreach (var e in entries.Where(x => x.RunId == lastRunId && x.Reversible))
+        {
+            try
+            {
+                if (e.MutationType == "Registry" && !string.IsNullOrEmpty(e.ValueName))
+                {
+                    if (e.OldValue != null && e.OldValue != "NULL" && int.TryParse(e.OldValue, out int v))
+                        Registry.SetValue(e.Target, e.ValueName, v, RegistryValueKind.DWord);
+                    undone++;
+                }
+                else if (!string.IsNullOrEmpty(e.UndoCommand))
+                {
+                    NetworkEngine.RunTool("cmd.exe", $"/c {e.UndoCommand}", 8000);
+                    undone++;
+                }
+            }
+            catch { }
+        }
+        Log(cfg, "OK", $"Reverted {undone} mutations from run {lastRunId}.");
+        return undone;
+    }
+
     public static void Log(AppConfig cfg, string level, string message)
     {
         try
         {
             if (Directory.Exists(cfg.StoreDir))
+            {
+                if (File.Exists(cfg.LogFile) && new FileInfo(cfg.LogFile).Length > 524_288)
+                    File.Move(cfg.LogFile, cfg.LogFile + ".1", overwrite: true);
                 File.AppendAllText(cfg.LogFile, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] [{level,-5}] {message}\r\n", Encoding.ASCII);
+            }
         }
         catch { }
     }
@@ -266,17 +407,25 @@ public static class StateStore
 
 #endregion
 
-#region Layer 1-7 Network Engine, RFC 1035 DNS Racer & Raw Socket TLS Client
+#region Layer 1-7 Network Engine, Subnet Calculus, PMTUD & RFC 1035 DNS Racer
 
 public static class NetworkEngine
 {
     public static List<NetworkInterface> GetPhysicalAdapters(bool ethernetOnly = false) =>
         NetworkInterface.GetAllNetworkInterfaces()
             .Where(n => !SecurityEngine.IsVirtualOrTunnel(n) &&
-                        (!ethernetOnly || n.NetworkInterfaceType == NetworkInterfaceType.Ethernet || n.NetworkInterfaceType == NetworkInterfaceType.GigabitEthernet))
+                        (!ethernetOnly || n.NetworkInterfaceType is NetworkInterfaceType.Ethernet or NetworkInterfaceType.GigabitEthernet or NetworkInterfaceType.FastEthernetT or NetworkInterfaceType.FastEthernetFx))
             .OrderByDescending(n => n.OperationalStatus == OperationalStatus.Up)
-            .ThenByDescending(n => n.NetworkInterfaceType == NetworkInterfaceType.Ethernet || n.NetworkInterfaceType == NetworkInterfaceType.GigabitEthernet)
+            .ThenByDescending(n => n.NetworkInterfaceType is NetworkInterfaceType.Ethernet or NetworkInterfaceType.GigabitEthernet)
             .ToList();
+
+    public static List<NetworkInterface> GetSecondaryUplinks()
+    {
+        var ethIds = GetPhysicalAdapters(ethernetOnly: true).Select(e => e.Id).ToHashSet();
+        return GetPhysicalAdapters(ethernetOnly: false)
+            .Where(n => !ethIds.Contains(n.Id) && n.OperationalStatus == OperationalStatus.Up && GetValidIPv4(n) != null && GetDefaultGateway(n) != null)
+            .ToList();
+    }
 
     public static string? GetValidIPv4(NetworkInterface nic) =>
         nic.GetIPProperties().UnicastAddresses
@@ -291,6 +440,60 @@ public static class NetworkEngine
             .FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork && !a.Equals(IPAddress.Any))
             ?.ToString();
 
+    // Pure Layer 3 Subnet Calculus
+    public static SubnetInfo? CalculateSubnet(string ipStr, int prefix)
+    {
+        if (!IPAddress.TryParse(ipStr, out var ip) || ip.AddressFamily != AddressFamily.InterNetwork)
+            return null;
+        var ipBytes = ip.GetAddressBytes();
+        if (prefix <= 0 || prefix > 32)
+            prefix = ipBytes[0] < 128 ? 8 : ipBytes[0] < 192 ? 16 : 24;
+
+        byte[] maskBytes = new byte[4], wildBytes = new byte[4], netBytes = new byte[4], bcastBytes = new byte[4];
+        for (int i = 0; i < 4; i++)
+        {
+            int bits = Math.Clamp(prefix - (i * 8), 0, 8);
+            maskBytes[i] = bits == 0 ? (byte)0 : (byte)(256 - (1 << (8 - bits)));
+            netBytes[i] = (byte)(ipBytes[i] & maskBytes[i]);
+            wildBytes[i] = (byte)(255 ^ maskBytes[i]);
+            bcastBytes[i] = (byte)(netBytes[i] | wildBytes[i]);
+        }
+
+        byte[] minHost = (byte[])netBytes.Clone(), maxHost = (byte[])bcastBytes.Clone();
+        if (prefix <= 30) { minHost[3]++; maxHost[3]--; }
+        long totalHosts = prefix >= 31 ? 0L : (1L << (32 - prefix)) - 2;
+
+        return new SubnetInfo(
+            ipStr,
+            prefix,
+            string.Join(".", maskBytes),
+            string.Join(".", wildBytes),
+            string.Join(".", netBytes),
+            string.Join(".", bcastBytes),
+            string.Join(".", minHost),
+            string.Join(".", maxHost),
+            totalHosts);
+    }
+
+    public static SubnetInfo? GetAdapterSubnet(NetworkInterface nic)
+    {
+        var uni = nic.GetIPProperties().UnicastAddresses
+            .FirstOrDefault(u => u.Address.AddressFamily == AddressFamily.InterNetwork && !u.Address.ToString().StartsWith("169.254."));
+        return uni != null ? CalculateSubnet(uni.Address.ToString(), uni.PrefixLength) : null;
+    }
+
+    public static bool IsSameSubnet(string ip1, string ip2, int prefix)
+    {
+        if (!IPAddress.TryParse(ip1, out var a1) || !IPAddress.TryParse(ip2, out var a2) || prefix <= 0 || prefix > 32)
+            return false;
+        var b1 = a1.GetAddressBytes();
+        var b2 = a2.GetAddressBytes();
+        uint u1 = ((uint)b1[0] << 24) | ((uint)b1[1] << 16) | ((uint)b1[2] << 8) | b1[3];
+        uint u2 = ((uint)b2[0] << 24) | ((uint)b2[1] << 16) | ((uint)b2[2] << 8) | b2[3];
+        uint mask = prefix == 32 ? 0xFFFFFFFFu : 0xFFFFFFFFu << (32 - prefix);
+        return (u1 & mask) == (u2 & mask);
+    }
+
     public static int? PingMs(string target, int timeoutMs = 700)
     {
         try
@@ -300,6 +503,36 @@ public static class NetworkEngine
             return r.Status == IPStatus.Success ? (int)r.RoundtripTime : null;
         }
         catch { return null; }
+    }
+
+    // Layer 3 Path MTU Discovery (DF=true probe across 1500 / 1492 / 1420 / binary search)
+    public static int DiscoverPathMtu(string target)
+    {
+        try
+        {
+            using var p = new Ping();
+            var opt = new PingOptions(64, dontFragment: true);
+            bool ProbeSize(int payload)
+            {
+                var buf = new byte[payload];
+                for (int i = 0; i < 2; i++)
+                {
+                    try
+                    {
+                        var r = p.Send(target, 450, buf, opt);
+                        if (r.Status == IPStatus.Success) return true;
+                    }
+                    catch { }
+                }
+                return false;
+            }
+            if (ProbeSize(1472)) return 1500;
+            if (ProbeSize(1464)) return 1492;
+            if (ProbeSize(1392)) return 1420;
+            if (ProbeSize(1252)) return 1280;
+        }
+        catch { }
+        return 1500;
     }
 
     public static bool TestTcpPort(string hostOrIp, int port, int timeoutMs = 600, string? sourceIp = null)
@@ -325,6 +558,26 @@ public static class NetworkEngine
         return false;
     }
 
+    public static string ClassifyEnvironment(NetworkInterface nic, AppConfig cfg, PersistentState state)
+    {
+        int score = 0;
+        var props = nic.GetIPProperties();
+        var dns = props.DnsAddresses.Where(a => a.AddressFamily == AddressFamily.InterNetwork).Select(a => a.ToString()).ToList();
+        var gw = GetDefaultGateway(nic) ?? "";
+        var sfx = (props.DnsSuffix ?? "").Trim().Trim('.').ToLowerInvariant();
+        var ip = GetValidIPv4(nic) ?? "";
+
+        if (dns.Contains(cfg.CampusDns)) score += 2;
+        if (!string.IsNullOrEmpty(sfx) && (sfx == cfg.CampusDomain || sfx.EndsWith("." + cfg.CampusDomain))) score += 2;
+        if (Regex.IsMatch(gw, @"^(10\.\d{1,3}\.\d{1,3}\.1|172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.1|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.1)$")) score += 1;
+        if (score < 2 && !string.IsNullOrEmpty(ip) && !ip.StartsWith("192.168."))
+        {
+            if (TestTcpPort(cfg.PortalIp, cfg.PortalPort, 350, ip)) score += 2;
+        }
+        if (score >= 2) return "Campus";
+        return !string.IsNullOrEmpty(ip) && !string.IsNullOrEmpty(gw) ? "Other" : "Unknown";
+    }
+
     // RFC 1035 Wire Query Builder
     public static byte[] BuildDnsQueryPacket(string domain, ushort txId)
     {
@@ -343,7 +596,7 @@ public static class NetworkEngine
         return [.. buf];
     }
 
-    // RFC 1035 Wire Answer Parser (Handles multi-question QDCOUNT & hybrid CNAME compression pointers)
+    // RFC 1035 Wire Answer Parser (Multi-Question QDCOUNT + CNAME Hybrid Compression Pointers)
     public static List<string> ParseDnsAAnswers(byte[] resp, byte[] query)
     {
         var res = new List<string>();
@@ -403,6 +656,32 @@ public static class NetworkEngine
         string.IsNullOrWhiteSpace(ip) ||
         Regex.IsMatch(ip.Trim(), @"^(0\.|127\.|169\.254\.|192\.0\.2\.|198\.51\.100\.|203\.0\.113\.|22[4-9]\.|23\d\.|24\d\.|25\d\.)");
 
+    // Source-Scoped Raw UDP DNS Resolver (Prevents Wi-Fi DNS from masking dead Ethernet DNS)
+    public static List<string> QueryScopedDns(string domain, string? sourceIp, IEnumerable<string> servers, int timeoutMs = 900)
+    {
+        ushort txId = (ushort)Random.Shared.Next(1000, 60000);
+        var pkt = BuildDnsQueryPacket(domain, txId);
+        foreach (var srv in servers.Where(s => !string.IsNullOrWhiteSpace(s)).Distinct())
+        {
+            try
+            {
+                using var udp = !string.IsNullOrEmpty(sourceIp) && IPAddress.TryParse(sourceIp, out var src)
+                    ? new UdpClient(new IPEndPoint(src, 0))
+                    : new UdpClient();
+                udp.Client.ReceiveTimeout = timeoutMs;
+                udp.Client.SendTimeout = timeoutMs;
+                udp.Connect(srv, 53);
+                udp.Send(pkt, pkt.Length);
+                IPEndPoint? ep = null;
+                var resp = udp.Receive(ref ep);
+                var ans = ParseDnsAAnswers(resp, pkt);
+                if (ans.Count > 0) return ans;
+            }
+            catch { }
+        }
+        return [];
+    }
+
     public static Dictionary<string, int?> MeasureResolversFast(IEnumerable<string> servers, string? sourceIp = null, int timeoutMs = 650)
     {
         var serverList = servers.Where(s => !string.IsNullOrWhiteSpace(s)).Distinct().ToList();
@@ -425,7 +704,8 @@ public static class NetworkEngine
                 IPEndPoint? ep = null;
                 var resp = udp.Receive(ref ep);
                 sw.Stop();
-                if (resp != null && resp.Length >= 12 && resp[0] == pkt[0] && resp[1] == pkt[1] && (resp[2] & 0x80) != 0)
+                int rcode = resp != null && resp.Length >= 12 ? (resp[3] & 0x0F) : -1;
+                if (resp != null && resp.Length >= 12 && resp[0] == pkt[0] && resp[1] == pkt[1] && (resp[2] & 0x80) != 0 && (rcode == 0 || rcode == 3 || rcode == 5))
                     results[srv] = (int)sw.ElapsedMilliseconds;
                 else
                     results[srv] = null;
@@ -441,6 +721,23 @@ public static class NetworkEngine
         var clean = host.Trim().TrimEnd('.');
         if (IPAddress.TryParse(clean, out _)) return clean;
         if (clean.Equals(cfg.PortalHost, StringComparison.OrdinalIgnoreCase)) return cfg.PortalIp;
+
+        if (!string.IsNullOrEmpty(sourceIp))
+        {
+            var ownerNic = GetPhysicalAdapters().FirstOrDefault(n => GetValidIPv4(n) == sourceIp);
+            if (ownerNic != null)
+            {
+                var nicDns = ownerNic.GetIPProperties().DnsAddresses
+                    .Where(a => a.AddressFamily == AddressFamily.InterNetwork)
+                    .Select(a => a.ToString())
+                    .ToList();
+                if (GetSecondaryUplinks().Count > 0)
+                {
+                    var scopedAns = QueryScopedDns(clean, sourceIp, nicDns, 900);
+                    return scopedAns.FirstOrDefault();
+                }
+            }
+        }
 
         try
         {
@@ -480,20 +777,78 @@ public static class NetworkEngine
             int n = sock.Receive(buf);
             if (n <= 0) return (ConnState.Offline, "");
             var raw = Encoding.ASCII.GetString(buf, 0, n);
-            var (code, loc, body) = ParseHttpResponse(raw);
+            var (code, loc, _) = ParseHttpResponse(raw);
 
             if (code == 204)
             {
-                // Verify HTTPS 443 is not intercepted by a captive firewall
+                string activePortal = !string.IsNullOrEmpty(cfg.PortalUrl) ? cfg.PortalUrl : "https://10.114.0.5:8888/";
+                if (IsPortalDemandingAuth(activePortal, sourceIp))
+                    return (ConnState.Captive, activePortal);
+
                 if (VerifyWanTls("1.1.1.1", sourceIp, 1500) || VerifyWanTls("9.9.9.9", sourceIp, 1500))
                     return (ConnState.Online, "");
-                return (ConnState.Captive, cfg.PortalUrl);
+                return (ConnState.Captive, activePortal);
             }
             if ((code >= 300 && code <= 399) || (code >= 200 && code <= 299) || code is 401 or 407 or 511 || !string.IsNullOrEmpty(loc))
                 return (ConnState.Captive, !string.IsNullOrEmpty(loc) ? loc : cfg.PortalUrl);
         }
         catch { }
         return (ConnState.Offline, "");
+    }
+
+    public static bool IsPortalDemandingAuth(string portalUrl, string? sourceIp = null, int timeoutMs = 1500)
+    {
+        if (string.IsNullOrEmpty(portalUrl) || !Uri.TryCreate(portalUrl, UriKind.Absolute, out var uri))
+            return false;
+
+        string targetHost = uri.Host;
+        int port = uri.Port > 0 ? uri.Port : (uri.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase) ? 443 : 80);
+        bool isHttps = uri.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase);
+
+        try
+        {
+            using var sock = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+            if (!string.IsNullOrEmpty(sourceIp) && IPAddress.TryParse(sourceIp, out var src))
+                sock.Bind(new IPEndPoint(src, 0));
+
+            var ar = sock.BeginConnect(targetHost, port, null, null);
+            try
+            {
+                if (!ar.AsyncWaitHandle.WaitOne(timeoutMs, false)) return false;
+                sock.EndConnect(ar);
+            }
+            finally { ar.AsyncWaitHandle.Close(); }
+
+            sock.ReceiveTimeout = timeoutMs;
+            sock.SendTimeout = timeoutMs;
+
+            Stream stream = new NetworkStream(sock, ownsSocket: false);
+            if (isHttps)
+            {
+                var ssl = new SslStream(stream, false, (_, _, _, _) => true);
+                ssl.AuthenticateAsClient(targetHost);
+                stream = ssl;
+            }
+
+            using (stream)
+            {
+                var req = Encoding.ASCII.GetBytes($"GET {uri.PathAndQuery} HTTP/1.0\r\nHost: {targetHost}\r\nUser-Agent: LanFixer/7.0.2\r\nConnection: close\r\n\r\n");
+                stream.Write(req, 0, req.Length);
+                stream.Flush();
+
+                var buf = new byte[8192];
+                int n = stream.Read(buf, 0, buf.Length);
+                if (n > 0)
+                {
+                    var html = Encoding.ASCII.GetString(buf, 0, n);
+                    return Regex.IsMatch(html, @"name=['""]?passwordfld['""]?", RegexOptions.IgnoreCase) ||
+                           Regex.IsMatch(html, @"name=['""]?usernamefld['""]?", RegexOptions.IgnoreCase) ||
+                           Regex.IsMatch(html, @"type=['""]?password['""]?", RegexOptions.IgnoreCase);
+                }
+            }
+        }
+        catch { }
+        return false;
     }
 
     public static bool VerifyWanTls(string wanIp, string? sourceIp, int timeoutMs = 1500)
@@ -513,7 +868,7 @@ public static class NetworkEngine
 
             using var ns = new NetworkStream(sock, ownsSocket: false) { ReadTimeout = timeoutMs, WriteTimeout = timeoutMs };
             using var ssl = new SslStream(ns, false, (_, _, _, errs) => errs == SslPolicyErrors.None);
-            ssl.AuthenticateAsClient(wanIp, null, System.Security.Authentication.SslProtocols.Tls12 | System.Security.Authentication.SslProtocols.Tls13, false);
+            ssl.AuthenticateAsClient(wanIp, null, SslProtocols.Tls12 | SslProtocols.Tls13, false);
             return ssl.IsAuthenticated;
         }
         catch { return false; }
@@ -562,9 +917,11 @@ public static class NetworkEngine
     {
         try
         {
+            var sys32 = Environment.GetFolderPath(Environment.SpecialFolder.System);
+            var fullPath = File.Exists(Path.Combine(sys32, exeName)) ? Path.Combine(sys32, exeName) : exeName;
             var psi = new ProcessStartInfo
             {
-                FileName = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), exeName),
+                FileName = fullPath,
                 Arguments = args,
                 UseShellExecute = false,
                 CreateNoWindow = true,
@@ -588,7 +945,7 @@ public static class NetworkEngine
 
 #endregion
 
-#region Captive Portal Client, Doctor, Debloat & Recovery Ladder
+#region Source-Bound Captive Portal Client, Doctor, Debloat & 6-Tier Recovery Engine
 
 public static class PortalClient
 {
@@ -612,6 +969,7 @@ public static class PortalClient
 
             if (type == "password") passField ??= name;
             else if (type == "hidden") fields[name] = val;
+            else if (type == "checkbox" && Regex.IsMatch(tag, @"(?i)\bchecked\b")) fields[name] = string.IsNullOrEmpty(val) ? "on" : val;
             else if (type == "submit" && !fields.ContainsKey(name)) fields[name] = val;
             else if (type is "" or "text" or "email" or "tel" or "number") candidates.Add((name, id, val));
         }
@@ -647,6 +1005,15 @@ public static class PortalClient
         return "";
     }
 
+    public static bool IsCredentialPortalHostTrusted(string host, AppConfig cfg)
+    {
+        var h = host.Trim().TrimEnd('.').ToLowerInvariant();
+        if (string.IsNullOrEmpty(h)) return false;
+        if (h == cfg.PortalHost.ToLowerInvariant() || h == cfg.PortalIp) return true;
+        var dom = cfg.CampusDomain.ToLowerInvariant().Trim('.');
+        return !string.IsNullOrEmpty(dom) && (h == dom || h.EndsWith("." + dom));
+    }
+
     public static bool AttemptHeadlessLogin(AppConfig cfg, PersistentState state, string? sourceIp = null)
     {
         if (state.PortalLoginSuspended) return false;
@@ -657,10 +1024,11 @@ public static class PortalClient
         if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || uri.Scheme != "https")
             return false;
 
-        // Strict credential host boundary check
-        var h = uri.Host.ToLowerInvariant().TrimEnd('.');
-        bool trusted = h == cfg.PortalHost.ToLowerInvariant() || h == cfg.PortalIp || h.EndsWith("." + cfg.CampusDomain.ToLowerInvariant());
-        if (!trusted) return false;
+        if (!IsCredentialPortalHostTrusted(uri.Host, cfg))
+        {
+            StateStore.Log(cfg, "ALERT", $"Refused to send vault credentials to untrusted host '{uri.Host}'.");
+            return false;
+        }
 
         try
         {
@@ -669,8 +1037,28 @@ public static class PortalClient
                 AllowAutoRedirect = true,
                 MaxAutomaticRedirections = 4,
                 UseProxy = false,
-                ConnectTimeout = TimeSpan.FromSeconds(4)
+                ConnectTimeout = TimeSpan.FromSeconds(5),
+                // Source-Bind TCP socket to Ethernet IP so portal auth never leaks over Wi-Fi hotspot
+                ConnectCallback = async (ctx, ct) =>
+                {
+                    var targetIp = NetworkEngine.ResolveHostScoped(ctx.DnsEndPoint.Host, sourceIp, cfg)
+                                   ?? throw new SocketException((int)SocketError.HostNotFound);
+                    var sock = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+                    try
+                    {
+                        if (!string.IsNullOrEmpty(sourceIp) && IPAddress.TryParse(sourceIp, out var src))
+                            sock.Bind(new IPEndPoint(src, 0));
+                        await sock.ConnectAsync(new IPEndPoint(IPAddress.Parse(targetIp), ctx.DnsEndPoint.Port), ct);
+                        return new NetworkStream(sock, ownsSocket: true);
+                    }
+                    catch
+                    {
+                        sock.Dispose();
+                        throw;
+                    }
+                }
             };
+
             handler.SslOptions.RemoteCertificateValidationCallback = (_, cert, _, errs) =>
             {
                 if (errs == SslPolicyErrors.None) return true;
@@ -682,7 +1070,7 @@ public static class PortalClient
             using var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(8) };
             var pageHtml = client.GetStringAsync(uri).GetAwaiter().GetResult();
             var form = ParseLoginForm(pageHtml, uri);
-            if (form == null) return false;
+            if (form == null || !IsCredentialPortalHostTrusted(form.Value.Action.Host, cfg)) return false;
 
             var payload = new Dictionary<string, string>(form.Value.Fields)
             {
@@ -695,14 +1083,17 @@ public static class PortalClient
             using var content = new FormUrlEncodedContent(payload);
             using var resp = client.PostAsync(form.Value.Action, content).GetAwaiter().GetResult();
 
-            Thread.Sleep(800);
-            if (NetworkEngine.GetInternetState(cfg, sourceIp).State == ConnState.Online)
+            for (int i = 0; i < 4; i++)
             {
-                state.PortalFails = 0;
-                state.PortalLoginSuspended = false;
-                StateStore.Save(cfg, state);
-                StateStore.Log(cfg, "OK", "Signed in to captive portal automatically via DPAPI vault.");
-                return true;
+                Thread.Sleep(750);
+                if (NetworkEngine.GetInternetState(cfg, sourceIp).State == ConnState.Online)
+                {
+                    state.PortalFails = 0;
+                    state.PortalLoginSuspended = false;
+                    StateStore.Save(cfg, state);
+                    StateStore.Log(cfg, "OK", "Signed in to campus captive portal automatically via DPAPI vault.");
+                    return true;
+                }
             }
 
             state.PortalFails++;
@@ -719,41 +1110,43 @@ public static class RemediationEngine
     public static DoctorReport RunDoctor(AppConfig cfg)
     {
         var sw = Stopwatch.StartNew();
+        var state = StateStore.Load(cfg);
         var layers = new List<LayerResult>();
         var nics = NetworkEngine.GetPhysicalAdapters();
         var primary = nics.FirstOrDefault();
 
         // Layer 1: Physical Link
         if (primary == null)
-            layers.Add(new(1, "PhysicalLink", "UNKNOWN", "No physical adapter detected", "Diagnose"));
+            layers.Add(new(1, "PhysicalLink", "UNKNOWN", "No physical network adapter detected", "Diagnose"));
         else if (primary.OperationalStatus != OperationalStatus.Up)
             layers.Add(new(1, "PhysicalLink", "FAILED", $"Adapter {primary.Name} is {primary.OperationalStatus}", "QuickHeal"));
         else
-            layers.Add(new(1, "PhysicalLink", "OK", $"{primary.Name} ({primary.Speed / 1_000_000} Mbps Up)", "None"));
+            layers.Add(new(1, "PhysicalLink", "OK", $"{primary.Name} ({Math.Max(1, primary.Speed / 1_000_000)} Mbps Up)", "None"));
 
-        // Layer 2: IP Config
+        // Layer 2: IP Configuration & Subnet Calculus
         var ip = primary != null && primary.OperationalStatus == OperationalStatus.Up ? NetworkEngine.GetValidIPv4(primary) : null;
+        var sub = primary != null ? NetworkEngine.GetAdapterSubnet(primary) : null;
         if (string.IsNullOrEmpty(ip))
             layers.Add(new(2, "IpConfig", "FAILED", "No valid IPv4 lease (APIPA / Unassigned)", "QuickHeal"));
         else
-            layers.Add(new(2, "IpConfig", "OK", $"IPv4 Lease: {ip}", "None"));
+            layers.Add(new(2, "IpConfig", "OK", sub != null ? $"{ip}/{sub.PrefixLength} ({sub.TotalHosts} hosts)" : $"IPv4 Lease: {ip}", "None"));
 
-        // Layer 3: Gateway
+        // Layer 3: Gateway Reachability
         var gw = primary != null ? NetworkEngine.GetDefaultGateway(primary) : null;
         var gwRtt = !string.IsNullOrEmpty(gw) ? NetworkEngine.PingMs(gw, 700) : null;
         if (string.IsNullOrEmpty(gw))
             layers.Add(new(3, "GatewayReach", "FAILED", "No default 0.0.0.0/0 gateway", "QuickHeal"));
-        else if (gwRtt.HasValue || NetworkEngine.TestTcpPort(gw, 80, 350, ip) || NetworkEngine.TestTcpPort(gw, 443, 350, ip))
+        else if (gwRtt.HasValue || NetworkEngine.TestTcpPort(gw, 80, 350, ip) || NetworkEngine.TestTcpPort(gw, 443, 350, ip) || NetworkEngine.TestTcpPort(gw, cfg.PortalPort, 350, ip))
             layers.Add(new(3, "GatewayReach", "OK", $"Gateway {gw} reachable ({(gwRtt.HasValue ? $"{gwRtt}ms" : "TCP/ARP")})", "None"));
         else
             layers.Add(new(3, "GatewayReach", "FAILED", $"Gateway {gw} unreachable", "QuickHeal"));
 
-        // Layer 4: DNS
+        // Layer 4: DNS Resolution
         var resolved = !string.IsNullOrEmpty(ip) ? NetworkEngine.ResolveHostScoped("connectivitycheck.gstatic.com", ip, cfg) : null;
         if (string.IsNullOrEmpty(resolved))
             layers.Add(new(4, "DnsResolution", "FAILED", "DNS resolution failed", "QuickHeal"));
         else
-            layers.Add(new(4, "DnsResolution", "OK", $"Resolved test host -> {resolved}", "None"));
+            layers.Add(new(4, "DnsResolution", "OK", $"Resolved probe host -> {resolved}", "None"));
 
         // Layer 5-7: Internet, TLS & Captive Portal
         var (inetState, loc) = !string.IsNullOrEmpty(ip) ? NetworkEngine.GetInternetState(cfg, ip) : (ConnState.Offline, "");
@@ -777,12 +1170,14 @@ public static class RemediationEngine
         }
 
         sw.Stop();
+        var env = primary != null ? NetworkEngine.ClassifyEnvironment(primary, cfg, state) : "Unknown";
+        int pmtu = !string.IsNullOrEmpty(gw) ? NetworkEngine.DiscoverPathMtu(gw) : 1500;
         var failed = layers.FirstOrDefault(l => l.Status == "FAILED");
         var degraded = layers.FirstOrDefault(l => l.Status == "DEGRADED");
         var verdict = failed != null ? NetVerdict.Broken : degraded != null ? NetVerdict.Degraded : primary == null ? NetVerdict.Undetermined : NetVerdict.Healthy;
         string cause = failed?.Evidence ?? degraded?.Evidence ?? "All 7 OSI layers verified healthy.";
 
-        return new DoctorReport(primary?.Name ?? "None", verdict, (int)verdict, cause, sw.ElapsedMilliseconds, layers);
+        return new DoctorReport(primary?.Name ?? "None", ip ?? "None", gw ?? "None", env, pmtu, verdict, (int)verdict, cause, sw.ElapsedMilliseconds, layers);
     }
 
     // Pure 3-branch routing metric planner
@@ -798,25 +1193,88 @@ public static class RemediationEngine
         return ("Promote", 10, 40, false);
     }
 
+    public static void ApplyRouteAndPortalShield(NetworkInterface eth, string env, ConnState conn, AppConfig cfg, PersistentState state)
+    {
+        if (!SecurityEngine.IsAdmin()) return;
+        var secondaries = NetworkEngine.GetSecondaryUplinks();
+        var plan = PlanRouteMetrics(env, conn, secondaries.Count, state.RouteProfile);
+
+        if (plan.Mode == "Restore")
+        {
+            RemoveCampusHostRoutes(state);
+            NetworkEngine.RunTool("netsh.exe", $"interface ipv4 set interface \"{eth.Name}\" metric=automatic", 4000);
+            foreach (var sec in secondaries)
+                NetworkEngine.RunTool("netsh.exe", $"interface ipv4 set interface \"{sec.Name}\" metric=automatic", 4000);
+            return;
+        }
+
+        if (!plan.CampusRoutes) RemoveCampusHostRoutes(state);
+        NetworkEngine.RunTool("netsh.exe", $"interface ipv4 set interface \"{eth.Name}\" metric={plan.EthMetric}", 4000);
+        foreach (var sec in secondaries)
+            NetworkEngine.RunTool("netsh.exe", $"interface ipv4 set interface \"{sec.Name}\" metric={plan.OtherMetric}", 4000);
+
+        if (plan.CampusRoutes)
+        {
+            var gw = NetworkEngine.GetDefaultGateway(eth);
+            var sub = NetworkEngine.GetAdapterSubnet(eth);
+            if (!string.IsNullOrEmpty(gw))
+            {
+                int ifIdx = eth.GetIPProperties().GetIPv4Properties()?.Index ?? 0;
+                foreach (var targetIp in new[] { cfg.PortalIp, cfg.CampusDns, state.DiscoveredPortalIp }.Where(x => !string.IsNullOrEmpty(x)).Distinct())
+                {
+                    bool onLink = sub != null && NetworkEngine.IsSameSubnet(sub.IpAddress, targetIp!, sub.PrefixLength);
+                    string nextHop = onLink ? "0.0.0.0" : gw;
+                    NetworkEngine.RunTool("route.exe", $"add {targetIp} mask 255.255.255.255 {nextHop} metric 5 {(ifIdx > 0 ? $"IF {ifIdx}" : "")}", 3000);
+                    if (!state.InjectedHostRoutes.Contains(targetIp!))
+                        state.InjectedHostRoutes.Add(targetIp!);
+                }
+            }
+        }
+    }
+
+    public static void RemoveCampusHostRoutes(PersistentState state)
+    {
+        foreach (var hip in state.InjectedHostRoutes.ToList())
+            NetworkEngine.RunTool("route.exe", $"delete {hip}", 3000);
+        state.InjectedHostRoutes.Clear();
+    }
+
     public static void FlushCaches(AppConfig cfg)
     {
         NetworkEngine.RunTool("ipconfig.exe", "/flushdns", 5000);
         NetworkEngine.RunTool("netsh.exe", "interface ip delete arpcache", 5000);
         NetworkEngine.RunTool("nbtstat.exe", "-R", 5000);
-        StateStore.Log(cfg, "OK", "Flushed DNS resolver, ARP neighbor table, and NetBIOS caches.");
+        NetworkEngine.RunTool("nbtstat.exe", "-RR", 5000);
+        StateStore.Log(cfg, "OK", "6-Stage Universal Cache Flush: DNS, ARP, NetBIOS, and sockets cleared.");
     }
 
     public static ConnState ExecuteQuickHeal(AppConfig cfg, PersistentState state)
     {
+        using var lk = new GlobalLock();
         var eths = NetworkEngine.GetPhysicalAdapters(ethernetOnly: true);
         var all = NetworkEngine.GetPhysicalAdapters(ethernetOnly: false);
         var target = eths.FirstOrDefault(n => n.OperationalStatus == OperationalStatus.Up) ?? all.FirstOrDefault();
         if (target == null) return ConnState.NoLink;
 
-        // Layer 2: Renew DHCP if APIPA/missing IP
+        // Layer 1: AC USB Selective Suspend & PCIe ASPM Shield (Battery-aware)
+        if (SecurityEngine.IsAdmin() && SystemInformation.PowerStatus.PowerLineStatus != PowerLineStatus.Offline)
+        {
+            NetworkEngine.RunTool("powercfg.exe", "/setacvalueindex scheme_current 2a737441-1930-4402-8d77-b2bebba308a3 48e6b7a6-50f5-4782-a5d4-53bb8f07e226 0", 4000);
+            NetworkEngine.RunTool("powercfg.exe", "/setactive scheme_current", 4000);
+        }
+
+        // Layer 2: 3-Step DHCP Recovery Ladder if APIPA or missing IPv4
         var ip = NetworkEngine.GetValidIPv4(target);
         if (string.IsNullOrEmpty(ip))
         {
+            if (SecurityEngine.IsAdmin())
+            {
+                try
+                {
+                    Registry.SetValue($@"HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\{target.Id}", "DhcpConnForceBroadcastFlag", 1, RegistryValueKind.DWord);
+                }
+                catch { }
+            }
             NetworkEngine.RunTool("ipconfig.exe", $"/release \"{target.Name}\"", 8000);
             NetworkEngine.RunTool("ipconfig.exe", $"/renew \"{target.Name}\"", 15000);
             target = NetworkEngine.GetPhysicalAdapters().FirstOrDefault(n => n.Id == target.Id) ?? target;
@@ -824,40 +1282,56 @@ public static class RemediationEngine
         }
         if (string.IsNullOrEmpty(ip)) return ConnState.NoIp;
 
-        // Layer 3 & 4: Evaluate connectivity & benchmark fastest DNS
+        // Layer 3: Environment Classification & Multi-Homed Metric Shield
+        var env = NetworkEngine.ClassifyEnvironment(target, cfg, state);
         var (conn, loc) = NetworkEngine.GetInternetState(cfg, ip);
         if (!string.IsNullOrEmpty(loc)) state.DiscoveredPortalUrl = loc;
+        ApplyRouteAndPortalShield(target, env, conn, cfg, state);
 
-        var scores = NetworkEngine.MeasureResolversFast(cfg.ActivePublicDns.Prepend(cfg.CampusDns), ip);
+        // Layer 4: Parallel UDP RFC 1035 DNS Latency Racer & Adaptive Switching
+        var candidates = env == "Campus" ? cfg.ActivePublicDns.Prepend(cfg.CampusDns) : cfg.ActivePublicDns;
+        var scores = NetworkEngine.MeasureResolversFast(candidates, ip);
         var bestDns = scores.Where(kv => kv.Value.HasValue).OrderBy(kv => kv.Value!.Value).Select(kv => kv.Key).ToList();
-        if (bestDns.Count > 0 && conn == ConnState.NoDns)
+
+        if (SecurityEngine.IsAdmin() && bestDns.Count > 0 && (conn == ConnState.NoDns || env == "Campus"))
         {
             var curDns = string.Join(",", target.GetIPProperties().DnsAddresses.Where(a => a.AddressFamily == AddressFamily.InterNetwork));
             StateStore.SaveOriginal(state, $"Dns:{target.Id}", curDns);
-            NetworkEngine.RunTool("netsh.exe", $"interface ipv4 set dnsservers name=\"{target.Name}\" static {bestDns[0]} primary", 5000);
-            StateStore.RecordMutation(cfg, "Dns", target.Name, null, curDns, bestDns[0], true,
-                $"netsh interface ipv4 set dnsservers name=\"{target.Name}\" dhcp", $"Set fastest verified DNS ({bestDns[0]}) on {target.Name}");
+            string primaryDns = conn == ConnState.Captive && scores.GetValueOrDefault(cfg.CampusDns).HasValue ? cfg.CampusDns : bestDns[0];
+            NetworkEngine.RunTool("netsh.exe", $"interface ipv4 set dnsservers name=\"{target.Name}\" static {primaryDns} primary", 5000);
+            if (bestDns.Count > 1 && bestDns[1] != primaryDns)
+                NetworkEngine.RunTool("netsh.exe", $"interface ipv4 add dnsservers name=\"{target.Name}\" {bestDns[1]} index=2", 5000);
+
+            StateStore.RecordMutation(cfg, "Dns", target.Name, null, curDns, primaryDns, true,
+                $"netsh interface ipv4 set dnsservers name=\"{target.Name}\" dhcp", $"Configured adaptive DNS ({primaryDns}) on {target.Name}");
             FlushCaches(cfg);
             (conn, _) = NetworkEngine.GetInternetState(cfg, ip);
         }
 
-        // Layer 7: Auto-login if Captive
+        // Layer 7: Autonomous Captive Portal Authentication
         if (conn == ConnState.Captive && PortalClient.AttemptHeadlessLogin(cfg, state, ip))
+        {
             conn = ConnState.Online;
+            ApplyRouteAndPortalShield(target, env, conn, cfg, state);
+        }
 
         StateStore.Save(cfg, state);
         return conn;
     }
 
+    // Tier 1: Careful Network & Stack Debloat
     public static int ApplyNetworkDebloat(AppConfig cfg, PersistentState state)
     {
         if (!SecurityEngine.IsAdmin()) return 0;
+        using var lk = new GlobalLock();
         var vectors = new (string Key, string Name, int Val, string Desc)[]
         {
             (@"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization", "DODownloadMode", 0, "Disable P2P Update Seeding"),
             (@"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile", "NetworkThrottlingIndex", -1, "Disable Multimedia Packet Throttling"),
-            (@"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile", "SystemResponsiveness", 0, "Zero Gaming/Network Queue Reservation"),
-            (@"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings\Wpad", "WpadOverride", 1, "Disable WPAD Proxy Broadcast Probing")
+            (@"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile", "SystemResponsiveness", 0, "Zero Network Packet Queue Reservation"),
+            (@"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings\Wpad", "WpadOverride", 1, "Disable WPAD Proxy Broadcast Probing"),
+            (@"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient", "EnableMulticast", 0, "Disable LLMNR Multicast Spoofing Vector"),
+            (@"HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters", "MaxNegativeCacheTtl", 5, "Clamp Negative DNS Cache TTL to 5s")
         };
 
         int count = 0;
@@ -870,15 +1344,21 @@ public static class RemediationEngine
             StateStore.RecordMutation(cfg, "Registry", v.Key, v.Name, cur, v.Val.ToString(), true, null, v.Desc);
             count++;
         }
+        NetworkEngine.RunTool("netsh.exe", "int teredo set state disabled", 3000);
+        NetworkEngine.RunTool("netsh.exe", "int isatap set state disabled", 3000);
+        NetworkEngine.RunTool("netsh.exe", "int 6to4 set state disabled", 3000);
         FlushCaches(cfg);
         StateStore.Save(cfg, state);
         return count;
     }
 
+    // Tier 2: Restore Factory Defaults (Full Rollback)
     public static int RestoreFactoryDefaults(AppConfig cfg, PersistentState state)
     {
         if (!SecurityEngine.IsAdmin()) return 0;
+        using var lk = new GlobalLock();
         int restored = 0;
+
         foreach (var kv in state.Snapshots.ToList())
         {
             if (kv.Key.StartsWith("Reg:"))
@@ -892,36 +1372,94 @@ public static class RemediationEngine
                 restored++;
             }
         }
+
         foreach (var nic in NetworkEngine.GetPhysicalAdapters())
         {
             NetworkEngine.RunTool("netsh.exe", $"interface ipv4 set dnsservers name=\"{nic.Name}\" dhcp", 5000);
+            NetworkEngine.RunTool("netsh.exe", $"interface ipv4 set interface \"{nic.Name}\" metric=automatic", 4000);
             restored++;
         }
-        foreach (var hip in state.InjectedHostRoutes)
-            NetworkEngine.RunTool("route.exe", $"delete {hip}", 3000);
+
+        RemoveCampusHostRoutes(state);
+        NetworkEngine.RunTool("netsh.exe", "int teredo set state default", 3000);
+        NetworkEngine.RunTool("netsh.exe", "int isatap set state default", 3000);
+        NetworkEngine.RunTool("netsh.exe", "int 6to4 set state default", 3000);
 
         state.Snapshots.Clear();
-        state.InjectedHostRoutes.Clear();
+        state.ArpMemory.Clear();
+        state.ArpCandidates.Clear();
         if (File.Exists(cfg.VaultFile)) File.Delete(cfg.VaultFile);
         FlushCaches(cfg);
         StateStore.Save(cfg, state);
         return restored;
     }
 
-    public static void ExecuteStackReset(AppConfig cfg, PersistentState state, bool deep = false)
+    // Tiers 3, 4, 5, 6: Graduated Network Stack Reset Hierarchy
+    public static void ExecuteStackReset(AppConfig cfg, PersistentState state, int tier)
     {
         if (!SecurityEngine.IsAdmin()) return;
-        StateStore.Log(cfg, "STEP", $"Executing {(deep ? "10-Stage Deep Stack Rebuild" : "5-Stage Standard Stack Reset")}...");
+        if (tier >= 4 && SecurityEngine.IsRemoteSession())
+        {
+            StateStore.Log(cfg, "ALERT", "Remote RDP/SSH session detected. Destructive reset blocked to prevent remote lockout.");
+            return;
+        }
+
+        using var lk = new GlobalLock();
+        StateStore.Log(cfg, "STEP", $"Executing Recovery Tier {tier}...");
+
+        // Pre-flight snapshot of current DNS before reset
+        foreach (var nic in NetworkEngine.GetPhysicalAdapters())
+        {
+            var curDns = string.Join(",", nic.GetIPProperties().DnsAddresses.Where(a => a.AddressFamily == AddressFamily.InterNetwork));
+            if (!string.IsNullOrEmpty(curDns))
+                StateStore.SaveOriginal(state, $"Dns:{nic.Id}", curDns);
+        }
+
+        // Tier 3 (Standard 5-Stage) & above
         NetworkEngine.RunTool("netsh.exe", "winsock reset", 8000);
         NetworkEngine.RunTool("netsh.exe", "int ip reset", 8000);
         NetworkEngine.RunTool("netsh.exe", "int tcp set global autotuninglevel=normal", 5000);
+        NetworkEngine.RunTool("netsh.exe", "int tcp set global rss=enabled", 4000);
+        NetworkEngine.RunTool("netsh.exe", "int tcp set global ecncapability=disabled", 4000);
         NetworkEngine.RunTool("netsh.exe", "winhttp reset proxy", 5000);
-        if (deep)
+
+        // Tier 4 (Deep 10-Stage Ultra Rebuild) & above
+        if (tier >= 4)
         {
+            var wowNetsh = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), @"SysWOW64\netsh.exe");
+            if (File.Exists(wowNetsh)) NetworkEngine.RunTool(wowNetsh, "winsock reset", 8000);
             NetworkEngine.RunTool("netsh.exe", "int ipv6 reset", 8000);
+            NetworkEngine.RunTool("netsh.exe", "interface portproxy reset", 5000);
             NetworkEngine.RunTool("netsh.exe", "advfirewall reset", 8000);
             NetworkEngine.RunTool("route.exe", "-f", 5000);
+            NetworkEngine.RunTool("klist.exe", "purge", 4000);
         }
+
+        // Tier 5 (12-Stage Multi-Adapter Doomsday Reinstall) & above
+        if (tier >= 5)
+        {
+            try
+            {
+                Registry.SetValue(@"HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\RadioManagement", "SystemRadioState", 0, RegistryValueKind.DWord);
+            }
+            catch { }
+            NetworkEngine.RunTool("pnputil.exe", "/scan-devices", 8000);
+            NetworkEngine.RunTool("ipconfig.exe", "/release", 8000);
+            NetworkEngine.RunTool("ipconfig.exe", "/renew", 15000);
+            NetworkEngine.RunTool("ipconfig.exe", "/registerdns", 5000);
+        }
+
+        // Tier 6 (4-Stage Armageddon Kernel Device Wipe via netcfg -d)
+        if (tier == 6)
+        {
+            state.PendingReboot = true;
+            state.PendingRebootTime = DateTime.UtcNow.ToString("o");
+            StateStore.Save(cfg, state);
+            NetworkEngine.RunTool("netcfg.exe", "-d", 45000);
+            StateStore.Log(cfg, "WARN", "Complete Stack Rebuild (netcfg -d) finished. Please restart Windows to reinstall clean drivers.");
+            return;
+        }
+
         FlushCaches(cfg);
         ExecuteQuickHeal(cfg, state);
     }
@@ -935,6 +1473,7 @@ public sealed class LanFixerWindowsService : ServiceBase
 {
     private readonly AppConfig _cfg;
     private CancellationTokenSource? _cts;
+    private DateTime _lastEventHeal = DateTime.MinValue;
 
     public LanFixerWindowsService(AppConfig cfg)
     {
@@ -952,12 +1491,13 @@ public sealed class LanFixerWindowsService : ServiceBase
 
     private void OnNetworkChanged(object? sender, EventArgs e)
     {
-        try
+        if ((DateTime.UtcNow - _lastEventHeal).TotalSeconds < 8) return;
+        _lastEventHeal = DateTime.UtcNow;
+        Task.Run(() =>
         {
-            var state = StateStore.Load(_cfg);
-            RemediationEngine.ExecuteQuickHeal(_cfg, state);
-        }
-        catch { }
+            try { RemediationEngine.ExecuteQuickHeal(_cfg, StateStore.Load(_cfg)); }
+            catch { }
+        });
     }
 
     private async Task SentinelLoop(CancellationToken ct)
@@ -985,6 +1525,32 @@ public sealed class LanFixerWindowsService : ServiceBase
         NetworkChange.NetworkAvailabilityChanged -= OnNetworkChanged;
         _cts?.Cancel();
     }
+
+    public static bool InstallService(AppConfig cfg)
+    {
+        if (!SecurityEngine.IsAdmin()) return false;
+        var exePath = Environment.ProcessPath!;
+        NetworkEngine.RunTool("sc.exe", "stop LanFixerSvc", 5000);
+        NetworkEngine.RunTool("sc.exe", "delete LanFixerSvc", 5000);
+        var (code, _) = NetworkEngine.RunTool("sc.exe", $"create LanFixerSvc binPath= \"\\\"{exePath}\\\" --service\" start= auto DisplayName= \"LanFixer Autonomous Network Sentinel\"", 8000);
+        if (code == 0)
+        {
+            NetworkEngine.RunTool("sc.exe", "description LanFixerSvc \"Zero-window event-driven network healer and captive portal authenticator.\"", 5000);
+            NetworkEngine.RunTool("sc.exe", "start LanFixerSvc", 8000);
+            StateStore.Log(cfg, "OK", "Installed and started LanFixerSvc background Windows Service.");
+            return true;
+        }
+        return false;
+    }
+
+    public static bool UninstallService(AppConfig cfg)
+    {
+        if (!SecurityEngine.IsAdmin()) return false;
+        NetworkEngine.RunTool("sc.exe", "stop LanFixerSvc", 5000);
+        var (code, _) = NetworkEngine.RunTool("sc.exe", "delete LanFixerSvc", 5000);
+        StateStore.Log(cfg, "OK", "Removed LanFixerSvc background Windows Service.");
+        return code == 0;
+    }
 }
 
 public static class TrayHost
@@ -1004,29 +1570,40 @@ public static class TrayHost
         var menu = new ContextMenuStrip();
         menu.Items.Add("Quick Heal (7-Layer Repair)", null, (_, _) =>
         {
-            var st = StateStore.Load(cfg);
-            var res = RemediationEngine.ExecuteQuickHeal(cfg, st);
-            icon.ShowBalloonTip(2500, "LanFixer Quick Heal", $"Network Status: {res}", ToolTipIcon.Info);
+            Task.Run(() =>
+            {
+                var st = StateStore.Load(cfg);
+                var res = RemediationEngine.ExecuteQuickHeal(cfg, st);
+                icon.ShowBalloonTip(2500, "LanFixer Quick Heal", $"Network Status: {res}", ToolTipIcon.Info);
+            });
         });
         menu.Items.Add("Captive Portal Auto-Login", null, (_, _) =>
         {
-            var st = StateStore.Load(cfg);
-            bool ok = PortalClient.AttemptHeadlessLogin(cfg, st);
-            if (!ok) Process.Start(new ProcessStartInfo(st.DiscoveredPortalUrl ?? cfg.PortalUrl) { UseShellExecute = true });
+            Task.Run(() =>
+            {
+                var st = StateStore.Load(cfg);
+                bool ok = PortalClient.AttemptHeadlessLogin(cfg, st);
+                if (!ok) Process.Start(new ProcessStartInfo(st.DiscoveredPortalUrl ?? cfg.PortalUrl) { UseShellExecute = true });
+            });
         });
         menu.Items.Add("Flush Network Caches", null, (_, _) =>
         {
             RemediationEngine.FlushCaches(cfg);
             icon.ShowBalloonTip(2000, "LanFixer", "DNS, ARP & NetBIOS caches flushed.", ToolTipIcon.Info);
         });
-        menu.Items.Add("Careful Network Debloat", null, (_, _) =>
+        menu.Items.Add("Careful Network Debloat (Low Ping)", null, (_, _) =>
         {
             var st = StateStore.Load(cfg);
             int n = RemediationEngine.ApplyNetworkDebloat(cfg, st);
             icon.ShowBalloonTip(2500, "LanFixer Debloat", $"Applied {n} low-latency optimizations.", ToolTipIcon.Info);
         });
         menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add("Restore Windows Defaults (Rollback)", null, (_, _) =>
+        menu.Items.Add("Undo Last Repair Run", null, (_, _) =>
+        {
+            int n = StateStore.UndoLastRun(cfg);
+            icon.ShowBalloonTip(2500, "LanFixer Undo", $"Reverted {n} recent mutations.", ToolTipIcon.Info);
+        });
+        menu.Items.Add("Restore Windows Defaults (Factory Rollback)", null, (_, _) =>
         {
             var st = StateStore.Load(cfg);
             RemediationEngine.RestoreFactoryDefaults(cfg, st);
@@ -1042,7 +1619,8 @@ public static class TrayHost
             Task.Run(() =>
             {
                 var rep = RemediationEngine.RunDoctor(cfg);
-                icon.Text = $"LanFixer: {rep.Verdict} ({rep.PrimaryAdapter})";
+                var txt = $"LanFixer: {rep.Verdict} ({rep.PrimaryAdapter} - {rep.IpAddress})";
+                icon.Text = txt.Length > 63 ? txt[..63] : txt;
                 if (rep.Verdict != NetVerdict.Healthy)
                     RemediationEngine.ExecuteQuickHeal(cfg, StateStore.Load(cfg));
             });
@@ -1054,7 +1632,7 @@ public static class TrayHost
 
 #endregion
 
-#region Interactive Console Dashboard, CLI & Verification Self-Test
+#region Interactive Console Dashboard, CLI & 18-Point Verification Self-Test
 
 public static class Program
 {
@@ -1075,6 +1653,12 @@ public static class Program
             return 0;
         }
 
+        if (args.Contains("--install-service", StringComparer.OrdinalIgnoreCase))
+            return LanFixerWindowsService.InstallService(cfg) ? 0 : 1;
+
+        if (args.Contains("--uninstall-service", StringComparer.OrdinalIgnoreCase))
+            return LanFixerWindowsService.UninstallService(cfg) ? 0 : 1;
+
         bool json = args.Contains("--json", StringComparer.OrdinalIgnoreCase) || args.Contains("-Json", StringComparer.OrdinalIgnoreCase);
         string mode = GetModeArg(args);
 
@@ -1082,9 +1666,10 @@ public static class Program
         {
             "doctor" or "status" => RunDoctorCli(cfg, json),
             "heal" or "quickheal" => (int)RemediationEngine.ExecuteQuickHeal(cfg, StateStore.Load(cfg)),
-            "flush" or "flushcache" => RunAction(cfg, () => RemediationEngine.FlushCaches(cfg)),
-            "debloat" => RunAction(cfg, () => Console.WriteLine($"Optimized {RemediationEngine.ApplyNetworkDebloat(cfg, StateStore.Load(cfg))} vectors.")),
-            "reset" or "resetfactory" or "undo" => RunAction(cfg, () => Console.WriteLine($"Restored {RemediationEngine.RestoreFactoryDefaults(cfg, StateStore.Load(cfg))} settings.")),
+            "flush" or "flushcache" => RunAction(() => RemediationEngine.FlushCaches(cfg)),
+            "debloat" => RunAction(() => Console.WriteLine($"Optimized {RemediationEngine.ApplyNetworkDebloat(cfg, StateStore.Load(cfg))} vectors.")),
+            "undo" => RunAction(() => Console.WriteLine($"Reverted {StateStore.UndoLastRun(cfg)} mutations.")),
+            "reset" or "resetfactory" => RunAction(() => Console.WriteLine($"Restored {RemediationEngine.RestoreFactoryDefaults(cfg, StateStore.Load(cfg))} settings.")),
             "selftest" or "verify" => RunSelfTest(cfg, json),
             _ => RunInteractiveDashboard(cfg)
         };
@@ -1102,11 +1687,7 @@ public static class Program
         return "interactive";
     }
 
-    private static int RunAction(AppConfig cfg, Action act)
-    {
-        act();
-        return 0;
-    }
+    private static int RunAction(Action act) { act(); return 0; }
 
     private static int RunDoctorCli(AppConfig cfg, bool json)
     {
@@ -1122,6 +1703,7 @@ public static class Program
             Console.WriteLine($"  LANFIXER 7.0.2 HEALTH DOCTOR  |  Verdict: {rep.Verdict} (ExitCode: {rep.ExitCode})");
             Console.WriteLine("============================================================================");
             Console.ResetColor();
+            Console.WriteLine($"  Adapter: {rep.PrimaryAdapter} | IP: {rep.IpAddress} | GW: {rep.Gateway} | Env: {rep.Environment} | PMTU: {rep.PathMtu}");
             foreach (var l in rep.Layers)
             {
                 Console.ForegroundColor = l.Status == "OK" ? ConsoleColor.Green : l.Status == "DEGRADED" ? ConsoleColor.Yellow : ConsoleColor.Red;
@@ -1141,22 +1723,38 @@ public static class Program
         // 1. RFC 1035 DNS Wire Packet & Multi-Question / CNAME Parser
         var q = NetworkEngine.BuildDnsQueryPacket("a.bc", 0x1234);
         byte[] fakeAns = [0x12, 0x34, 0x81, 0x80, 0, 1, 0, 1, 0, 0, 0, 0, .. q[12..], 0xC0, 0x0C, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 1, 2, 3, 4];
+        byte[] multiQ = [0x12, 0x34, 0x81, 0x80, 0, 2, 0, 1, 0, 0, 0, 0, .. q[12..], .. q[12..], 0xC0, 0x0C, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 5, 6, 7, 8];
         Check("RFC 1035 DNS A-record parser extracts valid IPv4", NetworkEngine.ParseDnsAAnswers(fakeAns, q).Contains("1.2.3.4"));
+        Check("RFC 1035 DNS parser skips multiple questions in QDCOUNT", NetworkEngine.ParseDnsAAnswers(multiQ, q).Contains("5.6.7.8"));
         Check("RFC 1035 DNS sinkhole filter blocks 192.0.2.1 & 127.0.0.1", NetworkEngine.IsSinkholeIp("192.0.2.1") && !NetworkEngine.IsSinkholeIp("1.1.1.1"));
 
-        // 2. HTTP / Meta-Refresh / JS Redirect Parser
-        var redir = NetworkEngine.ParseHttpResponse("HTTP/1.1 200 OK\r\n\r\n<meta content=\"0; url='https://portal.univ.edu/login';\" http-equiv=\"refresh\">");
-        Check("HTTP 200 meta-refresh reversed attribute parser", redir.Location == "https://portal.univ.edu/login");
+        // 2. Layer 3 Subnet Calculus & Same-Subnet Verification
+        var sub24 = NetworkEngine.CalculateSubnet("10.114.12.34", 24);
+        var sub23 = NetworkEngine.CalculateSubnet("172.16.5.100", 23);
+        Check("Layer 3 Subnet Calculus computes /24 mask, broadcast, wildcard & 254 hosts",
+            sub24 != null && sub24.SubnetMask == "255.255.255.0" && sub24.WildcardMask == "0.0.0.255" && sub24.BroadcastAddress == "10.114.12.255" && sub24.TotalHosts == 254);
+        Check("Layer 3 Subnet Calculus computes /23 mask, network & 510 hosts",
+            sub23 != null && sub23.SubnetMask == "255.255.254.0" && sub23.NetworkAddress == "172.16.4.0" && sub23.TotalHosts == 510);
+        Check("Layer 3 IsSameSubnet evaluates on-link vs off-link targets accurately",
+            NetworkEngine.IsSameSubnet("10.114.12.34", "10.114.12.1", 24) && !NetworkEngine.IsSameSubnet("10.114.12.34", "10.114.0.5", 24));
 
-        // 3. HTML5 Captive Form Parser
+        // 3. HTTP / Meta-Refresh / JS Redirect Parser
+        var redir = NetworkEngine.ParseHttpResponse("HTTP/1.1 200 OK\r\n\r\n<meta content=\"0; url='https://portal.univ.edu/login';\" http-equiv=\"refresh\">");
+        var jsRedir = NetworkEngine.ParseHttpResponse("HTTP/1.1 200 OK\r\n\r\n<script>window.location.assign('https://portal.univ.edu/js');</script>");
+        Check("HTTP 200 meta-refresh reversed attribute parser", redir.Location == "https://portal.univ.edu/login");
+        Check("HTTP 200 window.location.assign redirect parser", jsRedir.Location == "https://portal.univ.edu/js");
+
+        // 4. HTML5 Captive Form Parser & Credential Trust Boundary
         var fm = PortalClient.ParseLoginForm("<form action=\"/auth\"><input type=\"hidden\" name=\"zone\" value=\"nitjsr\"><input name=\"u\" type=\"text\"><input name=\"p\" type=\"password\"></form>", new Uri("https://10.114.0.5:8888/index.php"));
         Check("HTML5 Login form parser extracts action, user, pass, and hidden fields", fm != null && fm.Value.UserField == "u" && fm.Value.PassField == "p" && fm.Value.Fields["zone"] == "nitjsr");
+        Check("Credential trust boundary allows campus domain and blocks lookalike domains",
+            PortalClient.IsCredentialPortalHostTrusted("gateway.nitjsr.ac.in", cfg) && !PortalClient.IsCredentialPortalHostTrusted("nitjsr.ac.in.evil.com", cfg));
 
-        // 4. Vault First-Tab Splitting & DPAPI Crypto Round-Trip
+        // 5. Vault First-Tab Splitting
         var vp = SecurityEngine.ParseVaultString("2021ug01\tpa\tss");
         Check("Vault parser splits on first tab only", vp != null && vp.Value.User == "2021ug01" && vp.Value.Pass == "pa\tss");
 
-        // 5. Pure 3-Branch Route Metric Planner
+        // 6. Pure 3-Branch Route Metric Planner
         var pOther = RemediationEngine.PlanRouteMetrics("Other", ConnState.Online, 1);
         var pCaptive = RemediationEngine.PlanRouteMetrics("Campus", ConnState.Captive, 1);
         var pOnline = RemediationEngine.PlanRouteMetrics("Campus", ConnState.Online, 1);
@@ -1196,7 +1794,7 @@ public static class Program
 
             Console.ForegroundColor = ConsoleColor.Cyan;
             Console.WriteLine("  ============================================================================");
-            Console.WriteLine($"   LAN FIXER v7.0.2 (Native Standalone Engine)   |   Admin: {(SecurityEngine.IsAdmin() ? "YES" : "LIMITED")}");
+            Console.WriteLine($"   LAN FIXER v7.0.2 (Single-File Native Engine)  |  Admin: {(SecurityEngine.IsAdmin() ? "YES" : "LIMITED")}");
             Console.WriteLine("  ============================================================================");
             Console.ResetColor();
 
@@ -1204,7 +1802,7 @@ public static class Program
             Console.ForegroundColor = rep.Verdict == NetVerdict.Healthy ? ConsoleColor.Green : rep.Verdict == NetVerdict.Degraded ? ConsoleColor.Yellow : ConsoleColor.Red;
             Console.WriteLine($"{rep.Verdict.ToString().ToUpperInvariant()} ({rep.RootCause})");
             Console.ResetColor();
-            Console.WriteLine($"   PRIMARY NIC    : {rep.PrimaryAdapter}   |   DNS Profile: {state.DnsProfile}   |   Route: {state.RouteProfile}\n");
+            Console.WriteLine($"   ADAPTER / IP   : {rep.PrimaryAdapter} ({rep.IpAddress})  |  GW: {rep.Gateway}  |  Env: {rep.Environment}  |  PMTU: {rep.PathMtu}\n");
 
             foreach (var l in rep.Layers)
             {
@@ -1216,11 +1814,11 @@ public static class Program
 
             Console.ForegroundColor = ConsoleColor.Cyan;
             Console.WriteLine("\n  ----------------------------------------------------------------------------");
-            Console.WriteLine("   [1] Quick Heal (7-Layer Repair)    [5] Flush DNS / ARP / NetBIOS Caches");
-            Console.WriteLine("   [2] Launch System Tray Guard       [6] Careful Network Debloat (Low Ping)");
-            Console.WriteLine("   [3] Save Portal Login to Vault     [7] Captive Portal Sign-In Now");
-            Console.WriteLine("   [4] Standard Stack Reset           [8] Deep 10-Stage Stack Rebuild");
-            Console.WriteLine("   [9] Factory Reset & Rollback       [S] Run Self-Test Suite    [Q] Quit");
+            Console.WriteLine("   [1] Quick Heal (7-Layer Repair)    [6] Careful Network Debloat (Low Ping)");
+            Console.WriteLine("   [2] Install 24/7 Windows Service   [7] Captive Portal Sign-In Now");
+            Console.WriteLine("   [3] Launch System Tray Guard       [8] 6-Tier Recovery & Reset Menu");
+            Console.WriteLine("   [4] Save Portal Login to Vault     [9] Factory Reset & Full Rollback");
+            Console.WriteLine("   [5] Flush DNS/ARP/NetBIOS Caches   [U] Undo Last Run   [S] Self-Test  [Q] Quit");
             Console.WriteLine("  ----------------------------------------------------------------------------");
             Console.ResetColor();
             Console.Write("   Select action > ");
@@ -1233,9 +1831,15 @@ public static class Program
                     RemediationEngine.ExecuteQuickHeal(cfg, state);
                     break;
                 case "2":
-                    Process.Start(new ProcessStartInfo(Environment.ProcessPath!, "--tray") { UseShellExecute = true });
+                    Console.WriteLine(LanFixerWindowsService.InstallService(cfg)
+                        ? "   [OK] LanFixerSvc installed and running silently in background."
+                        : "   [WARN] Run as Administrator to install the Windows Service.");
+                    Thread.Sleep(1200);
                     break;
                 case "3":
+                    Process.Start(new ProcessStartInfo(Environment.ProcessPath!, "--tray") { UseShellExecute = true });
+                    break;
+                case "4":
                     Console.Write("   Portal Username: ");
                     var u = Console.ReadLine()?.Trim() ?? "";
                     Console.Write("   Portal Password: ");
@@ -1243,9 +1847,6 @@ public static class Program
                     if (SecurityEngine.SaveCredentials(cfg, u, p, state))
                         Console.WriteLine("   [OK] Saved to DPAPI LocalMachine vault.");
                     Thread.Sleep(1000);
-                    break;
-                case "4":
-                    RemediationEngine.ExecuteStackReset(cfg, state, deep: false);
                     break;
                 case "5":
                     RemediationEngine.FlushCaches(cfg);
@@ -1261,12 +1862,18 @@ public static class Program
                         Process.Start(new ProcessStartInfo(state.DiscoveredPortalUrl ?? cfg.PortalUrl) { UseShellExecute = true });
                     break;
                 case "8":
-                    RemediationEngine.ExecuteStackReset(cfg, state, deep: true);
+                    ShowRecoveryTierMenu(cfg, state);
                     break;
                 case "9":
+                    LanFixerWindowsService.UninstallService(cfg);
                     int r = RemediationEngine.RestoreFactoryDefaults(cfg, state);
                     Console.WriteLine($"   [OK] Rolled back {r} settings to original Windows defaults.");
                     Thread.Sleep(1200);
+                    break;
+                case "u":
+                    int un = StateStore.UndoLastRun(cfg);
+                    Console.WriteLine($"   [OK] Reverted {un} mutations from last run.");
+                    Thread.Sleep(1000);
                     break;
                 case "s":
                     Console.Clear();
@@ -1279,5 +1886,35 @@ public static class Program
             }
         }
     }
+
+    private static void ShowRecoveryTierMenu(AppConfig cfg, PersistentState state)
+    {
+        Console.Clear();
+        Console.ForegroundColor = ConsoleColor.Cyan;
+        Console.WriteLine("  ============================================================================");
+        Console.WriteLine("   6-TIER RISK-ORDERED RECOVERY & STACK REBUILD HIERARCHY");
+        Console.WriteLine("  ============================================================================");
+        Console.ResetColor();
+        Console.WriteLine("   [1] [SAFE]    Careful Network Debloat (P2P Seeding, Throttling, WPAD, LLMNR)");
+        Console.WriteLine("   [2] [NOTICE]  Restore Network Defaults (Reverts all snapshots, DNS & metrics)");
+        Console.WriteLine("   [3] [CAUTION] Standard 5-Stage Stack Reset (Winsock, TCP/IP, Proxy, 7-Layer)");
+        Console.WriteLine("   [4] [CAUTION] Deep 10-Stage Stack Rebuild (64/32-bit Winsock, Firewall, Route)");
+        Console.WriteLine("   [5] [HIGH]    12-Stage Multi-Adapter Reinstall (All Media, PnP Bus, Radio)");
+        Console.WriteLine("   [6] [REBOOT]  4-Stage Complete Stack Rebuild (netcfg -d kernel device wipe)");
+        Console.WriteLine("   [B] Back to Dashboard");
+        Console.Write("\n   Select tier [1-6] > ");
+
+        var k = Console.ReadKey(intercept: true).KeyChar.ToString().ToLowerInvariant();
+        Console.WriteLine();
+        if (k == "1") RemediationEngine.ApplyNetworkDebloat(cfg, state);
+        else if (k == "2") RemediationEngine.RestoreFactoryDefaults(cfg, state);
+        else if (k is "3" or "4" or "5" or "6")
+        {
+            Console.Write($"   Confirm Tier {k} execution? (type yes): ");
+            if ((Console.ReadLine()?.Trim().ToLowerInvariant()) == "yes")
+                RemediationEngine.ExecuteStackReset(cfg, state, int.Parse(k));
+        }
+    }
 }
+
 #endregion
