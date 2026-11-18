@@ -317,11 +317,20 @@ public static class Setup
         if (!P.Admin()) { Console.Error.WriteLine("Administrative privileges required."); return 40; }
         P.Init();
         var cur = Environment.ProcessPath ?? "";
-        Directory.CreateDirectory(Path.GetDirectoryName(P.Exe)!);
+        var curDir = Path.GetDirectoryName(cur);
+        var targetDir = Path.GetDirectoryName(P.Exe)!;
+        Directory.CreateDirectory(targetDir);
         if (!cur.Equals(P.Exe, StringComparison.OrdinalIgnoreCase))
         {
             Sh.Run("taskkill", "/f", "/im", "LanFixer.exe");
-            File.Copy(cur, P.Exe, true);
+            if (!string.IsNullOrEmpty(curDir) && Directory.Exists(curDir))
+            {
+                foreach (var file in Directory.GetFiles(curDir, "LanFixer.*"))
+                {
+                    try { File.Copy(file, Path.Combine(targetDir, Path.GetFileName(file)), true); } catch { }
+                }
+            }
+            try { File.Copy(cur, P.Exe, true); } catch { }
         }
 
         Sh.Run("sc", "create", "LanFixer", $"binPath=\"{P.Exe} service\"", "start=delayed-auto", "displayname=LanFixer Network Guardian");

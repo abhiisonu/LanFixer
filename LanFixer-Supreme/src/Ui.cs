@@ -345,9 +345,10 @@ public static unsafe class Tray
             int cmd = TrackPopupMenu(menu, 0x100, p.x, p.y, 0, h, 0); // TPM_RETURNCMD
             DestroyMenu(menu);
 
+            var targetExe = File.Exists(P.Exe) ? P.Exe : Environment.ProcessPath ?? P.Exe;
             if (cmd == 8) { PostQuitMessage(0); return 0; }
-            if (cmd == 7) { Process.Start(new ProcessStartInfo(P.Exe) { UseShellExecute = true }); return 0; }
-            if (cmd == 4) { Process.Start(new ProcessStartInfo(P.Exe, "doctor") { UseShellExecute = true }); return 0; }
+            if (cmd == 7) { Process.Start(new ProcessStartInfo(targetExe) { UseShellExecute = true }); return 0; }
+            if (cmd == 4) { Process.Start(new ProcessStartInfo(targetExe, "doctor") { UseShellExecute = true }); return 0; }
 
             string? op = cmd switch { 2 => "repair", 3 => "login", 5 => "rollback", 6 => "restore", _ => null };
             if (op != null && !_busy)
