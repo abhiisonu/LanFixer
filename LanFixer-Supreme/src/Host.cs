@@ -235,8 +235,11 @@ public static class Pipe
 
 public static class Ipc
 {
+    public static bool Active => File.Exists(@"\\.\pipe\LanFixer");
+
     public static async Task<string?> Ask(string cmd, int timeoutMs = 25000)
     {
+        if (!Active) return null;
         try
         {
             using var c = new CancellationTokenSource(timeoutMs);

@@ -384,3 +384,115 @@ public static class Dns
             .Where(a => a.AddressFamily == AddressFamily.InterNetwork)
             .Select(a => a.ToString()) ?? Enumerable.Empty<string>();
 }
+
+#region Path MTU Black-Hole Discovery
+
+public sealed record MtuResult(int TestedMtu, bool Success, int RttMs);
+
+public static class Mtu
+{
+    private static readonly int[] CandidatePayloads = { 1472, 1464, 1452, 1432, 1392, 1372, 1252 };
+
+    public static (int OptimalMtu, List<MtuResult> Results) Sweep(string targetHost = "8.8.8.8", int timeoutMs = 800)
+    {
+        var results = new List<MtuResult>();
+        int optimal = 1500;
+        using var ping = new Ping();
+        var opts = new PingOptions(64, true);
+
+        foreach (var payload in CandidatePayloads)
+        {
+            int totalMtu = payload + 28;
+            byte[] buf = new byte[payload];
+            bool ok = false;
+            int rtt = -1;
+            try
+            {
+                var reply = ping.Send(targetHost, timeoutMs, buf, opts);
+                if (reply.Status == IPStatus.Success)
+                {
+                    ok = true;
+                    rtt = (int)reply.RoundtripTime;
+                }
+            }
+            catch { }
+            results.Add(new MtuResult(totalMtu, ok, rtt));
+        }
+
+        var maxOk = results.Where(r => r.Success).OrderByDescending(r => r.TestedMtu).FirstOrDefault();
+        optimal = maxOk?.TestedMtu ?? 1500;
+        return (optimal, results);
+    }
+}
+
+#endregion
+
+#region Multi-Target Anycast Benchmark & Jitter Gauge
+
+public sealed record BenchTarget(string Name, string Ip, int PingMin, int PingAvg, int PingMax, double JitterMs, int DnsMs, int LossPct);
+
+public static class Bench
+{
+    public static readonly (string Name, string Ip)[] Targets =
+    {
+        ("Gateway", ""),
+        ("Cloudflare", "1.1.1.1"),
+        ("Google", "8.8.8.8"),
+        ("Quad9", "9.9.9.9"),
+        ("OpenDNS", "208.67.222.222"),
+        ("Level3", "4.2.2.1")
+    };
+
+    public static async Task<List<BenchTarget>> RunAsync(string? gatewayIp = null, CancellationToken ct = default)
+    {
+        var res = new List<BenchTarget>();
+        using var ping = new Ping();
+        var buf = new byte[32];
+
+        foreach (var (name, ip) in Targets)
+        {
+            if (ct.IsCancellationRequested) break;
+            string targetIp = string.IsNullOrEmpty(ip) ? (gatewayIp ?? Net.Primary()?.Gw ?? "") : ip;
+            if (string.IsNullOrEmpty(targetIp)) continue;
+
+            var rtts = new List<int>();
+            int lost = 0;
+            const int count = 4;
+
+            for (int i = 0; i < count; i++)
+            {
+                try
+                {
+                    var rep = await ping.SendPingAsync(targetIp, 600, buf);
+                    if (rep.Status == IPStatus.Success)
+                        rtts.Add((int)rep.RoundtripTime);
+                    else
+                        lost++;
+                }
+                catch { lost++; }
+            }
+
+            int pMin = rtts.Count > 0 ? rtts.Min() : -1;
+            int pMax = rtts.Count > 0 ? rtts.Max() : -1;
+            int pAvg = rtts.Count > 0 ? (int)rtts.Average() : -1;
+            double jitter = 0;
+            if (rtts.Count > 1)
+            {
+                double mean = rtts.Average();
+                jitter = Math.Sqrt(rtts.Sum(v => Math.Pow(v - mean, 2)) / rtts.Count);
+            }
+            int lossPct = (lost * 100) / count;
+
+            int dnsMs = -1;
+            if (targetIp != gatewayIp && !string.IsNullOrEmpty(ip))
+            {
+                dnsMs = await Dns.Ms(targetIp, ct);
+            }
+
+            res.Add(new BenchTarget(name, targetIp, pMin, pAvg, pMax, Math.Round(jitter, 1), dnsMs, lossPct));
+        }
+        return res;
+    }
+}
+
+#endregion

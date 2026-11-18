@@ -10,6 +10,11 @@ static class Program
   tray               Pure Win32 zero-resource notification tray icon
   doctor [--json]    Run 7-layer OSI Health Doctor deep diagnostic report
   status [--json]    Query connection health & exit with granular status code
+  bench / speed      Multi-target Anycast latency, jitter, and DNS benchmark
+  mtu                Path MTU discovery and bottleneck MTU auto-clamping
+  pnp                Enforce hardware NDIS power-save shield (disable NIC sleep)
+  bundle / report    Generate comprehensive sanitized diagnostic report bundle
+  keepalive          Send session keep-alive refresh ping to prevent portal timeouts
   repair             Escalating 3-tier repair (Flush -> DNS -> Adapter reset + Route Shield)
   reset [--yes]      Winsock/IP stack rebuild (System Restore point + netsh backup)
   rollback           Undo the last network change (with drift protection)
@@ -35,6 +40,11 @@ static class Program
                 case "dash": return Dash.Run();
                 case "doctor": return Doctor_(a);
                 case "status": return Status_(a);
+                case "bench" or "speed": return Op("bench");
+                case "mtu": return Op("mtu");
+                case "pnp": return Op("pnp");
+                case "bundle" or "report": return Op("bundle");
+                case "keepalive": return Op("keepalive");
                 case "install": return Setup.Install();
                 case "uninstall": return Setup.Uninstall(a.Contains("--purge"), a.Contains("--keep"));
                 case "selftest": return SelfTest.Run(a.Contains("--logic"));
@@ -72,7 +82,12 @@ static class Program
         var r = Ipc.AskSync(c);
         if (r == null)
         {
-            if (!P.Admin())
+            bool requiresAdmin = c switch
+            {
+                "bench" or "bundle" or "audit" or "keepalive" => false,
+                _ => true
+            };
+            if (requiresAdmin && !P.Admin())
             {
                 Console.Error.WriteLine("Service not running and not elevated. Run `LanFixer install`, or use an elevated prompt.");
                 return 40;

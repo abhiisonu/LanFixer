@@ -1,3 +1,9 @@
+using System.Net.NetworkInformation;
+using System.Net.Sockets;
+using System.Text;
+using System.Text.Json;
+using Microsoft.Win32;
+
 namespace LanFixer;
 
 /// <summary>
@@ -351,6 +357,191 @@ public static class Engine
         }
     }
 
+    #region Hardware Power-Save Shield (NDIS PnP Sleep Blocker)
+
+    public static string PnpShield()
+    {
+        if (!P.Admin()) return "Error: Administrative privileges required.";
+        var primary = Net.Primary();
+        if (primary == null) return "No active primary network adapter found.";
+
+        const string classPath = @"SYSTEM\CurrentControlSet\Control\Class\{4d36e972-e325-11ce-bfc1-08002be10318}";
+        using var classKey = Registry.LocalMachine.OpenSubKey(classPath);
+        if (classKey == null) return "Error: Network class registry key not found.";
+
+        int touched = 0;
+        var run = S.Begin("pnp");
+        try
+        {
+            var ifaces = NetworkInterface.GetAllNetworkInterfaces();
+            foreach (var sub in classKey.GetSubKeyNames())
+            {
+                using var sk = classKey.OpenSubKey(sub);
+                var guid = sk?.GetValue("NetCfgInstanceId") as string;
+                if (string.IsNullOrEmpty(guid)) continue;
+
+                var match = ifaces.FirstOrDefault(n => n.Id.Equals(guid, StringComparison.OrdinalIgnoreCase));
+                if (match == null) continue;
+
+                var pnp = sk?.GetValue("PnPCapabilities");
+                int curPnp = pnp is int i ? i : (pnp is uint u ? (int)u : 0);
+                if (curPnp != 24)
+                {
+                    string targetKey = $@"{classPath}\{sub}";
+                    if (S.Change(run, "pnp", targetKey, "PnPCapabilities", "24"))
+                        touched++;
+                }
+            }
+        }
+        finally { S.End(run); }
+
+        return touched > 0
+            ? $"[OK] Hardware Power-Save Shield enforced on {touched} adapter(s). Device sleep disabled."
+            : "[OK] Hardware Power-Save Shield already active on all network adapters.";
+    }
+
+    #endregion
+
+    #region Path MTU Black-Hole Optimizer
+
+    public static string MtuOptimize()
+    {
+        if (!P.Admin()) return "Error: Administrative privileges required.";
+        var primary = Net.Primary();
+        if (primary == null) return "No active primary network adapter found.";
+
+        var (optimal, _) = Mtu.Sweep();
+        var currentStr = S.Cur("mtu", primary.Id, "");
+        int current = int.TryParse(currentStr, out var cVal) ? cVal : 1500;
+
+        if (optimal == current)
+            return $"[OK] Current MTU ({current}) on {primary.Name} is already optimal for this uplink.";
+
+        var run = S.Begin("mtu");
+        try
+        {
+            S.Change(run, "mtu", primary.Id, "", optimal.ToString());
+        }
+        finally { S.End(run); }
+
+        return $"[OK] Clamped MTU on {primary.Name} from {current} to {optimal} (Path MTU bottleneck resolved).";
+    }
+
+    #endregion
+
+    #region Multi-Target Anycast & DNS Benchmark
+
+    public static async Task<string> BenchmarkAsync(CancellationToken ct = default)
+    {
+        var primary = Net.Primary();
+        var results = await Bench.RunAsync(primary?.Gw, ct);
+        var sb = new StringBuilder();
+        sb.AppendLine("============================================================================");
+        sb.AppendLine("  LANFIXER ANYCAST & DNS BENCHMARK SUITE");
+        sb.AppendLine("============================================================================");
+        sb.AppendLine($"  Primary Uplink: {primary?.Name ?? "None"} ({primary?.Ip ?? "No IP"}) | Gateway: {primary?.Gw ?? "None"}\n");
+        sb.AppendLine($"  {"Target",-12} {"Endpoint",-16} {"Min",-6} {"Avg",-6} {"Max",-6} {"Jitter",-8} {"Loss",-6} {"DNS",-6}");
+        sb.AppendLine("  " + new string('-', 72));
+
+        foreach (var r in results)
+        {
+            string min = r.PingMin >= 0 ? r.PingMin + "ms" : "--";
+            string avg = r.PingAvg >= 0 ? r.PingAvg + "ms" : "--";
+            string max = r.PingMax >= 0 ? r.PingMax + "ms" : "--";
+            string jit = r.PingAvg >= 0 ? r.JitterMs + "ms" : "--";
+            string loss = r.LossPct + "%";
+            string dns = r.DnsMs >= 0 ? r.DnsMs + "ms" : "--";
+            sb.AppendLine($"  {r.Name,-12} {r.Ip,-16} {min,-6} {avg,-6} {max,-6} {jit,-8} {loss,-6} {dns,-6}");
+        }
+        return sb.ToString();
+    }
+
+    #endregion
+
+    #region Diagnostic Bundle Generator
+
+    public static string CreateBundle()
+    {
+        try
+        {
+            Directory.CreateDirectory(P.Dir);
+            var outFile = Path.Combine(P.Dir, $"diagnostics-bundle-{DateTime.Now:yyyyMMdd-HHmmss}.json");
+
+            var doc = Doctor.Run();
+            var primary = Net.Primary();
+            var (optimalMtu, _) = Mtu.Sweep();
+
+            var ifaces = NetworkInterface.GetAllNetworkInterfaces().Select(n =>
+            {
+                var ipProps = n.GetIPProperties();
+                var ipv4 = ipProps.UnicastAddresses.FirstOrDefault(a => a.Address.AddressFamily == AddressFamily.InterNetwork);
+                var gw = ipProps.GatewayAddresses.FirstOrDefault(a => a.Address.AddressFamily == AddressFamily.InterNetwork)?.Address.ToString() ?? "";
+                var dns = ipProps.DnsAddresses.Where(a => a.AddressFamily == AddressFamily.InterNetwork).Select(a => a.ToString()).ToList();
+
+                return new LinkInfo
+                {
+                    Name = n.Name,
+                    Description = n.Description,
+                    Id = n.Id,
+                    Status = n.OperationalStatus.ToString(),
+                    SpeedMbps = n.Speed / 1_000_000,
+                    Ipv4 = ipv4?.Address.ToString() ?? "",
+                    Subnet = ipv4?.IPv4Mask?.ToString() ?? "",
+                    Gateway = gw,
+                    Dns = dns
+                };
+            }).ToList();
+
+            var (_, routeTxt) = Sh.Run("route", "print", "-4");
+            var (_, arpTxt) = Sh.Run("arp", "-a");
+
+            var bundle = new DiagnosticsBundle
+            {
+                GeneratedAt = DateTime.UtcNow.ToString("o"),
+                OsVersion = Environment.OSVersion.ToString(),
+                MachineId = Vault.Exists ? "Configured" : "None",
+                Doctor = doc,
+                Adapters = ifaces,
+                RoutingTable = routeTxt,
+                ArpTable = arpTxt,
+                Benchmarks = Bench.RunAsync(primary?.Gw).GetAwaiter().GetResult(),
+                OptimalMtu = optimalMtu,
+                JournalBase = S.D.Base,
+                JournalRuns = S.D.Runs
+            };
+
+            var json = JsonSerializer.Serialize(bundle, J.Default.DiagnosticsBundle);
+            File.WriteAllText(outFile, json);
+
+            return $"[OK] Diagnostics bundle generated successfully:\n     {outFile} ({new FileInfo(outFile).Length / 1024} KB)";
+        }
+        catch (Exception ex)
+        {
+            return "Error generating bundle: " + ex.Message;
+        }
+    }
+
+    #endregion
+
+    #region Keep-Alive Heartbeat
+
+    public static async Task<string> KeepAliveAsync(CancellationToken ct = default)
+    {
+        var primary = Net.Primary();
+        if (primary == null) return "No active network link.";
+
+        var (st, _, ms) = await Net.Probe(primary.Ip, ct);
+        if (st == St.Captive)
+        {
+            Log.W("Keep-alive pulse detected captive session. Initiating re-authentication...");
+            return await LoginCore(false, ct);
+        }
+
+        return $"[OK] Network session active (egress probe: {ms}ms, state: {st}).";
+    }
+
+    #endregion
+
     public static async Task<string> Do(string cmd, CancellationToken ct = default)
     {
         if (!await Gate.WaitAsync(0, ct)) return "Busy: another operation is in progress.";
@@ -368,6 +559,11 @@ public static class Engine
                 "tune1" => Tune(1),
                 "tune2" => Tune(2),
                 "audit" => Audit(),
+                "pnp" => PnpShield(),
+                "mtu" => MtuOptimize(),
+                "bench" => await BenchmarkAsync(ct),
+                "bundle" => CreateBundle(),
+                "keepalive" => await KeepAliveAsync(ct),
                 _ => "Unknown command."
             };
         }

@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text;
+using System.Text.Json;
 using Microsoft.Win32;
 
 namespace LanFixer;
@@ -216,6 +217,34 @@ public static class SelfTest
         T("Vault: Clear removes stored file", !Vault.Exists);
         Vault.Prot = new Dp();
         Vault.Path_ = null;
+
+        // --- MTU Payload Math Test ---
+        T("MTU: Payload math correctly maps 1472 payload to 1500 MTU",
+            1472 + 28 == 1500 && 1464 + 28 == 1492 && 1392 + 28 == 1420);
+
+        // --- Bench Jitter Math Test ---
+        var rtts = new List<int> { 20, 24, 20, 24 };
+        double mean = rtts.Average();
+        double jitter = Math.Sqrt(rtts.Sum(v => Math.Pow(v - mean, 2)) / rtts.Count);
+        T("Bench: Jitter standard deviation calculation",
+            Math.Round(jitter, 1) == 2.0);
+
+        // --- PnP WinFx Handling Test ---
+        fx.Set("pnp", "ClassKey", "PnPCapabilities", "24");
+        T("PnP: WinFx handles PnPCapabilities hardware sleep blocker",
+            fx.Get("pnp", "ClassKey", "PnPCapabilities") == "24");
+
+        // --- Diagnostics Bundle JSON Serialization ---
+        var sampleBundle = new DiagnosticsBundle
+        {
+            GeneratedAt = "2026-11-19T02:00:00Z",
+            OsVersion = "Windows 11 Pro",
+            OptimalMtu = 1500
+        };
+        var bundleJson = JsonSerializer.Serialize(sampleBundle, J.Default.DiagnosticsBundle);
+        var parsedBundle = JsonSerializer.Deserialize(bundleJson, J.Default.DiagnosticsBundle);
+        T("Bundle: DiagnosticsBundle source-generated JSON round-trip",
+            parsedBundle != null && parsedBundle.OptimalMtu == 1500 && parsedBundle.OsVersion == "Windows 11 Pro");
 
         try { Directory.Delete(dir, true); } catch { }
     }

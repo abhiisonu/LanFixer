@@ -86,6 +86,21 @@ public static class Dash
                     continue;
                 }
 
+                if (k == 'S')
+                {
+                    Console.Clear();
+                    Console.CursorVisible = true;
+                    Console.WriteLine("\n  Running multi-target Anycast & DNS benchmark...\n");
+                    var benchOut = Ipc.AskSync("bench") ?? (P.Admin() ? Engine.BenchmarkAsync().GetAwaiter().GetResult() : "Service not running.");
+                    Console.WriteLine(benchOut);
+                    Console.WriteLine("\n  Press any key to return to dashboard...");
+                    Console.ReadKey(true);
+                    Console.CursorVisible = false;
+                    Console.Write("\x1b[2J");
+                    last = DateTime.MinValue;
+                    continue;
+                }
+
                 string? cmd = k switch
                 {
                     'R' => "repair",
@@ -93,6 +108,10 @@ public static class Dash
                     'O' => "restore",
                     'L' => "login",
                     'T' => "tune1",
+                    'M' => "mtu",
+                    'P' => "pnp",
+                    'K' => "keepalive",
+                    'E' => "bundle",
                     'X' => "reset",
                     _ => null
                 };
@@ -160,7 +179,8 @@ public static class Dash
         for (int i = 0; i < 8; i++)
             L("  " + (i < s.Events.Count ? s.Events[i] : ""));
         L();
-        L(" \x1b[1m[R]\x1b[0mepair  \x1b[1m[B]\x1b[0mrollback  \x1b[1m[O]\x1b[0mriginal-restore  \x1b[1m[L]\x1b[0mogin  \x1b[1m[D]\x1b[0moctor  \x1b[1m[T]\x1b[0mune  \x1b[1m[X]\x1b[0m stack-reset  \x1b[1m[Q]\x1b[0muit");
+        L(" \x1b[1m[R]\x1b[0mepair  \x1b[1m[L]\x1b[0mogin  \x1b[1m[D]\x1b[0moctor  \x1b[1m[S]\x1b[0mpeed-bench  \x1b[1m[M]\x1b[0mtu-sweep  \x1b[1m[P]\x1b[0mnp-shield  \x1b[1m[Q]\x1b[0muit");
+        L(" \x1b[1m[K]\x1b[0meep-alive  \x1b[1m[E]\x1b[0mxport-bundle  \x1b[1m[T]\x1b[0mune  \x1b[1m[B]\x1b[0mollback  \x1b[1m[O]\x1b[0mriginal-restore  \x1b[1m[X]\x1b[0mstack-reset");
         L(" " + (busy ? "\x1b[36m" : "") + msg + "\x1b[0m");
         Console.Write(sb.ToString());
     }

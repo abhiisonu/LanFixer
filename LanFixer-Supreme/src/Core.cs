@@ -13,8 +13,42 @@ namespace LanFixer;
 [JsonSerializable(typeof(Status))]
 [JsonSerializable(typeof(DoctorReport))]
 [JsonSerializable(typeof(SubnetInfo))]
+[JsonSerializable(typeof(MtuResult))]
+[JsonSerializable(typeof(List<MtuResult>))]
+[JsonSerializable(typeof(BenchTarget))]
+[JsonSerializable(typeof(List<BenchTarget>))]
+[JsonSerializable(typeof(DiagnosticsBundle))]
+[JsonSerializable(typeof(LinkInfo))]
 [JsonSourceGenerationOptions(WriteIndented = false, DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
 public partial class J : JsonSerializerContext { }
+
+public sealed class DiagnosticsBundle
+{
+    public string GeneratedAt { get; set; } = "";
+    public string OsVersion { get; set; } = "";
+    public string MachineId { get; set; } = "";
+    public DoctorReport? Doctor { get; set; }
+    public List<LinkInfo> Adapters { get; set; } = new();
+    public string RoutingTable { get; set; } = "";
+    public string ArpTable { get; set; } = "";
+    public List<BenchTarget> Benchmarks { get; set; } = new();
+    public int OptimalMtu { get; set; }
+    public List<Chg> JournalBase { get; set; } = new();
+    public List<Run> JournalRuns { get; set; } = new();
+}
+
+public sealed class LinkInfo
+{
+    public string Name { get; set; } = "";
+    public string Description { get; set; } = "";
+    public string Id { get; set; } = "";
+    public string Status { get; set; } = "";
+    public long SpeedMbps { get; set; }
+    public string Ipv4 { get; set; } = "";
+    public string Subnet { get; set; } = "";
+    public string Gateway { get; set; } = "";
+    public List<string> Dns { get; set; } = new();
+}
 
 #endregion
 
@@ -22,12 +56,33 @@ public partial class J : JsonSerializerContext { }
 
 public static class P
 {
-    public static string Dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "LanFixer");
+    private static string? _dir;
+    public static string MachineDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "LanFixer");
+    public static string UserDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LanFixer");
+    public static string Dir
+    {
+        get => _dir ?? (Admin() ? MachineDir : (CanWrite(MachineDir) ? MachineDir : UserDir));
+        set => _dir = value;
+    }
+
     public static string Db => Path.Combine(Dir, "state.json");
-    public static string Vault => Path.Combine(Dir, "vault.bin");
+    public static string Vault => Path.Combine(MachineDir, "vault.bin");
     public static string Susp => Path.Combine(Dir, "portal.suspended");
     public static string Bak => Path.Combine(Dir, "backups");
     public static string Exe => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "LanFixer", "LanFixer.exe");
+
+    public static bool CanWrite(string dir)
+    {
+        try
+        {
+            if (!Directory.Exists(dir)) return false;
+            var test = Path.Combine(dir, ".test-" + Guid.NewGuid().ToString("N"));
+            File.WriteAllText(test, "1");
+            File.Delete(test);
+            return true;
+        }
+        catch { return false; }
+    }
 
     public static bool Admin()
     {
@@ -44,9 +99,13 @@ public static class P
     /// </summary>
     public static void Init()
     {
-        Directory.CreateDirectory(Bak);
-        if (OperatingSystem.IsWindows())
-            Sh.Run("icacls", Dir, "/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F");
+        try
+        {
+            Directory.CreateDirectory(Bak);
+            if (OperatingSystem.IsWindows() && Admin())
+                Sh.Run("icacls", MachineDir, "/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F", "*S-1-5-32-545:(OI)(CI)RX");
+        }
+        catch { }
     }
 }
 
@@ -126,6 +185,21 @@ public sealed class WinFx : IFx
             return (Registry.LocalMachine.OpenSubKey(If + k)?.GetValue("NameServer") as string ?? "").Replace(' ', ',').Trim(',');
         if (t == "metric")
             return Registry.LocalMachine.OpenSubKey(If + k)?.GetValue("InterfaceMetric")?.ToString();
+        if (t == "mtu")
+        {
+            var name = System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces()
+                .FirstOrDefault(x => x.Id == k)?.Name;
+            if (name == null) return null;
+            var (_, outTxt) = Sh.Run("netsh", "interface", "ipv4", "show", "subinterface", $"\"{name}\"");
+            var m = System.Text.RegularExpressions.Regex.Match(outTxt, @"\b(\d{3,4})\s+\d+\s+" + System.Text.RegularExpressions.Regex.Escape(name));
+            return m.Success ? m.Groups[1].Value : "1500";
+        }
+        if (t == "pnp")
+        {
+            using var pnpKey = Registry.LocalMachine.OpenSubKey(k);
+            var pnpVal = pnpKey?.GetValue(n);
+            return pnpVal == null ? null : unchecked((uint)(int)pnpVal).ToString();
+        }
         if (t == "tdo")
             return "default";
 
@@ -167,6 +241,20 @@ public sealed class WinFx : IFx
                 Sh.Run("netsh", "interface", "ipv4", "set", "interface", $"interface={name}", "metric=auto");
             else
                 Sh.Run("netsh", "interface", "ipv4", "set", "interface", $"interface={name}", $"metric={v}");
+            return;
+        }
+        if (t == "mtu")
+        {
+            var name = System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces()
+                .FirstOrDefault(x => x.Id == k)?.Name ?? throw new InvalidOperationException("Adapter not found: " + k);
+            Sh.Run("netsh", "interface", "ipv4", "set", "subinterface", $"\"{name}\"", $"mtu={v}", "store=persistent");
+            return;
+        }
+        if (t == "pnp")
+        {
+            using var pnpW = Registry.LocalMachine.CreateSubKey(k);
+            if (v == null) pnpW.DeleteValue(n, false);
+            else pnpW.SetValue(n, unchecked((int)uint.Parse(v)), RegistryValueKind.DWord);
             return;
         }
         if (v == null)

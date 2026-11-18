@@ -53,10 +53,15 @@ LanFixer-Supreme/
 
 | Command | Description | Elevated? |
 |---|---|:---:|
-| `LanFixer.exe` or `dash` | Interactive live ANSI dashboard with sparkline latency history | No |
+| `LanFixer.exe` or `dash` | Interactive live ANSI dashboard with sparkline latency history & hotkeys | No |
 | `LanFixer.exe tray` | Launch pure Win32 system tray notification icon | No |
 | `LanFixer.exe doctor [--json]` | Run 7-layer OSI deep health diagnostic report | No |
 | `LanFixer.exe status [--json]` | Query network status (0=Online, 10=Captive/NoDns, 20=Offline, 30=NoLink) | No |
+| `LanFixer.exe bench` or `speed` | Multi-target Anycast latency, jitter, loss & UDP DNS benchmark | No |
+| `LanFixer.exe mtu` | Path MTU discovery & automatic bottleneck MTU clamping | Yes |
+| `LanFixer.exe pnp` | Enforce hardware NDIS power-save shield (disable NIC sleep/drops) | Yes |
+| `LanFixer.exe bundle` or `report` | Generate comprehensive sanitized diagnostic bundle JSON | No |
+| `LanFixer.exe keepalive` | Send session refresh pulse to prevent portal timeout logouts | No |
 | `LanFixer.exe repair` | Run escalating 3-tier repair (Flush -> DNS -> Adapter reset + Route Shield) | Yes |
 | `LanFixer.exe reset [--yes]` | Winsock & TCP/IP stack rebuild (creates netsh backup + Restore Point) | Yes |
 | `LanFixer.exe rollback` | Undo the last network configuration change (with drift protection) | Yes |
@@ -71,6 +76,25 @@ LanFixer-Supreme/
 | `LanFixer.exe install` | Register and start background Windows Service + tray autostart | Yes |
 | `LanFixer.exe uninstall` | Stop and remove Windows Service (`--purge` deletes logs and vault) | Yes |
 | `LanFixer.exe selftest [--logic]` | Run comprehensive test suite (protocol logic + live OS stack) | No |
+
+---
+
+## 4. Interactive Console Dashboard Hotkeys
+
+While running `LanFixer.exe dash` (or running with no arguments):
+- `[R]` **Repair**: Trigger escalating 3-tier repair with route shield enforcement.
+- `[L]` **Login**: Force immediate captive portal authentication.
+- `[D]` **Doctor**: Open full 7-Layer OSI health report in-console.
+- `[S]` **Speed/Bench**: Run live multi-target Anycast latency & jitter benchmark.
+- `[M]` **MTU**: Run Path MTU discovery sweep and optimal clamping.
+- `[P]` **PnP Shield**: Enforce hardware NDIS sleep blocker on network adapters.
+- `[K]` **Keep-Alive**: Send session keep-alive heartbeat pulse.
+- `[E]` **Export Bundle**: Generate sanitized diagnostics bundle JSON for IT support.
+- `[T]` **Tune**: Apply Tier 1 safe network debloat.
+- `[B]` **Rollback**: Undo last setting change with write-ahead drift protection.
+- `[O]` **Restore**: Return all parameters to original Windows defaults.
+- `[X]` **Stack Reset**: Rebuild TCP/IP and Winsock stack (requires confirmation).
+- `[Q]` **Quit**: Exit dashboard cleanly.
 
 ---
 
