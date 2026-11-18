@@ -6,7 +6,8 @@ namespace LanFixer;
 static class Program
 {
     const string Help = @"LanFixer Supreme v8.5 - Dual-Core Autonomous Network Guardian
-  (no args) / dash   Interactive live console dashboard
+  (no args) / gui    Launch modern industrial-grade Web GUI in browser
+  dash               Launch interactive ANSI console dashboard
   tray               Pure Win32 zero-resource notification tray icon
   doctor [--json]    Run 7-layer OSI Health Doctor deep diagnostic report
   status [--json]    Query connection health & exit with granular status code
@@ -30,11 +31,12 @@ static class Program
     static int Main(string[] a)
     {
         Console.OutputEncoding = Encoding.UTF8;
-        var c = a.Length > 0 ? a[0].ToLowerInvariant() : "dash";
+        var c = a.Length > 0 ? a[0].ToLowerInvariant() : "gui";
         try
         {
             switch (c)
             {
+                case "gui" or "web": return Gui_();
                 case "service": return Svc.Run();
                 case "tray": return Tray.Run();
                 case "dash": return Dash.Run();
@@ -66,6 +68,23 @@ static class Program
             Console.Error.WriteLine("Error: " + e.Message);
             return 1;
         }
+    }
+
+    static int Gui_()
+    {
+        WebServer.Start(49888, openBrowser: true);
+        Console.WriteLine("Press 'Q' in this console window to exit web server.");
+        while (true)
+        {
+            if (Console.KeyAvailable)
+            {
+                var k = char.ToUpperInvariant(Console.ReadKey(true).KeyChar);
+                if (k == 'Q') break;
+            }
+            Thread.Sleep(250);
+        }
+        WebServer.Stop();
+        return 0;
     }
 
     static bool Ask(string q)

@@ -174,6 +174,13 @@ public static class Dash
                     continue;
                 }
 
+                if (k == 'W')
+                {
+                    WebServer.Start(49888, openBrowser: true);
+                    msg = "Web GUI opened at http://127.0.0.1:" + WebServer.Port + "/";
+                    continue;
+                }
+
                 if (k == 'S')
                 {
                     Console.Clear();
@@ -368,8 +375,8 @@ public static class Dash
 
         // --- 5. KEYBOARD COMMAND NAVIGATION BAR ---
         sb.Append($"{b}╭─ ⌨️  COMMAND SHORTCUTS ───────────────────────────────────────────────────────────────╮{r}\r\n");
-        string rowA = $"  {Theme.KeyBg} [R] {Theme.KeyReset} Repair   {Theme.KeyBg} [L] {Theme.KeyReset} Login     {Theme.KeyBg} [D] {Theme.KeyReset} Doctor     {Theme.KeyBg} [S] {Theme.KeyReset} Speed-Bench   {Theme.KeyBg} [M] {Theme.KeyReset} MTU-Sweep";
-        string rowB = $"  {Theme.KeyBg} [P] {Theme.KeyReset} PnP-Fix  {Theme.KeyBg} [K] {Theme.KeyReset} KeepAlive {Theme.KeyBg} [E] {Theme.KeyReset} Bundle     {Theme.KeyBg} [T] {Theme.KeyReset} Tune          {Theme.KeyBg} [B] {Theme.KeyReset} Rollback  {Theme.KeyBg} [Q] {Theme.KeyReset} Quit";
+        string rowA = $"  {Theme.KeyBg} [R] {Theme.KeyReset} Repair    {Theme.KeyBg} [L] {Theme.KeyReset} Login      {Theme.KeyBg} [D] {Theme.KeyReset} Doctor      {Theme.KeyBg} [S] {Theme.KeyReset} Speed-Bench    {Theme.KeyBg} [M] {Theme.KeyReset} MTU-Sweep";
+        string rowB = $"  {Theme.KeyBg} [W] {Theme.KeyReset} Web-GUI   {Theme.KeyBg} [P] {Theme.KeyReset} PnP-Fix    {Theme.KeyBg} [K] {Theme.KeyReset} KeepAlive   {Theme.KeyBg} [E] {Theme.KeyReset} Bundle         {Theme.KeyBg} [B] {Theme.KeyReset} Rollback   {Theme.KeyBg} [Q] {Theme.KeyReset} Quit";
         Box(rowA);
         Box(rowB);
         sb.Append($"{b}╰").Append(new string('─', 86)).Append($"╯{r}\r\n");
@@ -576,16 +583,18 @@ public static unsafe class Tray
             AppendMenuW(menu, _busy ? 1u : 0u, 7, "🔄 Rollback Last Change");
             AppendMenuW(menu, _busy ? 1u : 0u, 8, "⏮️ Restore Original Baseline");
             AppendMenuW(menu, 0x800, 0, null); // Separator
-            AppendMenuW(menu, 0, 9, "🖥️ Open Interactive Dashboard");
-            AppendMenuW(menu, 0, 10, "❌ Exit Tray");
+            AppendMenuW(menu, 0, 9, "🌐 Open Modern Web Dashboard");
+            AppendMenuW(menu, 0, 10, "🖥️ Open Console TUI Dashboard");
+            AppendMenuW(menu, 0, 11, "❌ Exit Tray");
 
             SetForegroundWindow(h);
             int cmd = TrackPopupMenu(menu, 0x100, p.x, p.y, 0, h, 0); // TPM_RETURNCMD
             DestroyMenu(menu);
 
             var targetExe = File.Exists(P.Exe) ? P.Exe : Environment.ProcessPath ?? P.Exe;
-            if (cmd == 10) { PostQuitMessage(0); return 0; }
-            if (cmd == 9) { Process.Start(new ProcessStartInfo(targetExe) { UseShellExecute = true }); return 0; }
+            if (cmd == 11) { PostQuitMessage(0); return 0; }
+            if (cmd == 10) { Process.Start(new ProcessStartInfo(targetExe, "dash") { UseShellExecute = true }); return 0; }
+            if (cmd == 9) { Process.Start(new ProcessStartInfo(targetExe, "gui") { UseShellExecute = true }); return 0; }
             if (cmd == 4) { Process.Start(new ProcessStartInfo(targetExe, "doctor") { UseShellExecute = true }); return 0; }
             if (cmd == 5) { Process.Start(new ProcessStartInfo(targetExe, "bench") { UseShellExecute = true }); return 0; }
 

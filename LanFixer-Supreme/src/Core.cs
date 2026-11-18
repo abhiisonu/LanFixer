@@ -19,8 +19,25 @@ namespace LanFixer;
 [JsonSerializable(typeof(List<BenchTarget>))]
 [JsonSerializable(typeof(DiagnosticsBundle))]
 [JsonSerializable(typeof(LinkInfo))]
+[JsonSerializable(typeof(ActionResultDto))]
+[JsonSerializable(typeof(CredInfoDto))]
+[JsonSerializable(typeof(List<string>))]
 [JsonSourceGenerationOptions(WriteIndented = false, DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
 public partial class J : JsonSerializerContext { }
+
+public sealed class ActionResultDto
+{
+    public bool Ok { get; set; }
+    public string Result { get; set; } = "";
+}
+
+public sealed class CredInfoDto
+{
+    public bool Exists { get; set; }
+    public string User { get; set; } = "";
+    public string Host { get; set; } = "";
+    public int Port { get; set; } = 8888;
+}
 
 public sealed class DiagnosticsBundle
 {

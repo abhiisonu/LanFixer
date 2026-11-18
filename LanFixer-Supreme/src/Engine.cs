@@ -460,10 +460,13 @@ public static class Engine
 
     #region Diagnostic Bundle Generator
 
-    public static string CreateBundle()
+    public static string CreateBundle() => Task.Run(() => CreateBundleAsync()).GetAwaiter().GetResult();
+
+    public static async Task<string> CreateBundleAsync(CancellationToken ct = default)
     {
         try
         {
+            if (S == null) Init();
             Directory.CreateDirectory(P.Dir);
             var outFile = Path.Combine(P.Dir, $"diagnostics-bundle-{DateTime.Now:yyyyMMdd-HHmmss}.json");
 
@@ -495,6 +498,8 @@ public static class Engine
             var (_, routeTxt) = Sh.Run("route", "print", "-4");
             var (_, arpTxt) = Sh.Run("arp", "-a");
 
+            var bench = await Bench.RunAsync(primary?.Gw, ct);
+
             var bundle = new DiagnosticsBundle
             {
                 GeneratedAt = DateTime.UtcNow.ToString("o"),
@@ -504,14 +509,14 @@ public static class Engine
                 Adapters = ifaces,
                 RoutingTable = routeTxt,
                 ArpTable = arpTxt,
-                Benchmarks = Bench.RunAsync(primary?.Gw).GetAwaiter().GetResult(),
+                Benchmarks = bench,
                 OptimalMtu = optimalMtu,
-                JournalBase = S.D.Base,
-                JournalRuns = S.D.Runs
+                JournalBase = S?.D.Base ?? new(),
+                JournalRuns = S?.D.Runs ?? new()
             };
 
             var json = JsonSerializer.Serialize(bundle, J.Default.DiagnosticsBundle);
-            File.WriteAllText(outFile, json);
+            await File.WriteAllTextAsync(outFile, json, ct);
 
             return $"[OK] Diagnostics bundle generated successfully:\n     {outFile} ({new FileInfo(outFile).Length / 1024} KB)";
         }
@@ -562,7 +567,7 @@ public static class Engine
                 "pnp" => PnpShield(),
                 "mtu" => MtuOptimize(),
                 "bench" => await BenchmarkAsync(ct),
-                "bundle" => CreateBundle(),
+                "bundle" => await CreateBundleAsync(ct),
                 "keepalive" => await KeepAliveAsync(ct),
                 _ => "Unknown command."
             };
