@@ -82,6 +82,8 @@ Opens the **LanFixer Supreme Native Studio** — a high-performance Windows desk
 | `LanFixer.exe bundle` or `report` | Generate comprehensive sanitized diagnostic bundle JSON | No |
 | `LanFixer.exe keepalive` | Send session refresh pulse to prevent portal timeout logouts | No |
 | `LanFixer.exe repair` | Run escalating 3-tier repair (Flush -> DNS -> Adapter reset + Route Shield) | Yes |
+| `LanFixer.exe fallback` | Apply campus static IP fallback (10.1.13.67/22 -> 10.1.12.1) when DHCP fails | Yes |
+| `LanFixer.exe dhcp` | Revert Ethernet adapter back to dynamic automatic DHCP | Yes |
 | `LanFixer.exe reset [--yes]` | Winsock & TCP/IP stack rebuild (creates netsh backup + Restore Point) | Yes |
 | `LanFixer.exe rollback` | Undo the last network configuration change (with drift protection) | Yes |
 | `LanFixer.exe restore [--yes]` | Revert all parameters to factory baseline Windows settings | Yes |

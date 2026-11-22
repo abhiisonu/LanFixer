@@ -552,7 +552,7 @@ public sealed class StudioForm : Form
         var bentoRow = new TableLayoutPanel
         {
             Location = new Point(0, 490),
-            Size = new Size(930, 200),
+            Size = new Size(930, 260),
             ColumnCount = 2,
             RowCount = 1
         };
@@ -563,19 +563,23 @@ public sealed class StudioForm : Form
         var actCard = new Panel { Dock = DockStyle.Fill, BackColor = CardBg, Padding = new Padding(16), Margin = new Padding(0, 0, 8, 0) };
         actCard.Paint += (s, e) => DrawCardBorder(e.Graphics, actCard.ClientRectangle);
         var lblActTitle = new Label { Text = "Instant Defense Actions", Font = new Font("Segoe UI", 10f, FontStyle.Bold), ForeColor = Ink1, Dock = DockStyle.Top };
-        var actGrid = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2, Padding = new Padding(0, 8, 0, 0) };
+        var actGrid = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 3, Padding = new Padding(0, 8, 0, 0) };
         actGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
         actGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
 
         var b1 = MakeTileButton("🧹 Flush Caches", "DNS, ARP & sockets", async () => await ExecuteActionAsync("repair", "Flushing network caches & asserting route shield..."));
         var b2 = MakeTileButton("⚡ Race DNS", "Parallel Anycast test", () => { SwitchTab("speed"); RunDnsRace(); });
-        var b3 = MakeTileButton("🔑 Portal Sign-In", "Direct port 8888 auth", async () => await ExecuteActionAsync("login", "Executing portal sign-in..."));
-        var b4 = MakeTileButton("🔄 Undo Last", "Rollback with drift guard", async () => await ExecuteActionAsync("rollback", "Reverting last network change..."));
+        var b3 = MakeTileButton("📍 Static Fallback", "Assign 10.1.13.67 / 10.1.12.1", async () => await ExecuteActionAsync("fallback", "Applying campus static fallback..."));
+        var b4 = MakeTileButton("📶 Revert DHCP", "Restore automatic IP/DNS", async () => await ExecuteActionAsync("dhcp", "Reverting interface to automatic DHCP..."));
+        var b5 = MakeTileButton("🔑 Portal Sign-In", "Direct port 8888 auth", async () => await ExecuteActionAsync("login", "Executing portal sign-in..."));
+        var b6 = MakeTileButton("🔄 Undo Last", "Rollback with drift guard", async () => await ExecuteActionAsync("rollback", "Reverting last network change..."));
 
         actGrid.Controls.Add(b1, 0, 0);
         actGrid.Controls.Add(b2, 1, 0);
         actGrid.Controls.Add(b3, 0, 1);
         actGrid.Controls.Add(b4, 1, 1);
+        actGrid.Controls.Add(b5, 0, 2);
+        actGrid.Controls.Add(b6, 1, 2);
 
         actCard.Controls.Add(actGrid);
         actCard.Controls.Add(lblActTitle);
@@ -859,6 +863,8 @@ public sealed class StudioForm : Form
 
         var flp = new FlowLayoutPanel { Location = new Point(0, 75), Size = new Size(900, 400), FlowDirection = FlowDirection.TopDown, AutoScroll = true };
 
+        flp.Controls.Add(MakeTierRow("Emergency Campus Static Fallback", "Binds static IP 10.1.13.67/22, gateway 10.1.12.1, and campus DNS when DHCP times out.", "Apply Fallback", async () => await ExecuteActionAsync("fallback", "Applying campus static fallback...")));
+        flp.Controls.Add(MakeTierRow("Revert Interface to Dynamic DHCP", "Restores automatic DHCP IP, DNS and automatic route metric.", "Revert DHCP", async () => await ExecuteActionAsync("dhcp", "Reverting interface to automatic DHCP...")));
         flp.Controls.Add(MakeTierRow("Tier 1: Precision Kernel Debloat", "Applies CTCP congestion control, RSS scaling, and ECN negotiation.", "Apply", async () => await ExecuteActionAsync("tune1", "Applying kernel TCP debloat...")));
         flp.Controls.Add(MakeTierRow("Tier 2: Restore Windows Baseline", "Reverts ALL modified parameters to the pristine factory Windows values.", "Restore", async () => await ExecuteActionAsync("restore", "Restoring original baseline settings...")));
         flp.Controls.Add(MakeTierRow("Tier 3: 5-Stage Network Stack Refresh", "Flushes DNS, clears ARP, re-asserts route metric shield, revives sockets.", "Refresh", async () => await ExecuteActionAsync("repair", "Refreshing network stack...")));
@@ -1083,7 +1089,16 @@ public sealed class StudioForm : Form
             _rttLargeLabel.Text = _webMs >= 0 ? $"{_webMs} ms" : "—";
             _jitterLabel.Text = $"Jitter: {_jitter:F1} ms  ·  Loss: {_loss}%  ·  MTU: 1500";
 
-            if (_connectionState == "Online")
+            var eth = Net.GetEthernetLink();
+            bool ethApipa = eth != null && (Net.IsApipa(eth.Ip) || string.IsNullOrEmpty(eth.Gw));
+
+            if (ethApipa && _connectionState != "Online")
+            {
+                _heroTitle.Text = "Campus DHCP timeout on Ethernet.";
+                _heroDesc.Text = $"{eth!.Name} is on APIPA ({eth.Ip}) with no gateway. Click below to apply verified Campus Static Fallback.";
+                _heroBtn.Text = "📍 Apply Campus Static Fallback";
+            }
+            else if (_connectionState == "Online")
             {
                 _heroTitle.Text = "Your connection is steady.";
                 _heroDesc.Text = $"Wired link ({_adapterName}) is active with verified split-horizon DNS. Silent Guard is watching.";
@@ -1111,8 +1126,57 @@ public sealed class StudioForm : Form
 
     private async Task RunHeroActionAsync()
     {
-        string cmd = _connectionState == "Captive" ? "login" : "repair";
-        await ExecuteActionAsync(cmd, cmd == "login" ? "Authenticating with captive portal..." : "Running escalating 3-tier stabilization...");
+        var eth = Net.GetEthernetLink();
+        string cmd;
+        string msg;
+        if (eth != null && (Net.IsApipa(eth.Ip) || string.IsNullOrEmpty(eth.Gw)))
+        {
+            cmd = "fallback";
+            msg = "Applying Campus Static Fallback (10.1.13.67/22 -> 10.1.12.1)...";
+        }
+        else if (_connectionState == "Captive")
+        {
+            cmd = "login";
+            msg = "Authenticating with captive portal...";
+        }
+        else
+        {
+            cmd = "repair";
+            msg = "Running escalating 3-tier stabilization...";
+        }
+        await ExecuteActionAsync(cmd, msg);
+    }
+
+    private async Task<string> RunElevatedAsync(string cmd)
+    {
+        try
+        {
+            var exe = Environment.ProcessPath ?? Application.ExecutablePath;
+            var psi = new ProcessStartInfo
+            {
+                FileName = exe,
+                Arguments = cmd,
+                Verb = "runas",
+                UseShellExecute = true,
+                CreateNoWindow = true,
+                WindowStyle = ProcessWindowStyle.Hidden
+            };
+            using var proc = Process.Start(psi);
+            if (proc != null)
+            {
+                await proc.WaitForExitAsync();
+                return proc.ExitCode == 0 ? $"Elevated command '{cmd}' executed successfully." : $"Elevated command exited with code {proc.ExitCode}.";
+            }
+            return "Failed to spawn elevated process.";
+        }
+        catch (System.ComponentModel.Win32Exception)
+        {
+            return "Elevation request was cancelled by the user.";
+        }
+        catch (Exception ex)
+        {
+            return "Elevation error: " + ex.Message;
+        }
     }
 
     private async Task ExecuteActionAsync(string cmd, string startingMessage)
@@ -1130,7 +1194,8 @@ public sealed class StudioForm : Form
                 };
                 if (reqAdmin && !P.Admin())
                 {
-                    result = "Elevated administrator privileges required for this action.";
+                    ShowToast("Requesting Windows Administrator elevation (UAC)...");
+                    result = await RunElevatedAsync(cmd);
                 }
                 else
                 {

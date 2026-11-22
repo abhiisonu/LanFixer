@@ -151,10 +151,21 @@ public static class Engine
         return false;
     }
 
+    private static DateTime _lastCycle = DateTime.MinValue;
+
     private static async Task Cycle(Link? lk, CancellationToken ct)
     {
         var name = lk?.Name ?? Net.Primary()?.Name;
         if (name == null) return;
+
+        // Anti-reset loop rate limiter: max 1 hardware cycle per 5 minutes
+        if ((DateTime.UtcNow - _lastCycle).TotalMinutes < 5)
+        {
+            Log.W($"Hardware cycle skipped for {name}: cooldown active to prevent USB reset loops.");
+            return;
+        }
+        _lastCycle = DateTime.UtcNow;
+
         Sh.Run("ipconfig", "/renew", name);
         if (await WaitIp(5, ct)) return;
 
@@ -213,6 +224,30 @@ public static class Engine
 
             // Apply route shield to prevent unauthenticated Ethernet from blocking working Wi-Fi
             Net.ApplyRouteShield(S, lk, p.s);
+
+            // Layer 2.5: Detect APIPA (169.254.x.x) or missing gateway from DHCP server timeouts
+            var eth = Net.GetEthernetLink();
+            if (eth != null && (Net.IsApipa(eth.Ip) || string.IsNullOrEmpty(eth.Gw)))
+            {
+                Log.W($"APIPA or missing gateway detected on {eth.Name} ({eth.Ip}). Engaging Campus Static Fallback...");
+                var fbMsg = await ApplyStaticFallbackAsync(eth.Name, ct: ct);
+                Log.W(fbMsg);
+                await Task.Delay(1500, ct);
+
+                lk = Net.Primary();
+                p = await Net.Probe(Bind(lk), ct);
+                Net.ApplyRouteShield(S, lk, p.s);
+                if (p.s == St.Online) return $"Repaired via Campus Static Fallback ({eth.Name}).";
+                if (p.s == St.Captive)
+                {
+                    var lm = await LoginCore(!auto, ct);
+                    if (lm.StartsWith("Signed in"))
+                    {
+                        Net.ApplyRouteShield(S, Net.Primary(), St.Online);
+                        return lm;
+                    }
+                }
+            }
 
             if (p.s == St.Online) return "Already online - connectivity verified.";
             if (p.s == St.Captive)
@@ -547,6 +582,84 @@ public static class Engine
 
     #endregion
 
+    #region Campus Static Fallback & DHCP Recovery
+
+    public static async Task<string> ApplyStaticFallbackAsync(
+        string? iface = null,
+        string? ip = null,
+        string? mask = null,
+        string? gw = null,
+        string? dns1 = null,
+        string? dns2 = null,
+        CancellationToken ct = default)
+    {
+        var lk = iface != null ? Net.AllActiveLinks().FirstOrDefault(l => l.Name.Equals(iface, StringComparison.OrdinalIgnoreCase)) : Net.GetEthernetLink() ?? Net.Primary();
+        string name = lk?.Name ?? iface ?? "Ethernet";
+        ip ??= "10.1.13.67";
+        mask ??= "255.255.252.0";
+        gw ??= "10.1.12.1";
+        dns1 ??= "172.16.1.2";
+        dns2 ??= "172.16.1.3";
+
+        var run = S.Begin("static-fallback");
+        try
+        {
+            Log.W($"Applying Campus Static Fallback on {name}: IP={ip}, Mask={mask}, GW={gw}, DNS={dns1},{dns2}");
+
+            // Set static IP and Gateway
+            var r1 = Sh.Run("netsh", "interface", "ipv4", "set", "address", $"name={name}", "static", ip, mask, gw, "1");
+            if (r1.code != 0) return $"Failed to set static IP: {r1.output}";
+
+            // Set DNS
+            Sh.Run("netsh", "interface", "ipv4", "set", "dns", $"name={name}", "static", dns1);
+            Sh.Run("netsh", "interface", "ipv4", "add", "dns", $"name={name}", dns2, "index=2");
+
+            // Prioritize Ethernet interface metric to 10
+            Sh.Run("powershell", "-NoProfile", "-Command", $"Set-NetIPInterface -InterfaceAlias '{name}' -InterfaceMetric 10 -ErrorAction SilentlyContinue; Set-NetIPInterface -InterfaceAlias 'Wi-Fi' -InterfaceMetric 25 -ErrorAction SilentlyContinue");
+
+            // Flush caches
+            Flush();
+
+            // Test Gateway
+            await Task.Delay(1000, ct);
+            int gwRtt = await Net.Rtt(gw, 1500);
+            string gwStatus = gwRtt >= 0 ? $"Gateway {gw} reached in {gwRtt}ms" : $"Gateway {gw} not responding yet";
+
+            return $"[OK] Campus Static Fallback applied to {name} ({ip}/{mask} -> {gw}). {gwStatus}.";
+        }
+        finally
+        {
+            S.End(run);
+        }
+    }
+
+    public static async Task<string> RevertToDhcpAsync(string? iface = null, CancellationToken ct = default)
+    {
+        var lk = iface != null ? Net.AllActiveLinks().FirstOrDefault(l => l.Name.Equals(iface, StringComparison.OrdinalIgnoreCase)) : Net.GetEthernetLink() ?? Net.Primary();
+        string name = lk?.Name ?? iface ?? "Ethernet";
+
+        var run = S.Begin("revert-dhcp");
+        try
+        {
+            Log.W($"Reverting {name} to automatic DHCP IP and DNS configuration...");
+            Sh.Run("netsh", "interface", "ipv4", "set", "address", $"name={name}", "dhcp");
+            Sh.Run("netsh", "interface", "ipv4", "set", "dns", $"name={name}", "dhcp");
+            Sh.Run("powershell", "-NoProfile", "-Command", $"Set-NetIPInterface -InterfaceAlias '{name}' -AutomaticMetric Enabled -ErrorAction SilentlyContinue");
+
+            Flush();
+            Sh.Run("ipconfig", "/renew", name);
+            await Task.Delay(2000, ct);
+
+            return $"[OK] {name} reverted to automatic DHCP. Sent DHCP renew request.";
+        }
+        finally
+        {
+            S.End(run);
+        }
+    }
+
+    #endregion
+
     public static async Task<string> Do(string cmd, CancellationToken ct = default)
     {
         if (!await Gate.WaitAsync(0, ct)) return "Busy: another operation is in progress.";
@@ -556,6 +669,8 @@ public static class Engine
             {
                 "repair" => await Heal(3, false, ct),
                 "auto" => await Heal(3, true, ct),
+                "fallback" => await ApplyStaticFallbackAsync(ct: ct),
+                "dhcp" => await RevertToDhcpAsync(ct: ct),
                 "reset" => await Reset(ct),
                 "rollback" => Rollback(),
                 "restore" => Restore(),

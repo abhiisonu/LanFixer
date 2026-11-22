@@ -18,6 +18,8 @@ static class Program
   bundle / report        Generate comprehensive sanitized diagnostic report bundle
   keepalive              Send session keep-alive refresh ping to prevent portal timeouts
   repair                 Escalating 3-tier repair (Flush -> DNS -> Adapter reset + Route Shield)
+  fallback               Apply campus static IP fallback (10.1.13.67/22 -> 10.1.12.1) when DHCP fails
+  dhcp                   Revert Ethernet adapter back to dynamic automatic DHCP
   reset [--yes]          Winsock/IP stack rebuild (System Restore point + netsh backup)
   rollback               Undo the last network change (with drift protection)
   restore [--yes]        Revert ALL changed parameters to baseline Windows settings
@@ -56,6 +58,8 @@ static class Program
                 case "cred": return Cred_(a);
                 case "tune": return Op(a.Length > 1 && a[1] == "2" ? "tune2" : "tune1");
                 case "repair" or "heal": return Op("repair");
+                case "fallback": return Op("fallback");
+                case "dhcp": return Op("dhcp");
                 case "reset" or "rollback" or "restore" or "login" or "audit":
                     if (c == "reset" && (N.Remote() || (!a.Contains("--yes") && !Ask("Rebuild the network stack (backup + restore point first, reboot required)? [y/N] ")))) return 1;
                     if (c == "restore" && (!a.Contains("--yes") && !Ask("Restore ALL changed settings to original Windows values? [y/N] "))) return 1;

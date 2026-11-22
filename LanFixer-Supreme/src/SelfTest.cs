@@ -246,6 +246,12 @@ public static class SelfTest
         T("Bundle: DiagnosticsBundle source-generated JSON round-trip",
             parsedBundle != null && parsedBundle.OptimalMtu == 1500 && parsedBundle.OsVersion == "Windows 11 Pro");
 
+        // --- APIPA & Campus Fallback Calculus Tests ---
+        T("APIPA: Net.IsApipa correctly classifies 169.254.x.x addresses",
+            Net.IsApipa("169.254.216.22") && !Net.IsApipa("10.1.13.67") && Net.IsApipa(""));
+        T("Fallback: Campus static IP math on 10.1.13.67/22 maps to gateway 10.1.12.1",
+            Net.IsSameSubnet("10.1.13.67", "10.1.12.1", 22));
+
         try { Directory.Delete(dir, true); } catch { }
     }
 

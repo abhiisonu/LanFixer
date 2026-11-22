@@ -231,6 +231,11 @@ public static class Net
             return new Link(n.Name, n.Id, ip, gw, n.NetworkInterfaceType == NetworkInterfaceType.Wireless80211);
         }).ToList();
 
+    public static bool IsApipa(string? ip) => string.IsNullOrWhiteSpace(ip) || ip.StartsWith("169.254.");
+
+    public static Link? GetEthernetLink() =>
+        AllActiveLinks().FirstOrDefault(l => !l.Wifi);
+
     public static string Fingerprint(Link? l) => l == null ? "" : l.Id + "|" + l.Gw;
 
     #region Dynamic Route Metric Shield (Ethernet vs Wi-Fi)
