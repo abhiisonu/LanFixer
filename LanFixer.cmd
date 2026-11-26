@@ -133,7 +133,7 @@ $script:LogFile   = Join-Path $script:StoreDir 'LanFixer.log'
 $script:StateFile = Join-Path $script:StoreDir 'state.clixml'
 $script:SelfCopy  = Join-Path $script:StoreDir $script:Cfg.SelfName
 $script:VaultFile = Join-Path $script:StoreDir 'vault.bin'
-$script:VirtRegex = 'Virtual|Hyper-V|VMware|VirtualBox|\bTAP\b|\bTUN\b|\bWSL\b|Bluetooth|Tailscale|ZeroTier|WireGuard|Wintun|RNDIS|Remote NDIS|Loopback|Npcap|OpenVPN|AnyConnect|Fortinet|PANGP'
+$script:VirtRegex = 'Virtual|Hyper-V|VMware|VirtualBox|\bTAP\b|\bTUN\b|\bWSL\b|Bluetooth|Tailscale|ZeroTier|WireGuard|Wintun|RNDIS|Remote NDIS|Loopback|Npcap|OpenVPN|AnyConnect|Fortinet|PANGP|\bWARP\b|Cloudflare|Wi-Fi Direct'
 $script:PowerKeywords = @('*EEE','EEE','EEELinkAdvertisement','EnableGreenEthernet','GreenEthernet','PowerSavingMode','AutoPowerSaveModeEnabled','ULPMode','EnableSavePowerNow','ReduceSpeedOnPowerDown','AdvancedEEE','GigaLite','*SelectiveSuspend','BatteryModeLinkSpeed','EnableBatteryModeLinkSpeed','EnableExtraPowerSaving','EnableAdaptiveLinkCap','*IdleRestriction','IdleRestriction','EnergyEfficientEthernet','AutoDisableGigabit','SavePowerNowLinkDown','ModernStandbyWoL')
 $script:StoreReady  = $false
 $script:StoreSecure = $false
@@ -7336,15 +7336,6 @@ function Repair-Dhcp($Ad, [switch]$ForceRelease) {
     $curIp = Get-ValidIPv4 $Ad -NoCache
     if ($ForceRelease -or -not $curIp -or $curIp -like '169.254*') {
         Write-Log 'INFO' "Releasing stale/APIPA lease on $($Ad.Name) before renew..."
-        if ($guid) {
-            try {
-                $ifKey = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$guid"
-                if (Test-Path -LiteralPath $ifKey) {
-                    Set-ItemProperty -LiteralPath $ifKey -Name 'DhcpConnForceBroadcastFlag' -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
-                    Set-ItemProperty -LiteralPath $ifKey -Name 'DhcpIPAddress' -Value '0.0.0.0' -ErrorAction SilentlyContinue
-                }
-            } catch {}
-        }
         Remove-NetNeighbor -InterfaceIndex $Ad.ifIndex -AddressFamily IPv4 -Confirm:$false -ErrorAction SilentlyContinue
         [void](Invoke-Native $ipconfig @('/release', $Ad.Name) 10000)
     }
