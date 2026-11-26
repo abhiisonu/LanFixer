@@ -1382,15 +1382,18 @@ function Invoke-Change {
         return $true
     }
     if ($script:IsDry) { Write-Log 'DRY' "Would: $Description"; return $true }
-    $ErrorActionPreference = 'Stop'
+    $prevEap = $ErrorActionPreference
     try {
+        $ErrorActionPreference = 'Stop'
         $out = @(& $Action)
         if ($FailOnFalse -and $out.Count -gt 0 -and $out[-1] -is [bool] -and -not $out[-1]) { throw 'the action reported failure' }
+        $ErrorActionPreference = $prevEap
         $script:ChangeCount++
         Write-Log 'OK' $Description
         if (-not $NoLedger) { Add-ChangeLedgerEntry -Description $Description -MutationType $MutationType -Target $Target -ValueName $ValueName -OldValue $OldValue -NewValue $NewValue -Success $true -Reversible ([bool]($Reversible -or $UndoScript)) -UndoScript $UndoScript }
         return $true
     } catch {
+        $ErrorActionPreference = $prevEap
         $script:FailCount++
         Write-Log 'FAIL' ("{0} -> {1}" -f $Description, $_.Exception.Message)
         if (-not $NoLedger) { Add-ChangeLedgerEntry -Description $Description -MutationType $MutationType -Target $Target -ValueName $ValueName -OldValue $OldValue -NewValue $NewValue -Success $false -Reversible $false }
@@ -1400,10 +1403,10 @@ function Invoke-Change {
 
 # CommandLineToArgvW-correct quoting (the v2 version broke on a trailing backslash inside quotes).
 function ConvertTo-ArgString([string[]]$Arguments) {
-    $parts = @()
+    $parts = New-Object 'System.Collections.Generic.List[string]'
     foreach ($a in @($Arguments)) {
         if ($null -eq $a) { $a = '' }
-        if ($a -ne '' -and $a -notmatch '[\s"]') { $parts += $a; continue }
+        if ($a -ne '' -and $a -notmatch '[\s"]') { [void]$parts.Add($a); continue }
         $sb = New-Object System.Text.StringBuilder
         [void]$sb.Append('"')
         $bs = 0
@@ -1414,7 +1417,7 @@ function ConvertTo-ArgString([string[]]$Arguments) {
         }
         if ($bs -gt 0) { [void]$sb.Append([char]92, ($bs * 2)) }
         [void]$sb.Append('"')
-        $parts += $sb.ToString()
+        [void]$parts.Add($sb.ToString())
     }
     return ($parts -join ' ')
 }
@@ -1559,13 +1562,13 @@ function Repair-StoreChildren([string]$Dir) {
             continue
         }
         if ($f.Name -eq $script:Cfg.SelfName) {
-            if (-not ($f.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            if (-not ($f.Attributes -band [IO.FileAttributes]::ReparsePoint) -and -not (Test-VaultAcl $f.FullName)) {
                 [void](Invoke-Native $icacls @($f.FullName, '/inheritance:r', '/grant:r', '*S-1-5-18:(F)', '*S-1-5-32-544:(F)', '/setowner', '*S-1-5-32-544', '/C', '/Q') 5000)
             }
             continue
         }
         if ($f.Name -eq 'integrity.json') {
-            if (-not ($f.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            if (-not ($f.Attributes -band [IO.FileAttributes]::ReparsePoint) -and -not (Test-StoreAcl $f.FullName)) {
                 [void](Protect-IntegrityFile $f.FullName)
             }
             continue
@@ -1703,7 +1706,7 @@ function Test-IsNitjsrNetwork {
                 $np = Get-NetConnectionProfile -InterfaceIndex $a.ifIndex -ErrorAction SilentlyContinue
                 if ($np -and $np.Name -match 'nitjsr') { $verdict = $true; break }
                 $ip4 = Get-ValidIPv4 $a
-                if ($ip4 -and $ip4 -notlike '192.168.*') { $anyPrivate10 = $true }
+                if ($ip4 -and ($ip4 -like '10.*' -or $ip4 -match '^172\.(1[6-9]|2\d|3[01])\.')) { $anyPrivate10 = $true }
             }
             if (-not $verdict -and $anyPrivate10 -and (Test-TcpPort ([string]$script:Cfg.PortalIp) ([int]$script:Cfg.PortalPort) 250)) {
                 $verdict = $true
@@ -1717,11 +1720,17 @@ function Test-IsNitjsrNetwork {
 function Test-PortSupportsTls([string]$Ip, [int]$Port, [int]$TimeoutMs = 600, [string]$SourceIp = '') {
     $sock = $null; $ssl = $null; $ns = $null; $iar = $null
     try {
-        $sock = New-Object System.Net.Sockets.Socket([System.Net.Sockets.AddressFamily]::InterNetwork, [System.Net.Sockets.SocketType]::Stream, [System.Net.Sockets.ProtocolType]::Tcp)
+        $dstAddr = [System.Net.IPAddress]::Parse($Ip)
+        $sock = New-Object System.Net.Sockets.Socket($dstAddr.AddressFamily, [System.Net.Sockets.SocketType]::Stream, [System.Net.Sockets.ProtocolType]::Tcp)
         if ($SourceIp) {
-            try { $sock.Bind((New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Parse($SourceIp), 0))) } catch {}
+            try {
+                $srcAddr = [System.Net.IPAddress]::Parse($SourceIp)
+                if ($srcAddr.AddressFamily -eq $dstAddr.AddressFamily) {
+                    $sock.Bind((New-Object System.Net.IPEndPoint($srcAddr, 0)))
+                }
+            } catch {}
         }
-        $iar = $sock.BeginConnect([System.Net.IPAddress]::Parse($Ip), $Port, $null, $null)
+        $iar = $sock.BeginConnect($dstAddr, $Port, $null, $null)
         if (-not $iar.AsyncWaitHandle.WaitOne($TimeoutMs, $false)) { return $false }
         $sock.EndConnect($iar)
         $ns = New-Object System.Net.Sockets.NetworkStream($sock, $false)
@@ -2029,12 +2038,17 @@ function Initialize-Store {
             }
         }
         if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force -ErrorAction Stop | Out-Null }
-        $icacls = Get-SysExe 'icacls.exe'
-        $r1 = Invoke-Native $icacls @($dir, '/setowner', '*S-1-5-32-544', '/C', '/Q')
-        $r2 = Invoke-Native $icacls @($dir, '/inheritance:r', '/grant:r', '*S-1-5-18:(OI)(CI)F', '/grant:r', '*S-1-5-32-544:(OI)(CI)F', '/grant:r', '*S-1-5-32-545:(OI)(CI)RX', '/C', '/Q')
+        $aclOkNow = Test-StoreAcl $dir
+        if ($aclOkNow) {
+            $script:StoreSecure = $true
+        } else {
+            $icacls = Get-SysExe 'icacls.exe'
+            $r1 = Invoke-Native $icacls @($dir, '/setowner', '*S-1-5-32-544', '/C', '/Q')
+            $r2 = Invoke-Native $icacls @($dir, '/inheritance:r', '/grant:r', '*S-1-5-18:(OI)(CI)F', '/grant:r', '*S-1-5-32-544:(OI)(CI)F', '/grant:r', '*S-1-5-32-545:(OI)(CI)RX', '/C', '/Q')
+            $script:StoreSecure = ($r1.ExitCode -eq 0 -and $r2.ExitCode -eq 0)
+        }
         Repair-StoreChildren $dir
         Import-UserConfig
-        $script:StoreSecure = ($r1.ExitCode -eq 0 -and $r2.ExitCode -eq 0)
         $script:StoreReady = $true
         try { $fi = Get-Item -LiteralPath $script:LogFile -ErrorAction Stop; if ($fi.Length -gt $script:Cfg.LogMaxBytes) { Move-Item -LiteralPath $script:LogFile -Destination ($script:LogFile + '.1') -Force } } catch {}
         if (-not $script:StoreSecure) { Write-Log 'WARN' 'Could not lock down the store folder ACL; the watchdog will refuse to install.' }
@@ -2045,11 +2059,9 @@ function Initialize-Store {
             $need = (-not $selfIsLink)
             if ($need -and (Test-Path -LiteralPath $script:SelfCopy)) {
                 try {
-                    $copyErrs = $null
-                    [void][System.Management.Automation.Language.Parser]::ParseFile($script:SelfCopy, [ref]$null, [ref]$copyErrs)
                     $h1 = Get-FileSha256 $script:SelfCopy
                     $h2 = Get-FileSha256 $script:SelfPath
-                    if ($h1 -and $h2 -and ($h1 -eq $h2) -and ($null -eq $copyErrs -or $copyErrs.Count -eq 0)) { $need = $false }
+                    if ($h1 -and $h2 -and ($h1 -eq $h2)) { $need = $false }
                 } catch {}
             }
             if ($need) {
@@ -2244,7 +2256,7 @@ function Test-InteractiveSessionActive {
             $meta = ConvertFrom-Json (Get-Content -LiteralPath $intFile -Raw -ErrorAction SilentlyContinue)
             if ($meta -and $meta.Pid -and ($meta.Pid -ne $PID)) {
                 $p = Get-Process -Id ([int]$meta.Pid) -ErrorAction SilentlyContinue
-                if ($p -and ($p.ProcessName -match 'powershell|cmd|LanFixer')) {
+                if ($p -and ($p.ProcessName -match '^(?:powershell|pwsh|cmd|LanFixer)$')) {
                     if ($meta.StartTime) {
                         try {
                             $mStart = [datetime]::Parse([string]$meta.StartTime, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
@@ -2284,18 +2296,24 @@ function Test-TcpPort([string]$Address, [int]$Port, [int]$TimeoutMs = 800, [stri
     $c = $null
     $iar = $null
     try {
-        if ($SourceIp -and $SourceIp -ne '0.0.0.0' -and $SourceIp -notlike '169.254.*') {
-            try {
-                $ep = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Parse($SourceIp), 0)
-                $c = New-Object System.Net.Sockets.TcpClient($ep)
-            } catch {
-                if ($c) { try { $c.Close() } catch {} }; $c = $null
+        $dstIpObj = $null
+        $srcIpObj = $null
+        $hasDst = [System.Net.IPAddress]::TryParse($Address, [ref]$dstIpObj)
+        if ($SourceIp -and $SourceIp -ne '0.0.0.0' -and $SourceIp -notlike '169.254.*' -and [System.Net.IPAddress]::TryParse($SourceIp, [ref]$srcIpObj)) {
+            if (-not $hasDst -or $srcIpObj.AddressFamily -eq $dstIpObj.AddressFamily) {
+                try {
+                    $ep = New-Object System.Net.IPEndPoint($srcIpObj, 0)
+                    $c = New-Object System.Net.Sockets.TcpClient($ep)
+                } catch {
+                    if ($c) { try { $c.Close() } catch {} }; $c = $null
+                }
             }
         }
         if (-not $c) {
-            $c = New-Object System.Net.Sockets.TcpClient
+            if ($hasDst) { $c = New-Object System.Net.Sockets.TcpClient($dstIpObj.AddressFamily) }
+            else { $c = New-Object System.Net.Sockets.TcpClient }
         }
-        $iar = $c.BeginConnect($Address, $Port, $null, $null)
+        $iar = if ($hasDst) { $c.BeginConnect($dstIpObj, $Port, $null, $null) } else { $c.BeginConnect($Address, $Port, $null, $null) }
         if ($iar.AsyncWaitHandle.WaitOne($TimeoutMs, $false) -and $c.Connected) { $c.EndConnect($iar); return $true }
         return $false
     } catch { return $false }
@@ -2519,30 +2537,34 @@ function Resolve-HostBounded([string]$Name, [int]$TimeoutMs = 2500, [string]$Sou
     }
     $ar = $null
     $ok = $false
+    $v6Cand = $null
     try {
         $ar = [System.Net.Dns]::BeginGetHostAddresses($cleanName, $null, $null)
         $ok = $ar.AsyncWaitHandle.WaitOne($TimeoutMs, $false)
         if ($ok) {
             $ips = [System.Net.Dns]::EndGetHostAddresses($ar)
             foreach ($ip in $ips) {
-                if ($ip.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork) {
-                    $s = $ip.ToString()
+                $s = $ip.ToString()
+                if (Test-IsSinkholeIp $s) { continue }
+                if ($ip.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork) { return $s }
+                elseif (-not $v6Cand -and $ip.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetworkV6) { $v6Cand = $s }
+            }
+            if ($v6Cand) { return $v6Cand }
+        }
+    } catch {} finally {
+        if ($ar -and $ar.AsyncWaitHandle) { try { $ar.AsyncWaitHandle.Close() } catch {} }
+    }
+    if (-not $ok) {
+        try {
+            $dnsRecs = @(Resolve-DnsName -Name $cleanName -Type A -QuickTimeout -DnsOnly -ErrorAction SilentlyContinue)
+            foreach ($rec in $dnsRecs) {
+                if ($rec -and $rec.IPAddress) {
+                    $s = [string]$rec.IPAddress
                     if (-not (Test-IsSinkholeIp $s)) { return $s }
                 }
             }
-        }
-    } catch {} finally {
-        if ($ok -and $ar -and $ar.AsyncWaitHandle) { try { $ar.AsyncWaitHandle.Close() } catch {} }
+        } catch {}
     }
-    try {
-        $dnsRecs = @(Resolve-DnsName -Name $cleanName -Type A -QuickTimeout -DnsOnly -ErrorAction SilentlyContinue)
-        foreach ($rec in $dnsRecs) {
-            if ($rec -and $rec.IPAddress) {
-                $s = [string]$rec.IPAddress
-                if (-not (Test-IsSinkholeIp $s)) { return $s }
-            }
-        }
-    } catch {}
     return $null
 }
 # Pure (unit-tested): the absolute http(s) URL a captive page redirects to with <meta refresh> or JavaScript, else ''.
@@ -2603,12 +2625,18 @@ function Invoke-HttpProbe([string]$HostName, [string]$Path, [int]$TimeoutMs = 25
     $ip = Resolve-HostBounded $HostName 2200 $SourceIp
     if (-not $ip) { $r.Error = 'DnsFail'; return $r }
     $iar = $null
-    $sock = New-Object System.Net.Sockets.Socket([System.Net.Sockets.AddressFamily]::InterNetwork, [System.Net.Sockets.SocketType]::Stream, [System.Net.Sockets.ProtocolType]::Tcp)
+    $dstAddr = [System.Net.IPAddress]::Parse($ip)
+    $sock = New-Object System.Net.Sockets.Socket($dstAddr.AddressFamily, [System.Net.Sockets.SocketType]::Stream, [System.Net.Sockets.ProtocolType]::Tcp)
     try {
         if ($SourceIp) {
-            try { $sock.Bind((New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Parse($SourceIp), 0))) } catch { $r.Error = 'BindFailure'; return $r }
+            try {
+                $srcAddr = [System.Net.IPAddress]::Parse($SourceIp)
+                if ($srcAddr.AddressFamily -eq $dstAddr.AddressFamily) {
+                    $sock.Bind((New-Object System.Net.IPEndPoint($srcAddr, 0)))
+                }
+            } catch { $r.Error = 'BindFailure'; return $r }
         }
-        $iar = $sock.BeginConnect([System.Net.IPAddress]::Parse($ip), $Port, $null, $null)
+        $iar = $sock.BeginConnect($dstAddr, $Port, $null, $null)
         $connected = $iar.AsyncWaitHandle.WaitOne($TimeoutMs, $false)
         if (-not $connected) { $r.Error = 'Timeout'; return $r }
         try { $sock.EndConnect($iar) } catch { $r.Error = 'ConnectFailure'; return $r }
@@ -2669,7 +2697,7 @@ function Get-AllWirelessAdapters {
     return @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object {
         $ethGuids -notcontains [string]$_.InterfaceGuid -and
         ($_.InterfaceAlias -match 'Wi-?Fi|Wireless|WLAN' -or $_.InterfaceDescription -match 'Wi-?Fi|Wireless|802\.11|WLAN') -and
-        $_.InterfaceDescription -notmatch 'Virtual|Hyper-V|VMware|VirtualBox|\bTAP\b|\bTUN\b|\bWSL\b|Tailscale|ZeroTier|WireGuard|Wintun|Loopback|Npcap|OpenVPN|AnyConnect|Fortinet|PANGP|WARP|Wi-Fi Direct'
+        $_.InterfaceDescription -notmatch $script:VirtRegex
     })
 }
 $script:OtherUplinksCache = $null
@@ -2683,7 +2711,7 @@ function Get-OtherUplinkAdapters([switch]$NoCache) {
     $candidates = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object {
         $_.Status -eq 'Up' -and
         $ethGuids -notcontains [string]$_.InterfaceGuid -and
-        $_.InterfaceDescription -notmatch 'Virtual|Hyper-V|VMware|VirtualBox|\bTAP\b|\bTUN\b|\bWSL\b|Tailscale|ZeroTier|WireGuard|Wintun|Loopback|Npcap|OpenVPN|AnyConnect|Fortinet|PANGP|WARP|Wi-Fi Direct'
+        $_.InterfaceDescription -notmatch $script:VirtRegex
     })
     $valid = @()
     foreach ($c in $candidates) {
@@ -3047,11 +3075,17 @@ function Invoke-TlsHttp {
         if ([System.Net.IPAddress]::TryParse($hostName, [ref]$tmp)) { $ip = $hostName } else { $ip = Resolve-HostBounded $hostName 2500 $SourceIp }
         if (-not $ip) { $r.Error = 'DnsFail'; return $r }
         if (-not (Test-AllowedPortalIp $ip)) { $r.Error = 'NotPrivate'; return $r }
-        $sock = New-Object System.Net.Sockets.Socket([System.Net.Sockets.AddressFamily]::InterNetwork, [System.Net.Sockets.SocketType]::Stream, [System.Net.Sockets.ProtocolType]::Tcp)
+        $dstAddr = [System.Net.IPAddress]::Parse($ip)
+        $sock = New-Object System.Net.Sockets.Socket($dstAddr.AddressFamily, [System.Net.Sockets.SocketType]::Stream, [System.Net.Sockets.ProtocolType]::Tcp)
         if ($SourceIp) {
-            try { $sock.Bind((New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Parse($SourceIp), 0))) } catch { $r.Error = 'BindFailure'; return $r }
+            try {
+                $srcAddr = [System.Net.IPAddress]::Parse($SourceIp)
+                if ($srcAddr.AddressFamily -eq $dstAddr.AddressFamily) {
+                    $sock.Bind((New-Object System.Net.IPEndPoint($srcAddr, 0)))
+                }
+            } catch { $r.Error = 'BindFailure'; return $r }
         }
-        $iar = $sock.BeginConnect([System.Net.IPAddress]::Parse($ip), [int]$Uri.Port, $null, $null)
+        $iar = $sock.BeginConnect($dstAddr, [int]$Uri.Port, $null, $null)
         $connected = $iar.AsyncWaitHandle.WaitOne($TimeoutMs, $false)
         if (-not $connected) {
             try { $sock.Close() } catch {}
@@ -3109,7 +3143,10 @@ function Invoke-TlsHttp {
                 if ($headerEndIdx -gt 0) {
                     $hStr = [System.Text.Encoding]::ASCII.GetString($curBuf, 0, $headerEndIdx)
                     $mCl = [regex]::Match($hStr, '(?i)Content-Length:\s*(\d+)')
-                    if ($mCl.Success) { $contentLength = [int]$mCl.Groups[1].Value }
+                    if ($mCl.Success) {
+                        $clVal = 0L
+                        if ([int64]::TryParse($mCl.Groups[1].Value, [ref]$clVal) -and $clVal -ge 0) { $contentLength = $clVal }
+                    }
                     elseif ($hStr -match '^HTTP/\d\.\d\s+(30[12378]|204)\b') { $contentLength = 0 }
                     if ($hStr -match '(?i)Transfer-Encoding:\s*chunked') { $isChunked = $true }
                 }
@@ -3232,6 +3269,7 @@ function ConvertFrom-LoginForm([string]$Html, [uri]$PageUri) {
 # CREDENTIAL VAULT (machine-bound DPAPI + admin-only ACL, re-verified on every run) AND AUTO-LOGIN
 function Test-AclSidsOnly($Rules, [string[]]$Allowed) {
     foreach ($r in @($Rules)) {
+        if ($r.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Deny) { return $false }
         if ($Allowed -notcontains [string]$r.IdentityReference.Value) { return $false }
     }
     return $true
@@ -6064,7 +6102,8 @@ function Get-IpConflictInfo($Ad, [string]$Ip) {
     }
     if (-not $out.Conflict -and $Ad -and $Ad.ifIndex) {
         try {
-            $nb = Get-NetNeighbor -InterfaceIndex $Ad.ifIndex -IPAddress $Ip -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -First 1
+            $nb = Get-NetNeighbor -InterfaceIndex $Ad.ifIndex -IPAddress $Ip -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+                Where-Object { [string]$_.State -ne 'Stale' -and [string]$_.State -ne 'Unreachable' } | Select-Object -First 1
             if ($nb -and $nb.LinkLayerAddress) {
                 $nbMac = ([string]$nb.LinkLayerAddress).Replace(':', '-').ToUpperInvariant()
                 if ($nbMac -ne '00-00-00-00-00-00' -and $nbMac -ne 'FF-FF-FF-FF-FF-FF' -and $selfMac -and $nbMac -ne $selfMac) {
@@ -6095,7 +6134,10 @@ function Get-IpConflictInfo($Ad, [string]$Ip) {
     }
     if (-not $out.Conflict) {
         try {
-            $ev4199 = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Tcpip'; Id = 4199; StartTime = (Get-Date).AddMinutes(-15) } -MaxEvents 8 -ErrorAction SilentlyContinue)
+            $evStart = (Get-Date).AddMinutes(-15)
+            $lastRep = Get-StateTime 'LastDhcpRepair'
+            if ($lastRep -and $lastRep -gt $evStart) { $evStart = $lastRep }
+            $ev4199 = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Tcpip'; Id = 4199; StartTime = $evStart } -MaxEvents 8 -ErrorAction SilentlyContinue)
             foreach ($ev in $ev4199) {
                 $msg = [string]$ev.Message
                 if ($msg -match ([regex]::Escape($Ip) + '\b')) {
@@ -6176,15 +6218,16 @@ function Find-FreeSubnetIp {
         [string]$BaseIp,
         [int]$PrefixLength = 24,
         [string]$Gateway = '',
-        [string[]]$ExcludeIps = @()
+        [string[]]$ExcludeIps = @(),
+        [string]$SourceIp = ''
     )
     $bad = Get-RecentConflictedIps 30
     $allExcl = @($ExcludeIps) + @($bad)
     $cands = @(Get-FreeSubnetCandidates -BaseIp $BaseIp -PrefixLength $PrefixLength -Gateway $Gateway -ExcludeIps $allExcl -Count 14)
     foreach ($c in $cands) {
-        if (-not (Test-ActiveArp $c '' '')) {
+        if (-not (Test-ActiveArp $c '' $SourceIp)) {
             $rt = $null
-            try { $rt = Test-Ping $c 120 } catch {}
+            if ($SourceIp) { try { $rt = Test-Ping $c 120 } catch {} }
             if ($null -eq $rt) { return $c }
         }
     }
@@ -6257,7 +6300,7 @@ function Invoke-CampusStaticRescue($Ad, [string]$ConflictedIp = '') {
             if ($null -eq $rtGw) { return $false }
         }
     }
-    $freeIp = Find-FreeSubnetIp -BaseIp $hint.BaseIp -PrefixLength $hint.PrefixLength -Gateway $hint.Gateway -ExcludeIps @($ConflictedIp)
+    $freeIp = Find-FreeSubnetIp -BaseIp $hint.BaseIp -PrefixLength $hint.PrefixLength -Gateway $hint.Gateway -ExcludeIps @($ConflictedIp) -SourceIp $curValidIp
     if (-not $freeIp) { return $false }
 
     $guid = [string]$Ad.InterfaceGuid
@@ -6266,6 +6309,9 @@ function Invoke-CampusStaticRescue($Ad, [string]$ConflictedIp = '') {
     $dnsList = @($hint.Dns | Where-Object { $_ } | Select-Object -Unique)
     if ($dnsList.Count -eq 0) { $dnsList = @('1.1.1.1', '9.9.9.9') }
 
+    if ($guid -and -not $script:IsDry) {
+        Save-Original $guid 'DnsStatic' (Get-StaticDnsString $guid)
+    }
     $undoStatic = "Remove-NetIPAddress -InterfaceIndex $($Ad.ifIndex) -AddressFamily IPv4 -Confirm:`$false -ErrorAction SilentlyContinue; Set-NetIPInterface -InterfaceIndex $($Ad.ifIndex) -AddressFamily IPv4 -Dhcp Enabled -ErrorAction SilentlyContinue; Set-DnsClientServerAddress -InterfaceIndex $($Ad.ifIndex) -ResetServerAddresses -ErrorAction SilentlyContinue"
     $ok = Invoke-Change ("Campus conflict/DHCP static rescue on $($Ad.Name): $freeIp/$pfx GW $gwS") {
         Remove-NetIPAddress -InterfaceIndex $Ad.ifIndex -AddressFamily IPv4 -Confirm:$false -ErrorAction SilentlyContinue
@@ -6280,7 +6326,12 @@ function Invoke-CampusStaticRescue($Ad, [string]$ConflictedIp = '') {
         Flush-InMemoryNetCaches
         $ga = Test-GatewayAlive $Ad $gwS
         if ($ga.Alive) {
-            if ($guid) { Save-Original $guid 'StaticRescueIp' "$freeIp/$pfx" }
+            if ($guid) {
+                Save-Original $guid 'StaticRescueIp' "$freeIp/$pfx"
+                $dSub = Get-SubTable 'Dns' $guid
+                $dSub.Managed = $true
+                $dSub.Phase = 'Campus'
+            }
             Write-Log 'OK' ("Campus static rescue verified on {0}: {1}/{2} -> gateway {3} alive ({4})." -f $Ad.Name, $freeIp, $pfx, $gwS, $ga.Via)
             return $true
         }
@@ -7281,7 +7332,8 @@ function Wait-StpConvergence($Ad, [int]$MaxWaitSec = 45) {
         if ($curAd -and $curAd.Status -eq 'Up') {
             $ip = Get-ValidIPv4 $curAd -NoCache
             $hasV6 = @(Get-NetIPAddress -InterfaceIndex $curAd.ifIndex -AddressFamily IPv6 -ErrorAction SilentlyContinue | Where-Object { [string]$_.AddressState -eq 'Preferred' -and [string]$_.IPAddress -notmatch '^(fe80|::1)' }).Count -gt 0
-            if ($ip -or $hasV6) {
+            $hasV6Route = if ($hasV6) { @(Get-NetRoute -InterfaceIndex $curAd.ifIndex -DestinationPrefix '::/0' -AddressFamily IPv6 -ErrorAction SilentlyContinue | Where-Object { $_.NextHop -and $_.NextHop -ne '::' }).Count -gt 0 } else { $false }
+            if ($ip -or ($hasV6 -and $hasV6Route)) {
                 $gw = @(Get-GatewaysV4 $curAd) | Select-Object -First 1
                 if ($gw) {
                     $chk = Test-GatewayAlive $curAd $gw
@@ -7345,7 +7397,7 @@ function Repair-Dhcp($Ad, [switch]$ForceRelease) {
     if ($r.ExitCode -eq 0) { Write-Log 'OK' "DHCP renew completed on $($Ad.Name)" }
     for ($i = 0; $i -lt 12; $i++) {
         $script:Ip4Cache.Remove([string]$Ad.ifIndex); $script:Gw4Cache.Remove([string]$Ad.ifIndex)
-        if ($(if ($ForceRelease) { Test-DhcpLeaseUsable $Ad } else { [bool](Get-ValidIPv4 $Ad -NoCache) })) { Write-Log 'OK' 'Lease acquired.'; return $true }
+        if ($(if ($ForceRelease) { Test-DhcpLeaseUsable $Ad } else { [bool](Get-ValidIPv4 $Ad -NoCache) })) { Set-StateTime 'LastDhcpRepair'; Write-Log 'OK' 'Lease acquired.'; return $true }
         Start-Sleep -Milliseconds 500
     }
     # Step 2: link reset with STP convergence
@@ -7358,7 +7410,8 @@ function Repair-Dhcp($Ad, [switch]$ForceRelease) {
             $freshAd = Get-NetAdapter -Name $Ad.Name -ErrorAction SilentlyContinue
             if ($freshAd) { $Ad = $freshAd }
         }
-        if (Get-ValidIPv4 $Ad -NoCache) { Write-Log 'OK' 'Lease acquired after link reset.'; return $true }
+        $script:Ip4Cache.Remove([string]$Ad.ifIndex); $script:Gw4Cache.Remove([string]$Ad.ifIndex)
+        if ($(if ($ForceRelease) { Test-DhcpLeaseUsable $Ad } else { [bool](Get-ValidIPv4 $Ad -NoCache) })) { Set-StateTime 'LastDhcpRepair'; Write-Log 'OK' 'Lease acquired after link reset.'; return $true }
         Start-Sleep -Milliseconds 500
     }
     # Step 3: DHCP stack unfreeze and release/renew
@@ -7379,9 +7432,11 @@ function Repair-Dhcp($Ad, [switch]$ForceRelease) {
             Start-Service -Name WlanSvc -ErrorAction SilentlyContinue
             Start-Service -Name Wcmsvc -ErrorAction SilentlyContinue
             Start-Service -Name iphlpsvc -ErrorAction SilentlyContinue
+            Start-Service -Name WinHttpAutoProxySvc -ErrorAction SilentlyContinue
             Start-Service -Name NlaSvc -ErrorAction SilentlyContinue
             Start-Service -Name netprofm -ErrorAction SilentlyContinue
         }
+        Start-Sleep -Milliseconds 400
         [void](Invoke-Native $ipconfig @('/release', $Ad.Name) 10000)
         $r = Invoke-Native $ipconfig @('/renew', $Ad.Name) 25000
         if ($r.TimedOut) { throw 'ipconfig /renew timed out' }
@@ -7392,7 +7447,8 @@ function Repair-Dhcp($Ad, [switch]$ForceRelease) {
             $freshAd = Get-NetAdapter -Name $Ad.Name -ErrorAction SilentlyContinue
             if ($freshAd) { $Ad = $freshAd }
         }
-        if (Get-ValidIPv4 $Ad -NoCache) { Write-Log 'OK' 'Lease acquired after release/renew.'; return $true }
+        $script:Ip4Cache.Remove([string]$Ad.ifIndex); $script:Gw4Cache.Remove([string]$Ad.ifIndex)
+        if ($(if ($ForceRelease) { Test-DhcpLeaseUsable $Ad } else { [bool](Get-ValidIPv4 $Ad -NoCache) })) { Set-StateTime 'LastDhcpRepair'; Write-Log 'OK' 'Lease acquired after release/renew.'; return $true }
         Start-Sleep -Milliseconds 500
     }
     Write-Log 'ALERT' 'DHCP still not answering.'
@@ -7521,6 +7577,7 @@ function Shield-DataLink($Ctx) {
     # [V11_L2_SOVEREIGN_START]
     $sdAd = if ($Ctx -is [hashtable] -and $Ctx.Ad) { $Ctx.Ad } else { $Ctx }
     $sdEnv = if ($Ctx -is [hashtable] -and $Ctx.Env) { $Ctx.Env } else { $null }
+    $preRescued = $false
     if ($sdAd -and $sdAd.Status -eq 'Up' -and $script:IsAdmin -and -not $script:IsDry -and -not $script:IsPlan) {
         Ensure-NcsiAndDohHealthy
         [void](Exorcise-IcsHijack $sdAd)
@@ -7535,8 +7592,8 @@ function Shield-DataLink($Ctx) {
                 Flush-InMemoryNetCaches
                 if ($sdEnv -and $sdEnv.Env -eq 'Campus') {
                     if (Invoke-CampusStaticRescue $sdAd $curLiveIp) {
+                        $preRescued = $true
                         if ($Ctx -is [hashtable]) { $Ctx.Repaired = $true }
-                        return $true
                     }
                 }
             }
@@ -7580,8 +7637,8 @@ function Shield-DataLink($Ctx) {
             }
         } else { Write-Log 'INFO' 'Environment unknown: leaving duplicate-address settings untouched.' }
     }
-    $Ctx.Repaired = $false
-    if ($ipif -and [string]$ipif.Dhcp -eq 'Disabled') {
+    $Ctx.Repaired = $preRescued
+    if (-not $preRescued -and $ipif -and [string]$ipif.Dhcp -eq 'Disabled') {
         if (Exorcise-IcsHijack $ad) {
             $Ctx.Repaired = (Repair-Dhcp $ad -ForceRelease)
             $fresh = Get-NetAdapter -Name $ad.Name -ErrorAction SilentlyContinue; if ($fresh) { $ad = $fresh; $Ctx.Ad = $fresh }
@@ -7590,7 +7647,7 @@ function Shield-DataLink($Ctx) {
             $ipif = Get-IPv4Interface $ad
         }
     }
-    if ($ipif -and [string]$ipif.Dhcp -eq 'Disabled') {
+    if (-not $preRescued -and $ipif -and [string]$ipif.Dhcp -eq 'Disabled') {
         $stGw = @(Get-GatewaysV4 $ad) | Select-Object -First 1
         $stAlive = $false
         if ($stGw) {
@@ -7618,7 +7675,7 @@ function Shield-DataLink($Ctx) {
                 Set-NetIPInterface -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -Dhcp Enabled -ErrorAction Stop
             })
             $Ctx.Repaired = (Repair-Dhcp $ad)
-            if (-not $Ctx.Repaired -and $origIpInfo -and -not (Get-ValidIPv4 $ad)) {
+            if (-not $Ctx.Repaired -and $origIpInfo -and -not (Get-ValidIPv4 $ad -NoCache)) {
                 Write-Log 'WARN' "DHCP failed to acquire lease on $($ad.Name); rolling back to static IP $($origIpInfo.IPAddress)..."
                 [void](Invoke-Change "Rollback to static IP on $($ad.Name)" {
                     Set-NetIPInterface -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -Dhcp Disabled -ErrorAction Stop
@@ -7957,7 +8014,8 @@ function Shield-PathMtu($Ctx, [string]$ConnState) {
         if ($snap.ContainsKey('Mtu')) {
             $orig = [int]$snap['Mtu']
             $ipif = Get-IPv4Interface $ad
-            if ($ipif -and [int]$ipif.NlMtu -ne $orig -and ($ConnState -ne 'Online' -or (Get-PathMtuForAdapter $ad) -ge $orig)) {
+            $pmCur = if ($ConnState -eq 'Online') { Get-PathMtuForAdapter $ad } else { $null }
+            if ($ipif -and [int]$ipif.NlMtu -ne $orig -and ($ConnState -ne 'Online' -or $null -eq $pmCur -or $pmCur -ge $orig)) {
                 [void](Invoke-Change "Non-campus network supports full frame size: restoring MTU to $orig on $($ad.Name)" {
                     Set-NetIPInterface -InterfaceIndex $ad.ifIndex -AddressFamily IPv4 -NlMtuBytes $orig -ErrorAction Stop
                     Set-NetIPInterface -InterfaceIndex $ad.ifIndex -AddressFamily IPv6 -NlMtuBytes ([Math]::Max(1280, $orig)) -ErrorAction SilentlyContinue
@@ -8361,12 +8419,14 @@ function Set-CampusNrpt([string[]]$Servers, [bool]$HomeNet = $true) {
     if ($HomeNet) { $domains = @($script:Cfg.CampusDomain) }
     $discDom = [string]$script:State.Misc['DiscoveredDomain']
     if ($discDom -and $domains -notcontains $discDom) { $domains += $discDom }
-    try {
-        $suffixes = @(Get-DnsClientGlobalSetting -ErrorAction SilentlyContinue).SuffixSearchList
-        foreach ($sfx in $suffixes) {
-            if ($sfx -and $sfx -notmatch 'local|internal' -and $domains -notcontains $sfx) { $domains += $sfx }
-        }
-    } catch {}
+    if ($HomeNet) {
+        try {
+            $suffixes = @(Get-DnsClientGlobalSetting -ErrorAction SilentlyContinue).SuffixSearchList
+            foreach ($sfx in $suffixes) {
+                if ($sfx -and $sfx -notmatch '^(local|internal|corp|home|lan|arpa)$' -and $domains -notcontains $sfx) { $domains += $sfx }
+            }
+        } catch {}
+    }
     $wantNs = @()
     foreach ($dm in @($domains | Where-Object { $_ } | Select-Object -Unique)) {
         $wantNs += ('.' + $dm)
@@ -8666,7 +8726,20 @@ function Invoke-RoamingCleanup {
     Restore-Ipv6PrecedenceIfManaged 'Left campus: IPv6 prefix policy restored'
     if (Test-MetricsManaged) { Restore-InterfaceMetrics 'Left campus' }
     [void](Restore-ManagedAdapterDns 'Left campus')
-    foreach ($ea in @(Get-EthernetAdapters)) { Restore-Ipv6IfNeutralized $ea }
+    foreach ($ea in @(Get-EthernetAdapters)) {
+        Restore-Ipv6IfNeutralized $ea
+        $eaSnap = Get-SubTable 'Snapshot' ([string]$ea.InterfaceGuid)
+        if ($eaSnap.ContainsKey('Mtu')) {
+            $origMtu = [int]$eaSnap['Mtu']
+            $eaIpIf = Get-IPv4Interface $ea
+            if ($eaIpIf -and [int]$eaIpIf.NlMtu -ne $origMtu) {
+                [void](Invoke-Change "Left campus: restoring MTU to $origMtu on $($ea.Name)" {
+                    Set-NetIPInterface -InterfaceIndex $ea.ifIndex -AddressFamily IPv4 -NlMtuBytes $origMtu -ErrorAction Stop
+                    Set-NetIPInterface -InterfaceIndex $ea.ifIndex -AddressFamily IPv6 -NlMtuBytes ([Math]::Max(1280, $origMtu)) -ErrorAction SilentlyContinue
+                })
+            }
+        }
+    }
     Restore-NeutralizedInterceptors 'Left campus'
     if (-not $script:IsDry -and $script:State -is [hashtable] -and $script:State.Misc -is [hashtable]) {
         foreach ($dk in @('DiscoveredPortalUrl', 'DiscoveredPortalIp', 'DiscoveredDomain', 'DiscoveredPortalPort', 'DiscoveryTime')) {
@@ -9101,11 +9174,12 @@ function Shield-SystemStack([switch]$Aggressive) {
     } elseif (-not $hasA) {
         $ethUps = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })
         $stackSrc = if ($ethUps.Count -gt 0) { Get-ValidIPv4 $ethUps[0] } else { '' }
+        $isCaptiveNow = if ($stackSrc) { ((Get-InternetState -SourceIp $stackSrc).State -eq 'Captive') } else { $false }
         $rawDns = Measure-ResolversFast @('8.8.8.8','1.1.1.1') 400 53 $stackSrc
         $rawNet = (Test-TcpPort '8.8.8.8' 53 600 $stackSrc) -or (Test-TcpPort '1.1.1.1' 443 600 $stackSrc)
-        if (@($rawDns.Values | Where-Object { $null -ne $_ }).Count -gt 0 -or $rawNet -or $Aggressive) {
+        if (-not $isCaptiveNow -and (@($rawDns.Values | Where-Object { $null -ne $_ }).Count -gt 0 -or $rawNet)) {
             $dnsBroken = $true
-            $dnsEvidence = if ($Aggressive) { 'system resolver failed during aggressive remediation' } else { 'system resolver failed while raw IPv4 internet (8.8.8.8 / 1.1.1.1) is alive' }
+            $dnsEvidence = 'system resolver failed while raw IPv4 internet (8.8.8.8 / 1.1.1.1) is alive'
         }
     }
     if ($dnsBroken) {
@@ -9425,8 +9499,8 @@ function Complete-ResetJournal([bool]$Success = $true) {
                 } catch {
                     Add-Member -InputObject $jObj -NotePropertyName 'CompletedTime' -NotePropertyValue ((Get-Date).ToString('o')) -Force
                 }
-                $json = ConvertTo-Json $jObj
-                Set-Content -LiteralPath $jPath -Value $json -Encoding ASCII -Force
+                $json = ConvertTo-Json $jObj -Depth 4
+                Write-AtomicJsonFile $jPath $json
             }
         }
     } catch {}
@@ -9528,6 +9602,7 @@ function Restore-WlanProfiles {
             }
             if ($xmlFiles.Count -gt 0) {
                 Write-Log 'OK' ("Restored {0} Wi-Fi profiles from backup." -f $xmlFiles.Count)
+                foreach ($xf in $xmlFiles) { Remove-Item -LiteralPath $xf.FullName -Force -ErrorAction SilentlyContinue }
             }
         }
     } catch {
@@ -9539,12 +9614,13 @@ function Backup-FirewallBaseline {
     if ($script:IsDry) { Write-Log 'DRY' 'Would backup Windows Firewall rules'; return }
     try {
         $fwFile = Join-Path $script:StoreDir 'firewall_pre_reset.wfw'
-        if (-not (Test-Path -LiteralPath $fwFile)) {
-            $netsh = Get-SysExe 'netsh.exe'
-            [void](Invoke-Native $netsh @('advfirewall', 'export', $fwFile) 8000)
-            if (Test-Path -LiteralPath $fwFile) {
-                Write-Log 'OK' 'Windows Firewall policy backed up.'
-            }
+        $fwTmp = $fwFile + '.tmp'
+        Remove-Item -LiteralPath $fwTmp -Force -ErrorAction SilentlyContinue
+        $netsh = Get-SysExe 'netsh.exe'
+        [void](Invoke-Native $netsh @('advfirewall', 'export', $fwTmp) 8000)
+        if (Test-Path -LiteralPath $fwTmp) {
+            Move-Item -LiteralPath $fwTmp -Destination $fwFile -Force -ErrorAction Stop
+            Write-Log 'OK' 'Windows Firewall policy backed up.'
         }
     } catch {
         Write-Log 'WARN' ("Failed to backup Windows Firewall: {0}" -f $_.Exception.Message)
@@ -9646,8 +9722,8 @@ function Test-ResetPreconditions([string]$Tier, [switch]$Confirmed) {
         return $false
     }
     $isConfirmRemote = if ($script:ConfirmRemoteDisconnect) { $true } elseif (Get-Variable -Name 'ConfirmRemoteDisconnect' -Scope 1 -ErrorAction SilentlyContinue) { [bool]$ConfirmRemoteDisconnect } else { $false }
-    if ($Tier -eq 'Armageddon' -and (Test-RemoteSession) -and -not $isConfirmRemote) {
-        Write-Log 'ALERT' 'CRITICAL: ARMAGEDDON RESET (netcfg -d) uninstalls all network adapters and WILL PERMANENTLY SEVER this remote session until a physical machine reboot! Pass -ConfirmRemoteDisconnect along with -Force to execute.'
+    if ($Tier -in @('Ultra', 'Doomsday', 'Armageddon') -and (Test-RemoteSession) -and -not $isConfirmRemote) {
+        Write-Log 'ALERT' ("CRITICAL: {0} RESET modifies routing/firewall/adapters over an active remote session and can sever connectivity! Pass -ConfirmRemoteDisconnect along with -Force to execute." -f $Tier.ToUpperInvariant())
         return $false
     }
 
@@ -9685,7 +9761,7 @@ function Test-ResetPreconditions([string]$Tier, [switch]$Confirmed) {
     }
 
     # CLI / Interactive Confirmation
-    if (-not $Confirmed -and -not $Force -and -not $script:IsDry) {
+    if (-not $Confirmed -and -not $isForce -and -not $script:IsDry) {
         $blastSummary = switch ($Tier) {
             'Omnifix'    { '5-stage live stack reset (Winsock, TCP/IP, ARP, DNS, DHCP renewed, services bounced).' }
             'Ultra'      { '10-stage nuclear reset (Dual 64/32-bit Winsock, TCP/IP stack, routing table, firewall, NLA profiles).' }
@@ -11369,9 +11445,9 @@ function Invoke-HealPipeline([switch]$SkipSystemStack) {
     Invoke-LegacyMigration
     $script:WatchdogOn = Test-WatchdogInstalled
     Update-WatchdogIfStale
-    if (@(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' }).Count -eq 0) { Invoke-RoamingCleanup }
-    if (-not $SkipSystemStack) { Shield-SystemStack }
     $ads = @(Get-EthernetAdapters)
+    if (@($ads | Where-Object { $_.Status -eq 'Up' }).Count -eq 0) { Invoke-RoamingCleanup }
+    if (-not $SkipSystemStack) { Shield-SystemStack }
     if ($ads.Count -gt 0) {
         $anyUp = @($ads | Where-Object { $_.Status -eq 'Up' }).Count -gt 0
         $didEnable = $false
@@ -11400,7 +11476,10 @@ function Invoke-HealPipeline([switch]$SkipSystemStack) {
         }
         if ($didHwRestart) { Start-Sleep -Milliseconds 600; $ads = @(Get-EthernetAdapters) }
     }
-    Wait-LinkSettling $(if ($didHwRestart) { ([int]$script:Cfg.StpMaxSec * 1000) } else { 12000 })
+    $anyEthUpOrConn = @($ads | Where-Object { $_.Status -eq 'Up' -or $_.MediaConnectionState -eq 'Connected' }).Count -gt 0
+    if ($didHwRestart -or $anyEthUpOrConn) {
+        Wait-LinkSettling $(if ($didHwRestart) { ([int]$script:Cfg.StpMaxSec * 1000) } else { 12000 })
+    }
     $ups = @(Get-EthernetAdapters | Where-Object { $_.Status -eq 'Up' })
     if ($ups.Count -eq 0) {
         $wirelessUps = @(@(Get-OtherUplinkAdapters) + @(Get-AllWirelessAdapters) | Where-Object { $_.Status -eq 'Up' } | Sort-Object ifIndex -Unique)
@@ -11632,8 +11711,7 @@ function Get-PortalCredentials {
         }
         $entropyList = @(
             (Get-VaultEntropy),
-            [System.Text.Encoding]::UTF8.GetBytes("LanFixer_SecureEntropy_2026_$mGuid"),
-            [System.Text.Encoding]::UTF8.GetBytes("LanFixer_NITJSR_AS_SecureEntropy_2026_$mGuid")
+            [System.Text.Encoding]::UTF8.GetBytes("LanFixer_SecureEntropy_2026_$mGuid")
         )
         foreach ($ent in $entropyList) {
             try {
@@ -11703,22 +11781,34 @@ function Invoke-HeadlessPortalLogin {
     $url = Resolve-PortalUrl $Inet
     $uri = $null
     try { $uri = [uri]$url } catch { return $false }
+    if ($uri.Scheme -ne 'https') {
+        $anchor = Get-ActivePortalUrl
+        try {
+            $aUri = [uri]$anchor
+            if ($aUri.Scheme -eq 'https' -and (Test-CredentialPortalHost $aUri.Host)) { $uri = $aUri; $url = $anchor }
+        } catch {}
+    }
     if ($uri.Scheme -ne 'https') { Write-Log 'WARN' 'The portal is not served over HTTPS, so the password is not sent automatically. Use the browser login.'; return $false }
     if (-not (Test-CredentialPortalHost $uri.Host)) { Write-Log 'ALERT' ("Portal host '{0}' is not on the campus domain: password NOT sent." -f $uri.Host); return $false }
     # The URI is validated now: route exactly THIS destination over the campus cable, even if Wi-Fi holds metric 15.
     Ensure-CampusPortalPath $uri
     [void](Invoke-WithLock { Set-StateTime 'LastPortalLogin'; Save-State })   # the throttle must survive a crash mid-sign-in
     $src = if ($SourceIp) { $SourceIp } elseif ($script:Cfg.ProbeSourceBind) { Get-PrimarySourceIp } else { '' }
-    $pin = [string]$script:State.Misc['PortalPin']
+    $pinKey = ($uri.Host.ToLowerInvariant() + ':' + $uri.Port)
+    $pinsMap = if ($script:State.Misc['PortalPins'] -is [hashtable]) { $script:State.Misc['PortalPins'] } else { $null }
+    $pin = if ($pinsMap -and $pinsMap.ContainsKey($pinKey)) { [string]$pinsMap[$pinKey] } else { [string]$script:State.Misc['PortalPin'] }
     $jar = @{}
     $cur = $uri
     $page = $null
     $visitedHops = [System.Collections.Generic.HashSet[string]]::new()
     [void]$visitedHops.Add($cur.AbsoluteUri)
     for ($hop = 0; $hop -lt 4; $hop++) {
-        $page = Invoke-TlsHttp -Uri $cur -SourceIp $src -Pin $pin -Jar $jar
+        $curPinKey = ($cur.Host.ToLowerInvariant() + ':' + $cur.Port)
+        $hopPin = if ($pinsMap -and $pinsMap.ContainsKey($curPinKey)) { [string]$pinsMap[$curPinKey] } else { $pin }
+        $page = Invoke-TlsHttp -Uri $cur -SourceIp $src -Pin $hopPin -Jar $jar
         if ($page.Error) { break }
         if ($page.Code -ge 300 -and $page.Code -le 399 -and $page.Location) {
+            if ($hop -eq 3) { $page = @{ Error = 'TooManyRedirects' }; break }
             $next = $null
             try { $next = New-Object System.Uri($cur, $page.Location) } catch { $page = @{ Error = 'BadRedirect' }; break }
             if ($next.Scheme -ne 'https' -or -not (Test-CredentialPortalHost $next.Host)) { $page = @{ Error = 'UntrustedRedirect' }; break }
@@ -11731,6 +11821,8 @@ function Invoke-HeadlessPortalLogin {
     }
     if ($page.Error -eq 'TlsRejected') {
         $isHl = if ($script:Headless) { $true } elseif (-not $script:UiOn) { $true } else { $false }
+        $curPinKey = ($cur.Host.ToLowerInvariant() + ':' + $cur.Port)
+        $curPin = if ($pinsMap -and $pinsMap.ContainsKey($curPinKey)) { [string]$pinsMap[$curPinKey] } else { $pin }
         if ($Manual -and -not $isHl -and -not (Test-InputRedirected)) {
             $ci = Get-PortalCertInfo $cur
             if ($ci.Ok -and $ci.Sha256) {
@@ -11739,7 +11831,7 @@ function Invoke-HeadlessPortalLogin {
                     $newPin = [string]$ci.Sha256
                     # GUARD 1: pinning the very certificate that was just rejected cannot change the outcome; retrying
                     # would prompt forever (and recurse until the interpreter overflows its call depth).
-                    if ($newPin -eq $pin) {
+                    if ($newPin -eq $curPin) {
                         Write-Log 'ALERT' 'The portal rejected a certificate whose fingerprint already matches the approved one. Not retrying: check the host name and the certificate chain before trusting this network.'
                         return $false
                     }
@@ -11748,13 +11840,18 @@ function Invoke-HeadlessPortalLogin {
                         Write-Log 'ALERT' 'The portal certificate changed again during sign-in. Stopped after 3 attempts so the password is not sent to a certificate that keeps changing.'
                         return $false
                     }
-                    [void](Invoke-WithLock { $script:State.Misc['PortalPin'] = $newPin; Save-State })
+                    [void](Invoke-WithLock {
+                        if ($script:State.Misc['PortalPins'] -isnot [hashtable]) { $script:State.Misc['PortalPins'] = @{} }
+                        $script:State.Misc['PortalPins'][$curPinKey] = $newPin
+                        $script:State.Misc['PortalPin'] = $newPin
+                        Save-State
+                    })
                     Write-Log 'OK' 'Certificate approved! Retrying sign-in...'
                     return (Invoke-HeadlessPortalLogin $Inet -Manual -Attempt ($Attempt + 1) -SourceIp $src)
                 }
             }
         }
-        if ($pin) { Write-Log 'ALERT' 'The portal certificate CHANGED since you approved it: password NOT sent. If IT renewed it, re-approve it in the vault menu; if not, this network may be hostile.' }
+        if ($curPin) { Write-Log 'ALERT' 'The portal certificate CHANGED since you approved it: password NOT sent. If IT renewed it, re-approve it in the vault menu; if not, this network may be hostile.' }
         else { Write-Log 'WARN' 'Windows does not trust the portal certificate and none is approved yet: password NOT sent. Review and approve it once in the vault menu.' }
         return $false
     }
@@ -11777,11 +11874,18 @@ function Invoke-HeadlessPortalLogin {
     $post = Invoke-TlsHttp -Uri $act -Method 'POST' -Body $payload -SourceIp $src -Pin $pin -Jar $jar
     $payload = $null
     Clear-DnsClientCache -ErrorAction SilentlyContinue
+    $isBadAuth = $false
+    if ($post.Code -eq 401 -or $post.Code -eq 403) { $isBadAuth = $true }
+    elseif ($post.Body -match '(?i)invalid\s+(credential|password|user|login)|incorrect\s+(password|user)|authentication\s+fail|login\s+fail|access\s+denied|wrong\s+(password|user)') { $isBadAuth = $true }
+    elseif ($post.Location -match '(?i)error|fail|invalid|denied') { $isBadAuth = $true }
+    elseif ($post.Body -match '(?i)<input\b[^>]*type\s*=\s*[\x22\x27]?password') { $isBadAuth = $true }   # the login form came back: rejected, whatever the wording or language
     $online = $false
-    for ($i = 0; $i -lt 6; $i++) {
-        Start-Sleep -Milliseconds 1000
-        $chkAfter = if ($src) { Get-InternetState -NoCache -SourceIp $src } else { Get-InternetState -NoCache }
-        if ($chkAfter.State -eq 'Online') { $online = $true; break }
+    if (-not $isBadAuth -and -not $post.Error) {
+        for ($i = 0; $i -lt 6; $i++) {
+            Start-Sleep -Milliseconds 1000
+            $chkAfter = if ($src) { Get-InternetState -NoCache -SourceIp $src } else { Get-InternetState -NoCache }
+            if ($chkAfter.State -eq 'Online') { $online = $true; break }
+        }
     }
     if ($online) {
         # ONE transaction for the evidence that the login worked: the counters must be on disk before the (separately
@@ -11796,14 +11900,10 @@ function Invoke-HeadlessPortalLogin {
         Invoke-RecoveryToast ([string]$src)
         return $true
     }
-    $isBadAuth = $false
-    if ($post.Code -eq 401 -or $post.Code -eq 403) { $isBadAuth = $true }
-    elseif ($post.Body -match '(?i)invalid\s+(credential|password|user|login)|incorrect\s+(password|user)|authentication\s+fail|login\s+fail|access\s+denied|wrong\s+(password|user)') { $isBadAuth = $true }
-    elseif ($post.Location -match '(?i)error|fail|invalid|denied') { $isBadAuth = $true }
-    elseif ($post.Body -match '(?i)<input\b[^>]*type\s*=\s*[\x22\x27]?password') { $isBadAuth = $true }   # the login form came back: rejected, whatever the wording or language
     if ($isBadAuth) {
-        $n = [int]$script:State.Misc['PortalFails'] + 1
+        $n = 0
         [void](Invoke-WithLock {
+            $n = [int]$script:State.Misc['PortalFails'] + 1
             $script:State.Misc['PortalFails'] = $n
             if ($n -ge 2) { $script:State.Misc['PortalLoginSuspended'] = $true }
             Save-State
@@ -11812,8 +11912,9 @@ function Invoke-HeadlessPortalLogin {
         else { Write-Log 'WARN' 'The portal did not accept the login (wrong password, or the session limit was reached).' }
     } elseif ($post.Code -gt 0) {
         # answered without an error and without the login form, yet still no internet: allow ONE more try, then pause
-        $a2 = [int]$script:State.Misc['PortalAmbiguous'] + 1
+        $a2 = 0
         [void](Invoke-WithLock {
+            $a2 = [int]$script:State.Misc['PortalAmbiguous'] + 1
             $script:State.Misc['PortalAmbiguous'] = $a2
             if ($a2 -ge 2) { $script:State.Misc['PortalLoginSuspended'] = $true }
             Save-State
@@ -11850,7 +11951,7 @@ function Open-Portal {
             }
             $r = Invoke-Native (Get-SysExe 'schtasks.exe') @('/run', '/tn', $script:Cfg.TaskPortal) 8000
             if ($r.ExitCode -ne 0) {
-                Start-Process -FilePath (Join-Path $script:Sys32 'rundll32.exe') -ArgumentList ('url.dll,FileProtocolHandler "' + $url + '"') -ErrorAction SilentlyContinue
+                Write-Log 'WARN' ("Could not trigger interactive browser task for portal URL ({0}); open it manually in your browser." -f $url)
             }
         }
     } else {
@@ -13352,6 +13453,11 @@ function Invoke-HealthDoctor([switch]$Json, [switch]$Quiet, [switch]$NoColor, [s
         $l6.Evidence = 'HTTP succeeds but TLS handshake timed out or reset'
         $l6.Cause = 'HTTPS inspection, firewall drop on port 443, or corporate MITM'
         $l6.Action = 'Probe'
+    } elseif ($l5.Action -eq 'Login') {
+        $l6.Status = 'DEGRADED'
+        $l6.Evidence = 'HTTPS blocked until captive portal authentication completes'
+        $l6.Cause = 'Captive gateway intercepts outbound TLS'
+        $l6.Action = 'Login'
     } else {
         $l6.Status = 'FAILED'
         $l6.Evidence = 'HTTPS connection unreachable'
@@ -13609,7 +13715,7 @@ function Invoke-Redaction([string]$Text, [string]$Level = 'Strict') {
     }
 
     $res = [regex]::Replace($res, '([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})', 'XX:XX:XX:XX:XX:XX')
-    $res = [regex]::Replace($res, '(?i)(password|secret|token|credential|key)\s*[:=]\s*(\S+)', '$1: [REDACTED]')
+    $res = [regex]::Replace($res, '(?i)(password|secret|token|credential|key)\s*[:=]\s*("[^"]*"|''[^'']*''|\S+)', '$1: [REDACTED]')
 
     if ($Level -eq 'Strict') {
         $ipEvaluator = [System.Text.RegularExpressions.MatchEvaluator]{
@@ -14418,7 +14524,7 @@ function New-SupportReport([switch]$Json, [switch]$Quiet, [switch]$NoColor) {
             Write-Section 'RECENT LAN FIXER LOG (last 40 lines)'
             try { Get-Content -LiteralPath $script:LogFile -Tail 40 -ErrorAction Stop | ForEach-Object { Write-Host ('  ' + $_) } } catch { Write-Host '  (no log yet)' }
         } *>&1
-        $text = ConvertTo-ReportText $recs
+        $text = Invoke-Redaction (ConvertTo-ReportText $recs) 'Strict'
     } catch { $text = 'Report generation failed: ' + $_.Exception.Message }
     finally {
         $script:CapturingReport = $false
@@ -14430,7 +14536,7 @@ function New-SupportReport([switch]$Json, [switch]$Quiet, [switch]$NoColor) {
         $tmp = $path + '.tmp'
         [System.IO.File]::WriteAllText($tmp, $text, (New-Object System.Text.UTF8Encoding($true)))
         Move-Item -LiteralPath $tmp -Destination $path -Force -ErrorAction Stop
-        Write-Log 'OK' "Report saved: $path  (contains your MAC, IP and PC name: read it before sharing)"
+        Write-Log 'OK' "Report saved: $path (strictly redacted of public IPs, MACs, usernames, and secrets)"
     } catch {
         $writeOk = $false
         $writeErr = $_.Exception.Message
@@ -16913,6 +17019,10 @@ function Start-AutonomousDaemon([int]$IntervalSec = 10, [switch]$Headless) {
     try {
         while ($script:SentinelRunning) {
             try {
+                if ($Headless -and (Test-InteractiveSessionActive)) {
+                    Wait-SentinelCadence ([Math]::Max(10, $IntervalSec)) $isConsole
+                    continue
+                }
                 $script:SentinelStats.TotalCycles++
 
             if ($script:SentinelStats.TotalCycles % 100 -eq 0) {
@@ -17031,12 +17141,14 @@ function Start-AutonomousDaemon([int]$IntervalSec = 10, [switch]$Headless) {
             $ipDesc = if ($ethIp) { $ethIp } else { 'No IPv4 / APIPA' }
             Write-SentinelLog 'WARN' ("Degradation detected on {0} (Fail #{1}): IP={2}, State={3}, Ndis={4}, Gateway={5}" -f $ad.Name, $script:DaemonConsecutiveFails, $ipDesc, $state.State, $linkHealth.Reason, $(if ($gwOk) { 'OK' } else { 'Timeout' }))
 
-            # Circuit Breaker Check (Smart Cadence Back-Off without surrendering)
+            # Circuit Breaker Check (Exponential Backoff to prevent PnP/NlaSvc thrashing when upstream is down)
             if ($script:DaemonConsecutiveFails -ge $script:Cfg.BreakerFails) {
-                $currentCadence = [Math]::Min(60, 15 * [Math]::Pow(2, [Math]::Min(2, $script:DaemonConsecutiveFails - $script:Cfg.BreakerFails)))
-                Write-SentinelLog 'WARN' ("Circuit breaker active ({0} fails). Upstream network down. Throttling scan to {1}s to protect switch port security." -f $script:DaemonConsecutiveFails, $currentCadence)
+                $currentCadence = [Math]::Min(300, 30 * [Math]::Pow(2, [Math]::Min(3, $script:DaemonConsecutiveFails - $script:Cfg.BreakerFails)))
+                Write-SentinelLog 'WARN' ("Circuit breaker active ({0} fails). Upstream network down; pausing heavy resets for {1}s to protect switch port security." -f $script:DaemonConsecutiveFails, $currentCadence)
                 if ($isConsole) { Show-SentinelHud $ad $linkHealth "Breaker ($($state.State))" $currentCadence }
-                # Do NOT continue - still execute remediation ladder below!
+                if ($script:IsDry) { $script:SentinelRunning = $false; break }
+                Wait-SentinelCadence $currentCadence $isConsole $ad
+                continue
             }
 
             # Engaging 6-Tier Self-Healing Ladder (Strict OSI Layered Hierarchy)
@@ -17154,15 +17266,20 @@ function Start-AutonomousDaemon([int]$IntervalSec = 10, [switch]$Headless) {
                             $script:SentinelStats.T2_Captive++
                         }
                     } else {
-                        Write-SentinelLog 'INFO' "No credentials in vault. Ensuring routes and triggering browser to open portal..."
-                        [void](Invoke-WithLock -WaitMs 2000 {
-                            Ensure-CampusPortalPath
-                            Shield-RouteMetrics @{ Ad = $ad; Env = (Get-AdapterEnvironment $ad) } 'Captive'
-                            Open-Portal -Force -SourceIp $curIp
-                            Set-StateTime 'LastPortal'
-                            Save-State
-                        })
-                        $recovered = $true; $remedTier = 'Tier 4 (Portal Opened)'
+                        if (Test-Elapsed 'LastPortal' 60) {
+                            Write-SentinelLog 'INFO' "No credentials in vault. Ensuring routes and triggering browser to open portal..."
+                            [void](Invoke-WithLock -WaitMs 2000 {
+                                Ensure-CampusPortalPath
+                                Shield-RouteMetrics @{ Ad = $ad; Env = (Get-AdapterEnvironment $ad) } 'Captive'
+                                Open-Portal -Force -SourceIp $curIp
+                                Set-StateTime 'LastPortal'
+                                Save-State
+                            })
+                        }
+                        $currentCadence = [Math]::Min(15, $IntervalSec)
+                        if ($isConsole) { Show-SentinelHud $ad $linkHealth 'Captive (Login Pending)' $currentCadence }
+                        Wait-SentinelCadence $currentCadence $isConsole $ad
+                        continue
                     }
                 }
             }
@@ -17222,7 +17339,9 @@ function Start-AutonomousDaemon([int]$IntervalSec = 10, [switch]$Headless) {
                 $currentCadence = 3
             } else {
                 Write-SentinelLog 'FAIL' "All 6 autonomous escalation tiers exhausted without full online recovery."
-                $currentCadence = [Math]::Min(30, $IntervalSec * 2)
+                if ($script:DaemonConsecutiveFails -lt $script:Cfg.BreakerFails) {
+                    $currentCadence = [Math]::Min(30, $IntervalSec * 2)
+                }
             }
 
             if ($isConsole) {
@@ -17432,6 +17551,11 @@ if (-not $script:IsAdmin -and -not $script:IsDry -and ($adminModes -contains $Mo
                     else { $parts += $vStr }
                 }
             }
+            foreach ($pArg in @($args)) {
+                $aStr = [string]$pArg
+                if ($aStr -eq '' -or $aStr -match '[\s"&|<>^]') { $parts += ('"' + $aStr.Replace('"', '""') + '"') }
+                else { $parts += $aStr }
+            }
             Start-Process -FilePath $script:SelfPath -ArgumentList ($parts -join ' ') -Verb RunAs -ErrorAction Stop
             $elevated = $true
         } catch { Write-Host 'Administrator approval was not granted.' -ForegroundColor Yellow }
@@ -17480,23 +17604,39 @@ try {
         }
     }
     if ($script:UiOn -and $Mode -ne 'Interactive') { Write-Banner ("{0}{1}" -f $Mode, $(if ($script:IsDry) { ' (dry run)' } else { '' })) }
-    switch ($Mode) {
+    $normMode = switch ($Mode) {
+        'QuickHeal'       { 'Heal' }
+        'StandardReset'   { 'Omnifix' }
+        'NetReset'        { 'UltraReset' }
+        'FullNetReset'    { 'UltraReset' }
+        'Ultra'           { 'UltraReset' }
+        'Doomsday'        { 'DoomsdayReset' }
+        'Armageddon'      { 'ArmageddonReset' }
+        'ResetMenu'       { 'ResetOptions' }
+        'RouteMenu'       { 'Route' }
+        'Audit'           { 'Diagnose' }
+        'Probe'           { 'QuickProbe' }
+        'Flush'           { 'FlushCache' }
+        'InstallShield'   { 'InstallWatchdog' }
+        'UninstallShield' { 'UninstallWatchdog' }
+        'Reset'           { 'ResetFactory' }
+        'Login'           { 'LaunchPortal' }
+        'DnsMenu'         { 'Dns' }
+        'Verify'          { 'SelfTest' }
+        'Sentinel'        { 'Daemon' }
+        'Status'          { 'Doctor' }
+        'Hist'            { 'History' }
+        default           { $Mode }
+    }
+    switch ($normMode) {
         'AutoHeal'          { [void](Invoke-AutoHeal) }
         'Omnifix'           { Invoke-SupremeOmnifix }
-        'StandardReset'     { Invoke-SupremeOmnifix }
-        'NetReset'          { Invoke-UltraSystemReset }
-        'FullNetReset'      { Invoke-UltraSystemReset }
         'UltraReset'        { Invoke-UltraSystemReset }
-        'Ultra'             { Invoke-UltraSystemReset }
         'DoomsdayReset'     { Invoke-DoomsdayReset }
-        'Doomsday'          { Invoke-DoomsdayReset }
         'ArmageddonReset'   { Invoke-ArmageddonReset }
-        'Armageddon'        { Invoke-ArmageddonReset }
         'ResetOptions'      { Show-View 'Recovery and System' { Show-ResetMenu } }
-        'ResetMenu'         { Show-View 'Recovery and System' { Show-ResetMenu } }
         'SetRouteProfile'   { Set-RouteProfileMode $RouteProfile }
         'Route'             { Show-RouteMenu }
-        'RouteMenu'         { Show-RouteMenu }
         'Heal' {
             $sw = [System.Diagnostics.Stopwatch]::StartNew()
             $r = Pick-Hash (Invoke-WithLock { Invoke-HealPipeline })
@@ -17517,48 +17657,18 @@ try {
                 }
             }
         }
-        'QuickHeal' {
-            $sw = [System.Diagnostics.Stopwatch]::StartNew()
-            $r = Pick-Hash (Invoke-WithLock { Invoke-HealPipeline })
-            $sw.Stop()
-            Write-HealSummary $r $sw
-            if ($r -and $r.Conn -eq 'Captive' -and -not $script:IsDry) {
-                $signedHeadless = $false
-                $portalSrc = if ($r.Ip) { [string]$r.Ip } else { Get-PrimarySourceIp }
-                if ($script:Cfg.AutoPortalLogin -and (Get-PortalCredentials)) {
-                    $signedHeadless = [bool](Invoke-HeadlessPortalLogin (Get-InternetState -NoCache -SourceIp $portalSrc) -Manual)
-                    if ($signedHeadless) { [void](Invoke-WithLock { Complete-Authentication; Save-State }); Write-Log 'OK' 'Signed in automatically using stored vault credentials.' }
-                }
-                if (-not $signedHeadless) {
-                    [void](Invoke-WithLock { [void](Open-Portal); Save-State })
-                    if ((Get-InternetState -NoCache).State -eq 'Captive') {
-                        if (Wait-ForAuthentication 180) { [void](Invoke-WithLock { Complete-Authentication }); Write-Log 'OK' 'Signed in. Post-login DNS applied.' }
-                    }
-                }
-            }
-        }
         'Diagnose'          { Show-Diagnostics }
-        'Audit'             { Show-Diagnostics }
         'Report'            { $exitCode = New-SupportReport -Json:$Json -Quiet:$Quiet -NoColor:$NoColor; if ($null -eq $exitCode) { $exitCode = 0 } }
         'QuickProbe'        { Run-QuickProbe }
-        'Probe'             { Run-QuickProbe }
         'FlushCache'        { [void](Invoke-WithLock { Flush-NetworkCache }) }
-        'Flush'             { [void](Invoke-WithLock { Flush-NetworkCache }) }
         'InstallWatchdog'   { [void](Invoke-WithLock { Install-Watchdog }) }
-        'InstallShield'     { [void](Invoke-WithLock { Install-Watchdog }) }
         'UninstallWatchdog' { [void](Invoke-WithLock { Uninstall-Watchdog }) }
-        'UninstallShield'   { [void](Invoke-WithLock { Uninstall-Watchdog }) }
         'ResetFactory'      { [void](Invoke-WithLock { Restore-Everything }) }
-        'Reset'             { [void](Invoke-WithLock { Restore-Everything }) }
         'LaunchPortal'      { [void](Invoke-WithLock { Open-Portal -Force }) }
-        'Login'             { [void](Invoke-WithLock { Open-Portal -Force }) }
         'SetDnsProfile'     { Set-DnsProfileMode $DnsProfile }
         'Dns'               { Show-DnsMenu }
-        'DnsMenu'           { Show-DnsMenu }
         'SelfTest'          { Invoke-SelfTest -Json:$Json -Quiet:$Quiet -NoColor:$NoColor; if ($script:TestFail -gt 0) { $exitCode = 1 } else { $exitCode = 0 } }
-        'Verify'            { Invoke-SelfTest -Json:$Json -Quiet:$Quiet -NoColor:$NoColor; if ($script:TestFail -gt 0) { $exitCode = 1 } else { $exitCode = 0 } }
         'Daemon'            { Start-AutonomousDaemon -Headless:$Headless }
-        'Sentinel'          { Start-AutonomousDaemon -Headless:$Headless }
         'InstallSentinel'   { [void](Invoke-WithLock { Install-SentinelTask }) }
         'UninstallSentinel' { [void](Invoke-WithLock { Uninstall-SentinelTask }) }
         'Vault'             { Show-VaultMenu }
@@ -17581,15 +17691,7 @@ try {
             $rep = Invoke-HealthDoctor -Json:$Json -Quiet:$Quiet -NoColor:$NoColor
             $exitCode = [int]$rep.ExitCode
         }
-        'Status' {
-            $rep = Invoke-HealthDoctor -Json:$Json -Quiet:$Quiet -NoColor:$NoColor
-            $exitCode = [int]$rep.ExitCode
-        }
         'History' {
-            $targetSec = if ($Section) { $Section } elseif ($Id) { $Id } elseif ($args.Count -gt 0) { $args[0] } else { '' }
-            $exitCode = Invoke-HistorySuite -Section $targetSec -Limit $Limit -Follow:$Follow -Level $Level -Filter $Filter -OutFile $OutFile -Json:$Json -Quiet:$Quiet -NoColor:$NoColor
-        }
-        'Hist' {
             $targetSec = if ($Section) { $Section } elseif ($Id) { $Id } elseif ($args.Count -gt 0) { $args[0] } else { '' }
             $exitCode = Invoke-HistorySuite -Section $targetSec -Limit $Limit -Follow:$Follow -Level $Level -Filter $Filter -OutFile $OutFile -Json:$Json -Quiet:$Quiet -NoColor:$NoColor
         }
